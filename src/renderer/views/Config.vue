@@ -6,7 +6,12 @@
     <div class="api-row">
       <div class="form-group flex-1">
         <label>DeepSeek API Key（文案生成）</label>
-        <input v-model="form.deepseekApiKey" type="password" placeholder="sk-..." />
+        <div class="input-with-toggle">
+          <input v-model="form.deepseekApiKey" :type="showKeys.deepseek ? 'text' : 'password'" placeholder="sk-..." />
+          <button class="btn-eye" @click="showKeys.deepseek = !showKeys.deepseek" type="button">
+            {{ showKeys.deepseek ? '👁️' : '👁️‍🗨️' }}
+          </button>
+        </div>
       </div>
       <button class="btn btn-test" @click="test('deepseek')" :disabled="testing.deepseek">
         {{ testing.deepseek ? '⏳' : '🔌' }}
@@ -21,7 +26,12 @@
     <div class="api-row">
       <div class="form-group flex-1">
         <label>硅基流动 API Key（AI 生图）</label>
-        <input v-model="form.siliconflowApiKey" type="password" placeholder="sk-..." />
+        <div class="input-with-toggle">
+          <input v-model="form.siliconflowApiKey" :type="showKeys.siliconflow ? 'text' : 'password'" placeholder="sk-..." />
+          <button class="btn-eye" @click="showKeys.siliconflow = !showKeys.siliconflow" type="button">
+            {{ showKeys.siliconflow ? '👁️' : '👁️‍🗨️' }}
+          </button>
+        </div>
       </div>
       <button class="btn btn-test" @click="test('siliconflow')" :disabled="testing.siliconflow">
         {{ testing.siliconflow ? '⏳' : '🔌' }}
@@ -37,7 +47,12 @@
     <div class="api-row">
       <div class="form-group flex-1">
         <label>Pexels API Key（真实素材搜索）</label>
-        <input v-model="form.pexelsApiKey" type="password" placeholder="免费注册获取..." />
+        <div class="input-with-toggle">
+          <input v-model="form.pexelsApiKey" :type="showKeys.pexels ? 'text' : 'password'" placeholder="免费注册获取..." />
+          <button class="btn-eye" @click="showKeys.pexels = !showKeys.pexels" type="button">
+            {{ showKeys.pexels ? '👁️' : '👁️‍🗨️' }}
+          </button>
+        </div>
       </div>
       <button class="btn btn-test" @click="test('pexels')" :disabled="testing.pexels">
         {{ testing.pexels ? '⏳' : '🔌' }}
@@ -53,7 +68,12 @@
     <div class="api-row">
       <div class="form-group flex-1">
         <label>Telegram Bot Token（消息推送）</label>
-        <input v-model="form.tgBotToken" type="password" placeholder="123456:ABC-DEF..." />
+        <div class="input-with-toggle">
+          <input v-model="form.tgBotToken" :type="showKeys.tg ? 'text' : 'password'" placeholder="123456:ABC-DEF..." />
+          <button class="btn-eye" @click="showKeys.tg = !showKeys.tg" type="button">
+            {{ showKeys.tg ? '👁️' : '👁️‍🗨️' }}
+          </button>
+        </div>
       </div>
       <button class="btn btn-test" @click="test('tg')" :disabled="testing.tg">
         {{ testing.tg ? '⏳' : '🔌' }}
@@ -96,6 +116,7 @@ const form = reactive({
 });
 const testing = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false });
 const results = reactive({ deepseek: null, siliconflow: null, pexels: null, tg: null });
+const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false });
 
 onMounted(async () => {
   const config = await window.xnowpost.getConfig();
@@ -128,6 +149,14 @@ h2 { font-size: 24px; margin-bottom: 24px; }
   outline: none; transition: border-color 0.2s;
 }
 .form-group input:focus { border-color: #f59e0b; }
+.input-with-toggle { display: flex; align-items: stretch; max-width: 500px; }
+.input-with-toggle input { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: none; max-width: none; }
+.btn-eye {
+  padding: 0 12px; border: 1px solid #334155; border-left: none; border-radius: 0 8px 8px 0;
+  background: #1e293b; color: #64748b; cursor: pointer; font-size: 14px; line-height: 1;
+  transition: background 0.2s;
+}
+.btn-eye:hover { background: #334155; color: #e2e8f0; }
 .hint-block { font-size: 11px; color: #64748b; margin-bottom: 16px; margin-left: 2px; }
 .status-icon { font-size: 18px; padding-bottom: 10px; }
 .btn-row { display: flex; gap: 12px; margin-top: 24px; }
