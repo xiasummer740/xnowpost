@@ -352,9 +352,13 @@ function wrapText(ctx, text, maxW) {
 export async function generateImage({ prompt, width=1080, height=1920, seed, index=0, title, subtitle, tags, points, shotType, cameraMove, mood }) {
   const kolorsSize = toKolorsSize(width, height);
   const layout = getLayout(width, height);
+  // 把文案文本追加到生图 prompt，让图片内容与文案匹配
+  const enhancedPrompt = title
+    ? `${prompt}, the scene visually reflects the text concept: "${title.substring(0, 60)}"`
+    : prompt;
   try {
-    console.log(`  🤖 底图(${kolorsSize}): ${(prompt||'').substring(0,40)}...`);
-    const base = await fetchAIImage(prompt, kolorsSize, layout, shotType, cameraMove, mood);
+    console.log(`  🤖 底图(${kolorsSize}): ${(enhancedPrompt||'').substring(0,40)}...`);
+    const base = await fetchAIImage(enhancedPrompt, kolorsSize, layout, shotType, cameraMove, mood);
     console.log(`  ✍️ 叠加...`);
     return await overlayText(base, { width, height, title, subtitle, tags, index, points });
   } catch (err) {

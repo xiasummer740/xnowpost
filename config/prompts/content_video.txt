@@ -40,9 +40,12 @@ E. 恐惧驱动："90%的新号废在这3点上，你中了几个？"
 ### 每个分镜的字段说明
 - `scene_text_zh`：中文字幕（15-25字，一句完整的营销话术）
 - `scene_text_en`：英文（12-20词，地道表达）
-- `image_desc`：**英文真实场景描述**。必须包含：谁、在哪、做什么、情绪、光线、色调
-  好例子："A frustrated young woman sitting on couch, holding iPhone showing TikTok video with only 87 views, dim evening light from window, messy room background, photorealistic"
-  坏例子："social media growth concept illustration"（太抽象）
+- `image_desc`：**英文真实场景描述，必须与 scene_text_zh 完全匹配**。包含：谁、在哪、做什么、情绪、光线、色调，**并且必须把文案中的数字/价格/数据可视化为画面中的具体元素**（如手机屏幕显示数字、价格标签、图表曲线等）
+  好例子（文案说"¥13"→ 图片必须出现价格数字）：
+  "Close-up of smartphone screen showing '¥13' pricing page of XNOW service, finger pointing at the price, bright screen contrasted with dark room background, dramatic lighting, photorealistic"
+  好例子（文案说"粉丝87个"→ 图片必须显示低数据）：
+  "A frustrated young woman sitting on couch, holding iPhone showing TikTok profile with only 87 followers displayed on screen, dim evening light from window, messy room background, photorealistic"
+  坏例子（没有把文案数字视觉化）："social media growth concept illustration"（太抽象）
 - `duration`：对应这些话大概需要几秒（5-7），TK 短视频节奏要快
 - `shot_type`：镜头类型 — "close_up" 特写 | "medium" 中景 | "wide" 远景 | "detail" 细节
 - `camera_move`：运镜方式 — "static" 固定 | "push" 推进 | "pull" 拉远 | "pan" 平移 | "follow" 跟随 | "tilt_up" 上摇 | "tilt_down" 下摇
