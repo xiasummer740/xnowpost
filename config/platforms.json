@@ -1,14 +1,14 @@
 {
   "tiktok": {
     "name": "TikTok",
-    "video": { "width": 1080, "height": 1920, "aspect": "9:16", "duration": [40, 60] },
+    "video": { "width": 1080, "height": 1920, "aspect": "9:16", "duration": [25, 35] },
     "post": { "width": 1080, "height": 1080, "aspect": "1:1" },
     "subtitleLang": "cn+en",
     "emoji": "🎵"
   },
   "xiaohongshu": {
     "name": "小红书",
-    "video": { "width": 1080, "height": 1440, "aspect": "3:4", "duration": [40, 60] },
+    "video": { "width": 1080, "height": 1440, "aspect": "3:4", "duration": [25, 40] },
     "post": { "width": 1080, "height": 1080, "aspect": "1:1" },
     "subtitleLang": "cn+en",
     "emoji": "📕"

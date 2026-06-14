@@ -13,9 +13,9 @@
   },
   "video": {
     "scenes": 9,
-    "minDuration": 6,
-    "maxDuration": 10,
-    "totalDuration": 70,
+    "minDuration": 5,
+    "maxDuration": 7,
+    "totalDuration": 30,
     "bgmVolume": 0.15,
     "fadeIn": 0.5,
     "fadeOut": 1.0

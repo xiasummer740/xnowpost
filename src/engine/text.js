@@ -42,7 +42,7 @@ function buildPrompt(template, strategy) {
   let prompt = template
     .replace('{STRATEGY_LABEL}', sanitizeForPrompt(strategy.label))
     .replace('{STRATEGY_DESC}', sanitizeForPrompt(strategy.desc))
-    .replace('{SCENE_COUNT}', '9');
+    .replace('{SCENE_COUNT}', '5');
 
   if (globalUserTopic) {
     prompt = prompt.replace('{USER_TOPIC}', `\n## 用户指定的主题（优先围绕此主题创作）\n${globalUserTopic}\n`);
