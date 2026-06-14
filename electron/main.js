@@ -133,10 +133,8 @@ function createWindow() {
     }
   });
 
-  // 仅在开发模式打开 DevTools
-  if (!app.isPackaged) {
-    mainWindow.webContents.openDevTools();
-  }
+  // DevTools: 需要时按 F12 打开，不自动弹出
+  // 如需自动打开，设环境变量 DEBUG=true
 }
 
 // === IPC 处理器 ===
