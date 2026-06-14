@@ -434,12 +434,14 @@ function setupIPC() {
 
   ipcMain.handle('schedule:save', async (_event, jobs) => {
     try {
-      fs.ensureDirSync(path.dirname(SCHEDULE_FILE));
-      fs.writeJsonSync(SCHEDULE_FILE, jobs, { spaces: 2 });
-      addLog('success', `定时任务已保存 (${jobs.filter(j=>j.enabled).length} 个启用)`);
+      const dir = path.dirname(SCHEDULE_FILE);
+      console.log('[schedule:save] writing to', SCHEDULE_FILE);
+      fs.ensureDirSync(dir);
+      fs.writeFileSync(SCHEDULE_FILE, JSON.stringify(jobs, null, 2), 'utf-8');
+      console.log('[schedule:save] done,', jobs.length, 'jobs');
       return { ok: true };
     } catch (e) {
-      addLog('error', `保存定时任务失败: ${e.message}`);
+      console.error('[schedule:save] error:', e.message);
       return { ok: false, message: e.message };
     }
   });

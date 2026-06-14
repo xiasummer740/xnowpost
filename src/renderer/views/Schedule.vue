@@ -86,8 +86,20 @@ function removeJob(i) {
 
 async function save() {
   saving.value = true;
+  // 超时保护：5秒没返回强制恢复 UI
+  const timeout = setTimeout(() => {
+    console.warn('保存超时，强制恢复 UI');
+    saving.value = false;
+    alert('保存超时，请检查 main.js 中 schedule:save handler 是否注册');
+  }, 5000);
+
   try {
+    // 检查 saveSchedules 是否存在
+    if (typeof window.xnowpost.saveSchedules !== 'function') {
+      throw new Error('saveSchedules 未定义，请重启应用');
+    }
     const result = await window.xnowpost.saveSchedules(jobs.value);
+    clearTimeout(timeout);
     if (!result || !result.ok) {
       console.error('保存失败:', result?.message || '未知错误');
       alert('保存失败: ' + (result?.message || '请检查控制台'));
@@ -96,6 +108,7 @@ async function save() {
       setTimeout(() => saved.value = false, 3000);
     }
   } catch (err) {
+    clearTimeout(timeout);
     console.error('保存定时任务异常:', err);
     alert('保存异常: ' + err.message);
   } finally {
