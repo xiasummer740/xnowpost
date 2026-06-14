@@ -94,8 +94,18 @@ function autoSave() {
 
 async function save(silent = false) {
   saving.value = true;
-  const result = await window.xnowpost.saveSchedules(jobs.value);
-  saving.value = false;
+  try {
+    const result = await window.xnowpost.saveSchedules(jobs.value);
+    if (!result || !result.ok) {
+      console.error('保存失败:', result?.message || '未知错误');
+      if (!silent) alert('保存失败: ' + (result?.message || 'IPC 调用异常'));
+    }
+  } catch (err) {
+    console.error('保存定时任务异常:', err);
+    if (!silent) alert('保存异常: ' + err.message);
+  } finally {
+    saving.value = false;
+  }
   if (!silent) {
     saved.value = true;
     setTimeout(() => saved.value = false, 3000);
