@@ -18,6 +18,9 @@
         <router-link to="/logs" class="nav-item" :class="{ active: $route.path === '/logs' }">
           📜 日志
         </router-link>
+        <router-link to="/schedule" class="nav-item" :class="{ active: $route.path === '/schedule' }">
+          ⏰ 闹钟
+        </router-link>
       </nav>
       <div class="sidebar-footer">
         <span class="status-dot" :class="store.status.configured ? 'online' : 'offline'"></span>

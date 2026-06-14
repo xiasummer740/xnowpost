@@ -424,6 +424,28 @@ function setupIPC() {
     };
   });
 
+  // 定时任务管理
+  const SCHEDULE_FILE = path.join(ROOT, 'config', 'schedule.json');
+
+  ipcMain.handle('schedule:list', () => {
+    try {
+      if (fs.existsSync(SCHEDULE_FILE)) return fs.readJsonSync(SCHEDULE_FILE);
+    } catch (e) { /* fall through */ }
+    return [];
+  });
+
+  ipcMain.handle('schedule:save', async (_event, jobs) => {
+    try {
+      fs.ensureDirSync(path.dirname(SCHEDULE_FILE));
+      fs.writeJsonSync(SCHEDULE_FILE, jobs, { spaces: 2 });
+      addLog('success', `定时任务已保存 (${jobs.filter(j=>j.enabled).length} 个启用)`);
+      return { ok: true };
+    } catch (e) {
+      addLog('error', `保存定时任务失败: ${e.message}`);
+      return { ok: false, message: e.message };
+    }
+  });
+
   // 测试 API 连接
   ipcMain.handle('config:test', async (_event, type) => {
     const config = loadConfig();

@@ -5,6 +5,7 @@ const routes = [
   { path: '/config', name: 'Config', component: () => import('../views/Config.vue') },
   { path: '/history', name: 'History', component: () => import('../views/History.vue') },
   { path: '/logs', name: 'Logs', component: () => import('../views/Logs.vue') },
+  { path: '/schedule', name: 'Schedule', component: () => import('../views/Schedule.vue') },
 ];
 
 export default createRouter({

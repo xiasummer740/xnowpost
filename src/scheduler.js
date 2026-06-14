@@ -5,8 +5,19 @@ import path from 'path';
 import fs from 'fs-extra';
 
 const ROOT = path.resolve('.');
+const SCHEDULE_FILE = path.join(ROOT, 'config', 'schedule.json');
 const MAX_RETRIES = 2;
-const RETRY_DELAY = 60_000; // 60 秒
+const RETRY_DELAY = 60_000;
+
+// 默认配置（首次启动时写入）
+const DEFAULT_JOBS = [
+  { id: 1, time: '07:00', mode: 'auto',    label: '早间内容（视频+图文）', enabled: true  },
+  { id: 2, time: '19:00', mode: 'video',   label: '晚间视频',             enabled: true  },
+  { id: 3, time: '21:00', mode: 'collect', label: '数据采集 + 日报',      enabled: false },
+];
+
+// 所有活跃的 cron 任务引用，用于热重载
+let cronTasks = [];
 
 function getLogPath() {
   const d = new Date().toISOString().split('T')[0];
@@ -23,10 +34,9 @@ function log(msg) {
 async function sendAlert(message) {
   try {
     const axios = (await import('axios')).default;
-    const configPath = path.join(ROOT, 'config', 'user.json');
-    let config = {};
-    if (fs.existsSync(configPath)) config = fs.readJsonSync(configPath);
-
+    const config = fs.existsSync(path.join(ROOT, 'config', 'user.json'))
+      ? fs.readJsonSync(path.join(ROOT, 'config', 'user.json'))
+      : {};
     if (config.tgBotToken && config.tgChannelId) {
       await axios.post(`https://api.telegram.org/bot${config.tgBotToken}/sendMessage`, {
         chat_id: config.tgChannelId,
@@ -42,11 +52,7 @@ async function sendAlert(message) {
 async function runWithRetry(script, label) {
   for (let i = 0; i <= MAX_RETRIES; i++) {
     try {
-      execSync(`node ${script}`, {
-        cwd: ROOT,
-        stdio: 'inherit',
-        timeout: 10 * 60 * 1000,
-      });
+      execSync(`node ${script}`, { cwd: ROOT, stdio: 'inherit', timeout: 10 * 60 * 1000 });
       log(`✅ ${label} 完成`);
       return;
     } catch (err) {
@@ -57,36 +63,89 @@ async function runWithRetry(script, label) {
       }
     }
   }
-
-  // 所有重试失败 → 发告警
   const msg = `⛔ 定时任务 <b>${label}</b> 失败\n已重试 ${MAX_RETRIES} 次均失败\n时间: ${new Date().toLocaleString('zh-CN')}`;
   log(msg);
   await sendAlert(msg);
 }
 
-console.log('⏰ XNOW 内容引擎调度器启动');
-console.log('  · 早 7:00 — 生成 1 视频 + 1 图文');
-console.log('  · 晚 19:00 — 生成 1 视频');
-console.log('  · 晚 21:00 — 数据采集 + 日报');
-console.log(`  · 失败重试 ${MAX_RETRIES} 次 · 告警推送已${fs.existsSync(path.join(ROOT, 'config', 'user.json')) ? '开启' : '关闭（需配置 TG Bot）'}`);
-console.log('');
+function parseCron(timeStr) {
+  const [h, m] = timeStr.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return null;
+  return `${m} ${h} * * *`;
+}
 
-// 每天早上 7:00 — 1 视频 + 1 图文
-cron.schedule('0 7 * * *', () => {
-  runWithRetry('src/index.js', '早间内容 (1视频+1图文)');
-}, { timezone: 'Asia/Shanghai' });
+function runJob(job) {
+  if (job.mode === 'collect') {
+    runWithRetry('src/collector/index.js', job.label);
+    runWithRetry('src/analyzer/daily.js', `${job.label} 日报`);
+  } else {
+    const flag = job.mode === 'video' ? '--video-only' : job.mode === 'post' ? '--post-only' : '';
+    runWithRetry(`src/index.js ${flag}`.trim(), job.label);
+  }
+}
 
-// 每天晚上 19:00 — 1 视频
-cron.schedule('0 19 * * *', () => {
-  runWithRetry('src/index.js', '晚间内容 (1视频)');
-}, { timezone: 'Asia/Shanghai' });
+// 加载配置并注册 cron
+function loadSchedule() {
+  // 清理旧任务
+  cronTasks.forEach(t => t.stop());
+  cronTasks = [];
 
-// 每天晚上 21:00 — 数据采集 + 日报
-cron.schedule('0 21 * * *', () => {
-  runWithRetry('src/collector/index.js', '数据采集');
-  runWithRetry('src/analyzer/daily.js', '日报推送');
-}, { timezone: 'Asia/Shanghai' });
+  let jobs;
+  try {
+    if (fs.existsSync(SCHEDULE_FILE)) {
+      jobs = fs.readJsonSync(SCHEDULE_FILE);
+    } else {
+      fs.ensureDirSync(path.dirname(SCHEDULE_FILE));
+      fs.writeJsonSync(SCHEDULE_FILE, DEFAULT_JOBS, { spaces: 2 });
+      jobs = DEFAULT_JOBS;
+    }
+  } catch (e) {
+    log(`⚠️ 读取 schedule.json 失败，使用默认配置: ${e.message}`);
+    jobs = DEFAULT_JOBS;
+  }
 
-// 保持进程存活
+  const enabled = jobs.filter(j => j.enabled);
+  if (enabled.length === 0) {
+    log('⚠️ 没有启用的定时任务');
+    return;
+  }
+
+  for (const job of enabled) {
+    const cronExpr = parseCron(job.time);
+    if (!cronExpr) {
+      log(`⚠️ 跳过无效时间: ${job.time}`);
+      continue;
+    }
+    const task = cron.schedule(cronExpr, () => runJob(job), { timezone: 'Asia/Shanghai' });
+    cronTasks.push(task);
+    log(`  ⏰ ${job.time} → ${job.label} ${job.mode !== 'collect' ? `(${job.mode})` : ''}`);
+  }
+}
+
+// ===== 热重载：监听 schedule.json 变化 =====
+let lastReload = 0;
+function watchSchedule() {
+  try {
+    fs.watchFile(SCHEDULE_FILE, { interval: 3000 }, () => {
+      const now = Date.now();
+      if (now - lastReload < 5000) return; // 防抖
+      lastReload = now;
+      log('🔄 检测到配置变化，重新加载定时任务...');
+      loadSchedule();
+    });
+  } catch (e) {
+    log(`⚠️ 文件监听启动失败: ${e.message}`);
+  }
+}
+
+// ===== 启动 =====
+console.log('\n⏰ XNOW 内容引擎调度器');
+console.log('  · 配置来源: config/schedule.json');
+console.log(`  · 失败重试 ${MAX_RETRIES} 次`);
+console.log('  · 修改 schedule.json 自动热重载\n');
+
+loadSchedule();
+watchSchedule();
+
 process.stdin.resume();
-console.log('✅ 调度器已就绪，等待定时触发...\n');
+console.log(`✅ 调度器已就绪 (${cronTasks.length} 个任务)\n`);

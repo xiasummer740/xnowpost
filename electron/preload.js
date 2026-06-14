@@ -28,4 +28,8 @@ contextBridge.exposeInMainWorld('xnowpost', {
 
   // 费用
   getLatestCost: () => ipcRenderer.invoke('cost:latest'),
+
+  // 定时任务
+  getSchedules: () => ipcRenderer.invoke('schedule:list'),
+  saveSchedules: (jobs) => ipcRenderer.invoke('schedule:save', jobs),
 });
