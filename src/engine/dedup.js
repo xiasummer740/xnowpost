@@ -3,41 +3,78 @@ import fs from 'fs-extra';
 import path from 'path';
 
 const HISTORY_FILE = path.resolve('output/history.json');
-const MAX_RETRIES = 5; // 最多重试5次换策略
+const MAX_RETRIES = 5;
 
-// 简单的相似度计算（中文标题）
-function similarity(a, b) {
-  if (!a || !b) return 0;
-  // 提取关键词（2-4字片段）
-  const grams = (s) => {
-    const g = new Set();
-    for (let i = 0; i < s.length - 1; i++) {
-      g.add(s.substring(i, Math.min(i + 3, s.length)));
+// ============ 改进的中文相似度算法 ============
+
+// 提取特征：2-gram + 4-gram 混合（比纯 3-gram 更准）
+function extractGrams(s, minLen = 2, maxLen = 4) {
+  const set = new Set();
+  if (!s) return set;
+  for (let len = minLen; len <= maxLen; len++) {
+    for (let i = 0; i <= s.length - len; i++) {
+      set.add(s.substring(i, i + len));
     }
-    return g;
-  };
-  const ga = grams(a), gb = grams(b);
-  if (ga.size === 0 || gb.size === 0) return 0;
-  let overlap = 0;
-  for (const g of ga) { if (gb.has(g)) overlap++; }
-  return overlap / Math.max(ga.size, gb.size);
+  }
+  return set;
 }
 
-// 加载历史标题
+// 关键词权重：数字和特殊词加权
+function keywordWeight(s) {
+  let weight = 0;
+  // 数字出现越多 → 越独特
+  const digits = (s.match(/\d+/g) || []).join('');
+  weight += digits.length * 0.3;
+  // 含品牌词/价格词 → 高区分度
+  if (/¥|元|粉|赞|播|K|万/.test(s)) weight += 2;
+  // 问句 → 有一定区分度
+  if (/[？?]/.test(s)) weight += 1;
+  return weight;
+}
+
+export function similarity(a, b) {
+  if (!a || !b) return 0;
+
+  // 1. n-gram 重叠率
+  const ga = extractGrams(a), gb = extractGrams(b);
+  if (ga.size === 0 || gb.size === 0) return 0;
+
+  let overlap = 0;
+  for (const g of ga) { if (gb.has(g)) overlap++; }
+
+  const gramScore = overlap / Math.max(ga.size, gb.size);
+
+  // 2. 关键词权重加分（如果数字/价格模式相似 → 大概率重复）
+  const wa = keywordWeight(a), wb = keywordWeight(b);
+  const kwScore = wa > 0 && wb > 0 ? 1 - Math.abs(wa - wb) / Math.max(wa, wb) : 0;
+
+  // 加权合并
+  return gramScore * 0.7 + kwScore * 0.3;
+}
+
+// 内容级别去重：比较文案正文/分镜（比仅标题更准）
+export function contentSimilarity(contentA, contentB) {
+  // 取前 3 个分镜文本拼接
+  const textA = [contentA.title_zh, ...(contentA.scenes || []).slice(0, 3).map(s => s.scene_text_zh)].join('');
+  const textB = [contentB.title_zh, ...(contentB.scenes || []).slice(0, 3).map(s => s.scene_text_zh)].join('');
+  return similarity(textA, textB);
+}
+
+// ============ 历史管理 ============
+
 export function loadHistory() {
   try {
     if (fs.existsSync(HISTORY_FILE)) {
       return fs.readJsonSync(HISTORY_FILE);
     }
   } catch (e) { /* ignore */ }
-  return { titles: [], count: 0, lastStrategy: null };
+  return { titles: [], contents: [], count: 0, lastStrategy: null };
 }
 
-// 保存标题
 export function saveTitle(title, strategy) {
   const h = loadHistory();
   h.titles.push({ title, strategy, time: new Date().toISOString() });
-  // 只保留最近200条
+  // 只保留最近 200 条
   if (h.titles.length > 200) h.titles = h.titles.slice(-200);
   h.count++;
   h.lastStrategy = strategy;
@@ -45,20 +82,51 @@ export function saveTitle(title, strategy) {
   fs.writeJsonSync(HISTORY_FILE, h, { spaces: 2 });
 }
 
-// 检查标题是否与历史重复
-export function isDuplicate(title, threshold = 0.5) {
+// 保存完整内容用于深度去重
+export function saveContent(content, strategy) {
   const h = loadHistory();
-  const recent = h.titles.slice(-30); // 只检查最近30条
+  h.contents = h.contents || [];
+  h.contents.push({
+    title_zh: content.title_zh,
+    scenes: (content.scenes || []).slice(0, 5).map(s => ({ scene_text_zh: s.scene_text_zh })),
+    strategy,
+    time: new Date().toISOString(),
+  });
+  if (h.contents.length > 50) h.contents = h.contents.slice(-50);
+  h.lastStrategy = strategy;
+  fs.ensureDirSync(path.dirname(HISTORY_FILE));
+  fs.writeJsonSync(HISTORY_FILE, h, { spaces: 2 });
+}
+
+// ============ 双重去重检查 ============
+
+export function isDuplicate(title, threshold = 0.45) {
+  const h = loadHistory();
+  const recent = h.titles.slice(-30);
   for (const item of recent) {
-    if (similarity(title, item.title) > threshold) {
-      console.log(`  🔄 标题与历史相似(${(similarity(title, item.title)*100).toFixed(0)}%): "${item.title}"`);
+    const sim = similarity(title, item.title);
+    if (sim > threshold) {
+      console.log(`  🔄 标题相似度 ${(sim*100).toFixed(0)}%: "${item.title}"`);
       return true;
     }
   }
   return false;
 }
 
-// 带重试的生成器
+// 内容级去重（更深层，用于已有完整内容时的校验）
+export function isContentDuplicate(content, threshold = 0.5) {
+  const h = loadHistory();
+  const recent = (h.contents || []).slice(-20);
+  for (const item of recent) {
+    const sim = contentSimilarity(content, item);
+    if (sim > threshold) {
+      console.log(`  🔄 内容相似度 ${(sim*100).toFixed(0)}%`);
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function generateUnique(generatorFn, titleKey = 'title_zh') {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const result = await generatorFn();
@@ -74,7 +142,6 @@ export async function generateUnique(generatorFn, titleKey = 'title_zh') {
   }
 }
 
-// 获取最后一次使用的策略（避免连续用同一策略）
 export function getLastStrategy() {
   const h = loadHistory();
   return h.lastStrategy;

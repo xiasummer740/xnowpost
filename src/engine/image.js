@@ -46,22 +46,48 @@ function getBrandTag(strategyKey) {
   return map[strategyKey] || '⚡ XNOW';
 }
 
-// 增强图片 Prompt
-function enhancePrompt(prompt, layout, aspectRatio) {
+// 增强图片 Prompt（含镜头语言和氛围）
+function enhancePrompt(prompt, layout, shotType, cameraMove, mood) {
   const base = prompt.trim();
-  // 根据布局优化生图指导
+  const parts = [base];
+
+  // 镜头类型
+  if (shotType === 'close_up') parts.push('close-up shot, focus on face/expression, shallow depth of field');
+  else if (shotType === 'medium') parts.push('medium shot, waist-up framing');
+  else if (shotType === 'wide') parts.push('wide shot, full scene, environmental context');
+  else if (shotType === 'detail') parts.push('extreme close-up, macro detail, text or object focused');
+
+  // 运镜提示
+  if (cameraMove === 'push') parts.push('dolly zoom effect, dramatic forward perspective');
+  else if (cameraMove === 'pull') parts.push('pulling back, revealing wider context');
+  else if (cameraMove === 'pan') parts.push('horizontal panning motion, sweeping view');
+  else if (cameraMove === 'follow') parts.push('tracking shot, following subject movement');
+  else if (cameraMove === 'tilt_up' || cameraMove === 'tilt_down') parts.push('vertical tilt, dramatic angle shift');
+
+  // 氛围
+  if (mood === 'urgent') parts.push('high tension atmosphere, dramatic lighting, high contrast');
+  else if (mood === 'hopeful') parts.push('warm golden light, optimistic atmosphere, bright');
+  else if (mood === 'trust') parts.push('warm neutral lighting, professional setting, credible');
+  else if (mood === 'excited') parts.push('vibrant colors, energetic composition, dynamic');
+  else if (mood === 'curious') parts.push('intriguing composition, mystery lighting, selective focus');
+  else if (mood === 'surprised') parts.push('wide-eyed expression, dramatic reveal lighting');
+
+  // 布局
   if (layout === 'landscape') {
-    return `${base}, horizontal composition, wide shot, professional marketing visual, clean background, photorealistic`;
+    parts.push('horizontal composition, wide aspect, professional marketing visual');
+  } else {
+    parts.push('vertical composition for social media story, photorealistic, natural lighting');
   }
-  return `${base}, vertical composition for social media story, photorealistic, natural lighting, vibrant professional quality`;
+
+  return parts.join(', ');
 }
 
-async function fetchAIImage(prompt, kolorsSize, layout) {
+async function fetchAIImage(prompt, kolorsSize, layout, shotType, cameraMove, mood) {
   const key = process.env.SILICONFLOW_API_KEY;
   if (!key) throw new Error('no key');
   const resp = await axios.post('https://api.siliconflow.cn/v1/images/generations', {
     model: 'Kwai-Kolors/Kolors',
-    prompt: enhancePrompt(prompt, layout),
+    prompt: enhancePrompt(prompt, layout, shotType, cameraMove, mood),
     image_size: kolorsSize, batch_size: 1, guidance_scale: 7.5,
   }, { headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 });
   const url = resp.data?.images?.[0]?.url || resp.data?.data?.[0]?.url;
@@ -323,12 +349,12 @@ function wrapText(ctx, text, maxW) {
 }
 
 // === 导出 ===
-export async function generateImage({ prompt, width=1080, height=1920, seed, index=0, title, subtitle, tags, points }) {
+export async function generateImage({ prompt, width=1080, height=1920, seed, index=0, title, subtitle, tags, points, shotType, cameraMove, mood }) {
   const kolorsSize = toKolorsSize(width, height);
   const layout = getLayout(width, height);
   try {
     console.log(`  🤖 底图(${kolorsSize}): ${(prompt||'').substring(0,40)}...`);
-    const base = await fetchAIImage(prompt, kolorsSize, layout);
+    const base = await fetchAIImage(prompt, kolorsSize, layout, shotType, cameraMove, mood);
     console.log(`  ✍️ 叠加...`);
     return await overlayText(base, { width, height, title, subtitle, tags, index, points });
   } catch (err) {

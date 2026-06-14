@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { pickStrategy } from './strategy.js';
 import { trackDeepSeek } from './cost.js';
-import { isDuplicate } from './dedup.js';
+import { isDuplicate, saveContent } from './dedup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -172,9 +172,10 @@ async function generateWithDedup(type) {
       continue;
     }
 
-    // 导入去重模块保存标题
+    // 导入去重模块保存标题 + 完整内容
     const { saveTitle } = await import('./dedup.js');
     saveTitle(title, strategy.key);
+    saveContent(content, strategy.key);
 
     return { ...content, strategy };
   }

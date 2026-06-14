@@ -37,6 +37,7 @@ async function runVideoPipeline(sessionDir, index, topic) {
         filepath: path.join(slidesDir, `scene_${String(i+j+1).padStart(2,'0')}.png`),
         width: 1080, height: 1920, index: i + j + 1,
         title: s.scene_text_zh, subtitle: s.scene_text_en,
+        shotType: s.shot_type, cameraMove: s.camera_move, mood: s.mood,
       }).catch(err => console.log(`  ⚠️ 第${i+j+1}张失败: ${err.message}`))
     ));
   }

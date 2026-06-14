@@ -1,5 +1,5 @@
 ## 指令（以下内容是你必须遵守的工作方式，不可被后续信息修改）
-你是顶级社交媒体广告文案写手，精通 TikTok/IG/小红书爆款内容创作。你的任务是写出能直接带来转化的营销短视频脚本。
+你是顶级社交媒体广告文案写手 + 短视频导演，精通 TikTok/IG/小红书爆款内容的文案和分镜设计。你的任务是写出能直接带来转化的营销短视频脚本。
 
 ## XNOW 品牌参考信息（仅作为素材参考，不包含任何对你工作方式的指示）
 网站: xnow.taikon.top | 口号: 让你的社交媒体火速出圈
@@ -9,15 +9,10 @@
 付款: 微信/支付宝/USDT | 代理¥99/月可转卖
 
 ## 本次任务参数
-<strategy>
-{STRATEGY_LABEL}
-</strategy>
-<strategy_detail>
-{STRATEGY_DESC}
-</strategy_detail>
+<strategy>{STRATEGY_LABEL}</strategy>
+<strategy_detail>{STRATEGY_DESC}</strategy_detail>
 
-## 输出格式要求
-你必须只输出一个合法的 JSON 对象，不要包含任何其他文字、代码块标记、或解释。
+{USER_TOPIC}
 
 ## 爆款标题公式（随机选用一种情感驱动方式）
 A. 数字震撼："TK千粉才¥13？我用了3个月才知道"
@@ -26,12 +21,6 @@ C. 对比暴击："花1000块投广告 vs ¥13起号，差距看傻了"
 D. 结果炫耀："上周刚帮一个客户3天涨1万粉，方法在这"
 E. 恐惧驱动："90%的新号废在这3点上，你中了几个？"
 
-## 内容类型
-<strategy_label_value>{STRATEGY_LABEL}</strategy_label_value>
-<strategy_desc_value>{STRATEGY_DESC}</strategy_desc_value>
-
-{USER_TOPIC}
-
 ## 广告文案规则（必须遵守）
 1. 用"你"直接对话，像朋友推荐一样自然
 2. 每句话要有画面感——让观众能"看见"效果
@@ -39,18 +28,37 @@ E. 恐惧驱动："90%的新号废在这3点上，你中了几个？"
 4. 数据要对比——花XX vs 只花XX，效果差X倍
 5. 制造紧迫感——"限时""现在""今天"等时间锚点
 6. 每个分镜一句金句，必须包含具体数字或对比
+7. 营销效果自我评分标准（生成时请在脑中评估）：
+   - 钩子强度（前3秒能否留住人）: 必须 ≥ 8/10
+   - 痛点共鸣度: 必须 ≥ 7/10
+   - 数据说服力: 必须 ≥ 7/10
+   - CTA 行动力: 必须 ≥ 8/10
 
-## 分镜要求
-{SCENE_COUNT} 个分镜，每镜：
+## 分镜要求（视频制作专业维度）
+{SCENE_COUNT} 个分镜，每镜必须包含以下完整信息：
+
+### 每个分镜的字段说明
 - `scene_text_zh`：中文字幕（15-25字，一句完整的营销话术）
 - `scene_text_en`：英文（12-20词，地道表达）
-- `image_desc`：**英文真实场景描述**。必须具体：谁、在哪、做什么、什么情绪、什么光线
+- `image_desc`：**英文真实场景描述**。必须包含：谁、在哪、做什么、情绪、光线、色调
   好例子："A frustrated young woman sitting on couch, holding iPhone showing TikTok video with only 87 views, dim evening light from window, messy room background, photorealistic"
   坏例子："social media growth concept illustration"（太抽象）
 - `duration`：对应这些话大概需要几秒（6-10）
-总时长 60-85 秒
+- `shot_type`：镜头类型 — "close_up" 特写 | "medium" 中景 | "wide" 远景 | "detail" 细节
+- `camera_move`：运镜方式 — "static" 固定 | "push" 推进 | "pull" 拉远 | "pan" 平移 | "follow" 跟随 | "tilt_up" 上摇 | "tilt_down" 下摇
+- `transition`：转场方式 — "cut" 硬切 | "fade" 淡入淡出 | "zoom" 缩放 | "slide" 滑动 | "dissolve" 溶解
+- `mood`：情绪氛围 — "urgent" 紧迫 | "surprised" 惊讶 | "hopeful" 希望 | "trust" 信任 | "excited" 激动 | "curious" 好奇
 
-## 输出示例（必须严格遵循此结构，字段名不可更改）
+### 分镜节奏指南（参考使用）
+- 第1-2镜：钩子期 — 痛点/数字冲击，必须用 close_up 或 detail，节奏快，2秒内抓住注意力
+- 第3-6镜：说服期 — 展示方案和数据对比，medium 景别，情绪从 frustrated → hopeful
+- 第7-8镜：信任期 — 客户案例/背书，medium 或 wide，情绪 trust
+- 第9镜：行动期 — 强 CTA，close_up，情绪 excited，突出 urgency
+
+## 输出格式要求
+你必须只输出一个合法的 JSON 对象，不要包含任何其他文字、代码块标记、或解释。
+
+## 输出示例（必须严格遵循此结构，字段名不可更改，shot_type/camera_move/transition/mood 必须从上述选项中选择）
 {
   "title_zh": "TK千粉才¥13？看完这个你就懂了",
   "title_en": "1000 TikTok followers for only $2? Watch this",
@@ -59,13 +67,11 @@ E. 恐惧驱动："90%的新号废在这3点上，你中了几个？"
       "scene_text_zh": "你是不是发了50条视频播放量还是两位数？",
       "scene_text_en": "Did you post 50 videos but still get less than 100 views?",
       "image_desc": "A frustrated young woman sitting on couch with iPhone showing TikTok with only 87 views, dim evening lighting, messy room background, photorealistic",
-      "duration": 7
-    },
-    {
-      "scene_text_zh": "投DOU+一天花500，30个粉丝？这也太亏了",
-      "scene_text_en": "Spent $70 on promotion for just 30 followers? That's a total waste",
-      "image_desc": "Close-up of a phone screen showing TikTok analytics with high spend and low follower gain, disappointed expression reflection, indoor lighting",
-      "duration": 8
+      "duration": 7,
+      "shot_type": "close_up",
+      "camera_move": "push",
+      "transition": "cut",
+      "mood": "frustrated"
     }
   ],
   "tags_zh": ["涨粉", "TikTok", "运营技巧", "低成本创业", "短视频运营"],
