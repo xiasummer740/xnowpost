@@ -7,21 +7,21 @@
       <div v-for="(job, i) in jobs" :key="job.id" class="alarm-card" :class="{ disabled: !job.enabled }">
         <div class="alarm-left">
           <label class="toggle-switch">
-            <input type="checkbox" v-model="job.enabled" @change="autoSave" />
+            <input type="checkbox" v-model="job.enabled" />
             <span class="toggle-slider"></span>
           </label>
         </div>
         <div class="alarm-body">
           <div class="alarm-time-row">
-            <input type="time" v-model="job.time" class="time-input" @change="autoSave" />
-            <select v-model="job.mode" class="mode-select" @change="autoSave">
+            <input type="time" v-model="job.time" class="time-input" />
+            <select v-model="job.mode" class="mode-select">
               <option value="auto">视频+图文</option>
               <option value="video">仅视频</option>
               <option value="post">仅图文</option>
               <option value="collect">数据采集+日报</option>
             </select>
           </div>
-          <input v-model="job.label" class="label-input" placeholder="闹钟名称" @change="autoSave" />
+          <input v-model="job.label" class="label-input" placeholder="闹钟名称" />
         </div>
         <div class="alarm-right">
           <button class="btn-delete" @click="removeJob(i)" title="删除">✕</button>
@@ -55,7 +55,6 @@ import { ref, onMounted } from 'vue';
 const jobs = ref([]);
 const saving = ref(false);
 const saved = ref(false);
-let timer = null;
 
 async function load() {
   jobs.value = await window.xnowpost.getSchedules();
@@ -83,32 +82,24 @@ function addJob() {
 
 function removeJob(i) {
   jobs.value.splice(i, 1);
-  autoSave();
 }
 
-function autoSave() {
-  // 自动保存带防抖
-  if (timer) clearTimeout(timer);
-  timer = setTimeout(() => save(true), 800);
-}
-
-async function save(silent = false) {
+async function save() {
   saving.value = true;
   try {
     const result = await window.xnowpost.saveSchedules(jobs.value);
     if (!result || !result.ok) {
       console.error('保存失败:', result?.message || '未知错误');
-      if (!silent) alert('保存失败: ' + (result?.message || 'IPC 调用异常'));
+      alert('保存失败: ' + (result?.message || '请检查控制台'));
+    } else {
+      saved.value = true;
+      setTimeout(() => saved.value = false, 3000);
     }
   } catch (err) {
     console.error('保存定时任务异常:', err);
-    if (!silent) alert('保存异常: ' + err.message);
+    alert('保存异常: ' + err.message);
   } finally {
     saving.value = false;
-  }
-  if (!silent) {
-    saved.value = true;
-    setTimeout(() => saved.value = false, 3000);
   }
 }
 
