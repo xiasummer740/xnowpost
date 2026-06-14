@@ -122,27 +122,28 @@ function drawPortrait(ctx, w, h, title, subtitle, points, index, tags) {
     ctx.fillText(`${index}/4`, w - 36, Math.round(h*0.06) + tagH*0.66);
   }
 
-  // 主标题 (描边增强)
+  // 主标题 (描边增强，字号缩小确保不溢出)
   if (title) {
-    const ts = Math.round(h * 0.058);
+    const ts = Math.round(h * 0.042);
     ctx.font = `bold ${ts}px ${FONT}`; ctx.textAlign = 'center';
-    const lines = wrapText(ctx, title, w * 0.78);
-    const lh = ts * 1.4, sy = h * 0.26;
+    const maxW = w * 0.82;
+    const lines = wrapText(ctx, title, maxW);
+    const lh = ts * 1.35, sy = h * 0.24;
     lines.slice(0, 3).forEach((l, i) => {
       const y = sy + i * lh;
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = ts * 0.14; ctx.strokeText(l, w/2, y);
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = ts * 0.12; ctx.strokeText(l, w/2, y);
       ctx.fillStyle = BRAND.white; ctx.fillText(l, w/2, y);
     });
   }
 
   // 卖点卡片
   if (points?.length) {
-    const pSize = Math.round(h * 0.028);
+    const pSize = Math.round(h * 0.024);
     ctx.font = `bold ${pSize}px ${FONT}`; ctx.textAlign = 'center';
     const icons = ['💎','⚡','🔥','🎯'];
     const valid = points.filter(Boolean).slice(0, 4);
     const cardW = w * 0.82, cardX = (w - cardW) / 2;
-    const cardY = h * 0.56, cardH = valid.length * pSize * 1.8 + pSize;
+    const cardY = h * 0.52, cardH = valid.length * pSize * 1.8 + pSize;
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     roundRect(ctx, cardX, cardY, cardW, cardH, 14); ctx.fill();
     ctx.fillStyle = BRAND.orange; ctx.fillRect(cardX + 16, cardY, cardW - 32, 2);
@@ -153,15 +154,15 @@ function drawPortrait(ctx, w, h, title, subtitle, points, index, tags) {
     });
   }
 
-  // 软CTA (68% 位置)
-  const softY = h * 0.68;
-  const softSize = Math.round(h * 0.024);
+  // 软CTA (64% 位置)
+  const softY = h * 0.64;
+  const softSize = Math.round(h * 0.02);
   ctx.font = `${softSize}px ${FONT}`; ctx.textAlign = 'center';
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
   ctx.fillText('👇 想知道具体价格？继续往下看', w/2, softY);
 
-  // 硬CTA 按钮 (82% 位置)
-  const ctaY = h * 0.82, ctaSize = Math.round(h * 0.028);
+  // 硬CTA 按钮 (78% 位置)
+  const ctaY = h * 0.78, ctaSize = Math.round(h * 0.024);
   ctx.font = `bold ${ctaSize}px ${FONT}`;
   const ctaText = '🔥 立即注册 · xnow.taikon.top';
   const ctaW = ctx.measureText(ctaText).width + 50, ctaH = ctaSize * 2.2;
@@ -203,12 +204,13 @@ function drawLandscape(ctx, w, h, title, subtitle, points, index, tags) {
   ctx.fillStyle = BRAND.dark; ctx.textAlign = 'left';
   ctx.fillText(getBrandTag(tags?.[0]), splitX + 34, 30 + tagH*0.66);
 
-  // 标题 (右侧)
+  // 标题 (右侧，字号缩小)
   if (title) {
-    const ts = Math.round(h * 0.07);
+    const ts = Math.round(h * 0.055);
     ctx.font = `bold ${ts}px ${FONT}`; ctx.textAlign = 'left';
-    const lines = wrapText(ctx, title, (w - splitX) * 0.82);
-    const lh = ts * 1.35, sy = h * 0.22;
+    const maxW = (w - splitX) * 0.82;
+    const lines = wrapText(ctx, title, maxW);
+    const lh = ts * 1.35, sy = h * 0.18;
     lines.slice(0, 3).forEach((l, i) => {
       const y = sy + i * lh;
       ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = ts * 0.12; ctx.strokeText(l, splitX + 30, y);
@@ -218,24 +220,24 @@ function drawLandscape(ctx, w, h, title, subtitle, points, index, tags) {
 
   // 卖点 (右侧)
   if (points?.length) {
-    const pSize = Math.round(h * 0.038);
+    const pSize = Math.round(h * 0.03);
     ctx.font = `bold ${pSize}px ${FONT}`; ctx.textAlign = 'left';
     const icons = ['💎','⚡','🔥','🎯'];
     points.filter(Boolean).slice(0, 4).forEach((pt, i) => {
-      const y = h * 0.5 + i * pSize * 1.8;
+      const y = h * 0.45 + i * pSize * 1.8;
       ctx.fillStyle = BRAND.white;
       ctx.fillText(`${icons[i]||'✅'}  ${pt}`, splitX + 30, y);
     });
   }
 
   // CTA 按钮 (右侧底部)
-  const ctaSize = Math.round(h * 0.038);
+  const ctaSize = Math.round(h * 0.03);
   ctx.font = `bold ${ctaSize}px ${FONT}`; ctx.textAlign = 'left';
   ctx.fillStyle = BRAND.orange;
   const ctaW = Math.round((w - splitX) * 0.75), ctaH = ctaSize * 2;
-  roundRect(ctx, splitX + 30, h - ctaH - 40, ctaW, ctaH, ctaH/2); ctx.fill();
+  roundRect(ctx, splitX + 30, h - ctaH - 30, ctaW, ctaH, ctaH/2); ctx.fill();
   ctx.fillStyle = BRAND.dark;
-  ctx.fillText('🔥 立即注册 xnow.taikon.top', splitX + 50, h - 40 - ctaH*0.4);
+  ctx.fillText('🔥 立即注册 xnow.taikon.top', splitX + 50, h - 30 - ctaH*0.4);
 
   // 底部
   ctx.font = `${Math.round(h*0.022)}px ${FONT}`;
@@ -290,20 +292,20 @@ function generateWithCanvas(opts) {
     ctx.fillStyle = BRAND.orange; ctx.fillRect(splitX, 0, 4, height);
 
     if (title) {
-      const ts = Math.round(height * 0.07);
+      const ts = Math.round(height * 0.055);
       ctx.font = `bold ${ts}px ${FONT}`; ctx.textAlign = 'left';
       const lines = wrapText(ctx, title, (width-splitX)*0.82);
       lines.slice(0,3).forEach((l,i) => {
         ctx.fillStyle = BRAND.white;
-        ctx.fillText(l, splitX+30, height*0.25 + i*ts*1.35);
+        ctx.fillText(l, splitX+30, height*0.2 + i*ts*1.35);
       });
     }
   } else {
     // 竖屏 fallback
     if (title) {
-      const ts = Math.round(height * 0.058);
+      const ts = Math.round(height * 0.042);
       ctx.font = `bold ${ts}px ${FONT}`; ctx.textAlign = 'center';
-      const lines = wrapText(ctx, title, width*0.78);
+      const lines = wrapText(ctx, title, width*0.82);
       lines.slice(0,3).forEach((l,i) => {
         ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = ts*0.12;
         ctx.strokeText(l, width/2, height*0.3 + i*ts*1.4);
@@ -314,11 +316,11 @@ function generateWithCanvas(opts) {
 
   // 统一 CTA
   ctx.fillStyle = BRAND.orange;
-  const ctaH = Math.round(height*0.06);
-  roundRect(ctx, (width-300)/2, height - ctaH - 40, 300, ctaH, ctaH/2); ctx.fill();
-  ctx.font = `bold ${Math.round(ctaH*0.5)}px ${FONT}`; ctx.textAlign = 'center';
+  const ctaH2 = Math.round(height*0.05);
+  roundRect(ctx, (width-260)/2, height - ctaH2 - 30, 260, ctaH2, ctaH2/2); ctx.fill();
+  ctx.font = `bold ${Math.round(ctaH2*0.48)}px ${FONT}`; ctx.textAlign = 'center';
   ctx.fillStyle = BRAND.dark;
-  ctx.fillText('🔥 立即注册 xnow.taikon.top', width/2, height - 40 - ctaH*0.4);
+  ctx.fillText('🔥 立即注册 xnow.taikon.top', width/2, height - 30 - ctaH2*0.4);
 
   return canvas.toBuffer('image/png');
 }
@@ -334,15 +336,18 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 function wrapText(ctx, text, maxW) {
+  if (!text) return [];
   const lines = []; let line = '';
-  // 英文按词切，中文按字切
-  const isEnglish = /^[a-zA-Z]/.test(text);
-  const tokens = isEnglish ? text.split(/\s+/) : text.split('');
-  for (const t of tokens) {
-    const sep = isEnglish ? ' ' : '';
-    const test = line ? line + sep + t : t;
-    if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = t; }
-    else line = test;
+  // 统一按字符切分（不管中英文），遇到空格保留作为换行机会
+  const chars = [...text];
+  for (const c of chars) {
+    const test = line + c;
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = c === ' ' ? '' : c;
+    } else {
+      line = test;
+    }
   }
   if (line) lines.push(line);
   return lines;
