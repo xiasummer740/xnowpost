@@ -39,7 +39,7 @@ E. 恐惧驱动："90%的新号废在这3点上，你中了几个？"
 
 ### 每个分镜的字段说明
 - `scene_text_zh`：中文字幕（15-25字，一句完整的营销话术）
-- `scene_text_en`：英文（12-20词，地道表达）
+- `scene_text_en`：英文（8-15词，简短地道，不超过 50 字符）
 - `image_desc`：**英文真实场景描述，必须与 scene_text_zh 完全匹配**。包含：谁、在哪、做什么、情绪、光线、色调，**并且必须把文案中的数字/价格/数据可视化为画面中的具体元素**（如手机屏幕显示数字、价格标签、图表曲线等）
   好例子（文案说"¥13"→ 图片必须出现价格数字）：
   "Close-up of smartphone screen showing '¥13' pricing page of XNOW service, finger pointing at the price, bright screen contrasted with dark room background, dramatic lighting, photorealistic"

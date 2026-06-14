@@ -14,17 +14,37 @@ function formatAssTime(s) {
 
 // durations: 每段真实语音时长（秒）
 function createAss(scenes, outPath, w, h, lang, durations) {
-  const fontSize = Math.round(h >= 1920 ? 48 : 36);
-  let ass = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${w}\nPlayResY: ${h}\nWrapStyle: 2\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: ZH,Microsoft YaHei,${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,3,2,0,2,20,20,${Math.round(h*0.07)},1\nStyle: EN,Arial,${fontSize-4},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,3,1,0,2,20,20,${Math.round(h*0.11)},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+  // 竖屏字体比横屏大，但都不能太大避免溢出
+  const isPortrait = w < h;
+  const fontSize = Math.round(isPortrait ? 36 : 28);
+  // 左右边距给足，防止长文本戳出屏幕
+  const marginLR = Math.round(w * 0.08);  // 8% 画面宽度
+  // 底部边距
+  const marginV = Math.round(h * 0.06);
+
+  let ass = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${w}\nPlayResY: ${h}\nScaledBorderAndShadow: yes\nWrapStyle: 2\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: ZH,Microsoft YaHei,${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,3,3,1,2,${marginLR},${marginLR},${marginV},1\nStyle: EN,Arial,${Math.round(fontSize * 0.85)},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,3,2,1,2,${marginLR},${marginLR},${Math.round(marginV * 0.8)},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
 
   let t = 0;
   for (let i = 0; i < scenes.length; i++) {
     const s = scenes[i];
-    // 用真实语音时长，fallback 到 AI 指定的 duration
     const d = (durations && durations[i]) || s.duration || 7;
     const se = formatAssTime(t), ee = formatAssTime(t + d);
-    if (s.scene_text_zh && /zh|cn/.test(lang)) ass += `Dialogue: 0,${se},${ee},ZH,,0,0,0,,${(s.scene_text_zh||'').replace(/[&{}]/g,'')}\n`;
-    if (s.scene_text_en && /en/.test(lang)) ass += `Dialogue: 0,${se},${ee},EN,,0,0,0,,${(s.scene_text_en||'').replace(/[&{}]/g,'')}\n`;
+    // 对过长的文本做裁剪，避免一行超出屏幕
+    let zhText = (s.scene_text_zh || '').replace(/[&{}]/g, '');
+    let enText = (s.scene_text_en || '').replace(/[&{}]/g, '');
+    // 英文超过 60 字符自动插入换行
+    if (enText.length > 60) {
+      const words = enText.split(' ');
+      let line = '', result = [];
+      for (const word of words) {
+        if ((line + ' ' + word).length > 35) { result.push(line); line = word; }
+        else line = line ? line + ' ' + word : word;
+      }
+      if (line) result.push(line);
+      enText = result.join('\\N');
+    }
+    if (zhText && /zh|cn/.test(lang)) ass += `Dialogue: 0,${se},${ee},ZH,,0,0,0,,${zhText}\n`;
+    if (enText && /en/.test(lang)) ass += `Dialogue: 0,${se},${ee},EN,,0,0,0,,${enText}\n`;
     t += d;
   }
   fs.writeFileSync(outPath, ass, 'utf-8');
