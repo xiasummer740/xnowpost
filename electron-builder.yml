@@ -1,0 +1,28 @@
+appId: com.xnowpost.app
+productName: XNOWPost
+directories:
+  output: release
+files:
+  - electron/**/*
+  - dist/**/*
+  - src/index.js
+  - src/notifier.js
+  - src/organizer.js
+  - src/scheduler.js
+  - src/engine/**/*
+  - src/platforms/**/*
+  - src/collector/**/*
+  - src/analyzer/**/*
+  - assets/**/*
+  - package.json
+extraResources:
+  - from: config
+    to: config
+asarUnpack:
+  - "**/*.node"
+win:
+  target: nsis
+  icon: assets/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

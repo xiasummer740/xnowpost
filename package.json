@@ -1,0 +1,40 @@
+{
+  "name": "xnowpost",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "XNOWPost 内容营销自动化引擎",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "dev:engine": "node src/index.js",
+    "dev:engine:video": "node src/index.js --video-only",
+    "dev:engine:post": "node src/index.js --post-only",
+    "build": "vite build",
+    "package": "electron-builder",
+    "collect": "node src/collector/index.js",
+    "report": "node src/analyzer/daily.js",
+    "test": "node --test tests/unit/*.test.js",
+    "test:watch": "node --test --watch tests/unit/*.test.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
+    "axios": "^1.7.0",
+    "better-sqlite3": "^11.6.0",
+    "dotenv": "^16.4.0",
+    "form-data": "^4.0.0",
+    "fs-extra": "^11.2.0",
+    "node-cron": "^3.0.3",
+    "openai": "^4.70.0",
+    "pinia": "^2.2.0",
+    "playwright": "^1.48.0",
+    "vant": "^4.9.0",
+    "vue": "^3.5.0",
+    "vue-router": "^4.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "vite": "^6.0.0"
+  }
+}

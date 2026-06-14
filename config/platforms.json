@@ -1,0 +1,44 @@
+{
+  "tiktok": {
+    "name": "TikTok",
+    "video": { "width": 1080, "height": 1920, "aspect": "9:16", "duration": [40, 60] },
+    "post": { "width": 1080, "height": 1080, "aspect": "1:1" },
+    "subtitleLang": "cn+en",
+    "emoji": "🎵"
+  },
+  "xiaohongshu": {
+    "name": "小红书",
+    "video": { "width": 1080, "height": 1440, "aspect": "3:4", "duration": [40, 60] },
+    "post": { "width": 1080, "height": 1080, "aspect": "1:1" },
+    "subtitleLang": "cn+en",
+    "emoji": "📕"
+  },
+  "instagram": {
+    "name": "Instagram",
+    "video": { "width": 1080, "height": 1920, "aspect": "9:16", "duration": [40, 60] },
+    "post": { "width": 1080, "height": 1080, "aspect": "1:1" },
+    "subtitleLang": "en+cn",
+    "emoji": "📸"
+  },
+  "youtube": {
+    "name": "YouTube",
+    "video": { "width": 1920, "height": 1080, "aspect": "16:9", "duration": [60, 90] },
+    "post": { "width": 1920, "height": 1080, "aspect": "16:9" },
+    "subtitleLang": "en",
+    "emoji": "▶️"
+  },
+  "facebook": {
+    "name": "Facebook",
+    "video": { "width": 1920, "height": 1080, "aspect": "16:9", "duration": [60, 90] },
+    "post": { "width": 1920, "height": 1080, "aspect": "16:9" },
+    "subtitleLang": "en",
+    "emoji": "📘"
+  },
+  "x": {
+    "name": "X",
+    "video": { "width": 1920, "height": 1080, "aspect": "16:9", "duration": [40, 60] },
+    "post": { "width": 1920, "height": 1080, "aspect": "16:9" },
+    "subtitleLang": "en",
+    "emoji": "𝕏"
+  }
+}

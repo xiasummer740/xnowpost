@@ -1,0 +1,35 @@
+{
+  "deepseek": {
+    "model": "deepseek-chat",
+    "temperature": 0.8,
+    "max_tokens": 4096
+  },
+  "image": {
+    "width": 1080,
+    "height": 1920,
+    "model": "flux",
+    "retries": 3,
+    "retryDelay": 2000
+  },
+  "video": {
+    "scenes": 9,
+    "minDuration": 6,
+    "maxDuration": 10,
+    "totalDuration": 70,
+    "bgmVolume": 0.15,
+    "fadeIn": 0.5,
+    "fadeOut": 1.0
+  },
+  "voice": {
+    "zh": { "voice": "zh-CN-XiaoxiaoNeural", "rate": "+10%" },
+    "en": { "voice": "en-US-JennyNeural", "rate": "+10%" }
+  },
+  "telegram": {
+    "parseMode": "HTML",
+    "disableNotification": false
+  },
+  "dailyLimit": {
+    "videos": 2,
+    "posts": 1
+  }
+}

@@ -1,0 +1,17 @@
+node_modules/
+output/
+data/*.db
+logs/
+.env
+config/user.json
+backups/
+storage/
+resource/
+*.mp4
+*.mp3
+*.png
+!assets/**/*.png
+!assets/**/*.mp3
+dist/
+release/
+.firecrawl/
