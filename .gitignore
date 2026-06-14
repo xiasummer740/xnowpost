@@ -15,3 +15,4 @@ resource/
 dist/
 release/
 .firecrawl/
+*.zip
