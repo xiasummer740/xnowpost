@@ -139,6 +139,9 @@ function createWindow() {
 
 // === IPC 处理器 ===
 function setupIPC() {
+  // 诊断
+  ipcMain.handle('ping', () => ({ ok: true, time: Date.now() }));
+
   // 获取配置
   ipcMain.handle('config:get', () => {
     return loadConfig();
@@ -146,9 +149,14 @@ function setupIPC() {
 
   // 保存配置
   ipcMain.handle('config:save', async (event, config) => {
-    await saveConfig(config);
-    addLog('success', '配置已保存');
-    return { ok: true };
+    try {
+      await saveConfig(config);
+      addLog('success', '配置已保存');
+      return { ok: true };
+    } catch (e) {
+      addLog('error', '保存配置失败: ' + e.message);
+      return { ok: false, message: e.message };
+    }
   });
 
   // 引擎执行队列

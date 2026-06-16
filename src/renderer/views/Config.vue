@@ -95,8 +95,12 @@
       <input v-model="form.cdpEndpoint" placeholder="http://localhost:9222" />
     </div>
 
+    <div class="error-banner" v-if="errorMsg">{{ errorMsg }}</div>
+
     <div class="btn-row">
-      <button class="btn btn-primary" @click="save">💾 保存配置</button>
+      <button class="btn btn-primary" @click="save" :disabled="saving">
+        {{ saving ? '⏳ 保存中...' : '💾 保存配置' }}
+      </button>
     </div>
   </div>
 </template>
@@ -117,6 +121,8 @@ const form = reactive({
 const testing = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false });
 const results = reactive({ deepseek: null, siliconflow: null, pexels: null, tg: null });
 const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false });
+const saving = ref(false);
+const errorMsg = ref('');
 
 onMounted(async () => {
   const config = await window.xnowpost.getConfig();
@@ -124,14 +130,26 @@ onMounted(async () => {
 });
 
 async function save() {
-  await store.saveConfig({ ...form });
+  saving.value = true;
+  errorMsg.value = '';
+  try {
+    await store.saveConfig({ ...form });
+  } catch (e) {
+    errorMsg.value = '保存失败: ' + (e.message || e);
+  }
+  saving.value = false;
 }
 
 async function test(type) {
   testing[type] = true;
   results[type] = null;
-  await store.saveConfig({ ...form });
-  results[type] = await window.xnowpost.testApi(type);
+  errorMsg.value = '';
+  try {
+    await store.saveConfig({ ...form });
+    results[type] = await window.xnowpost.testApi(type);
+  } catch (e) {
+    results[type] = { ok: false, message: 'IPC 调用失败: ' + (e.message || e) };
+  }
   testing[type] = false;
 }
 </script>
@@ -176,4 +194,5 @@ h2 { font-size: 24px; margin-bottom: 24px; }
 }
 .result-msg.success { background: #064e3b22; color: #22c55e; border: 1px solid #064e3b; }
 .result-msg.error { background: #7f1d1d22; color: #ef4444; border: 1px solid #7f1d1d; }
+.error-banner { background: #7f1d1d44; color: #fca5a5; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; border: 1px solid #7f1d1d; max-width: 600px; }
 </style>
