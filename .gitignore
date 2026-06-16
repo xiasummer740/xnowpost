@@ -4,6 +4,7 @@ data/*.db
 logs/
 .env
 config/user.json
+config/schedule.json
 backups/
 storage/
 resource/

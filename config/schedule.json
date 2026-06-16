@@ -1,5 +1,0 @@
-[
-  { "id": 1, "time": "07:00", "mode": "auto",    "label": "早间内容（视频+图文）", "enabled": true },
-  { "id": 2, "time": "19:00", "mode": "video",   "label": "晚间视频",             "enabled": true },
-  { "id": 3, "time": "21:00", "mode": "collect", "label": "数据采集 + 日报",      "enabled": false }
-]
