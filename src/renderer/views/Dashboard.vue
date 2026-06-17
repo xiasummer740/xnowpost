@@ -173,8 +173,16 @@ const recentLogs = computed(() => store.logs.slice(-5));
 const displayLogs = computed(() => store.logs.slice(-20).reverse());
 
 // 非运行时自动折叠日志
-watch(() => store.status.running, (running) => {
-  if (!running) logExpanded.value = false;
+watch(() => store.status.running, (running, was) => {
+  // 引擎刚停下（从 true→false）且最后一条日志是错误 → 展开让用户看见
+  if (was && !running) {
+    const last = store.logs[store.logs.length - 1];
+    if (last && last.type === 'error') {
+      logExpanded.value = true;
+    } else {
+      logExpanded.value = false;
+    }
+  }
 });
 
 async function loadThumbnails(items) {

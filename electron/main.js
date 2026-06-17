@@ -165,12 +165,14 @@ function setupIPC() {
     addLog('info', `🚀 引擎启动 — 模式: ${mode}${topic ? ` | 主题: ${topic}` : ''}`);
 
     return new Promise((resolve) => {
-      // 引擎源文件：安装版从 asar 解包到 app.asar.unpacked/src/
-      const engineCwd = app.isPackaged
+      // 引擎脚本路径：安装版用解包目录，开发版用项目目录
+      const engineRoot = app.isPackaged
         ? path.join(process.resourcesPath, 'app.asar.unpacked')
         : ROOT;
-      const proc = spawn('node', ['src/index.js', ...args], {
-        cwd: engineCwd,
+      const scriptPath = path.join(engineRoot, 'src', 'index.js');
+      addLog('info', `🚀 node ${scriptPath} ${args.join(' ')}`);
+      const proc = spawn(process.execPath, [scriptPath, ...args], {
+        cwd: engineRoot,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 15 * 60 * 1000,
       });
