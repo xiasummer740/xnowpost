@@ -171,10 +171,12 @@ function setupIPC() {
         : ROOT;
       const scriptPath = path.join(engineRoot, 'src', 'index.js');
       addLog('info', `🚀 node ${scriptPath} ${args.join(' ')}`);
+      // ELECTRON_RUN_AS_NODE → 让子进程以纯 Node.js 运行，不走 Chromium/GPU
       const proc = spawn(process.execPath, [scriptPath, ...args], {
         cwd: engineRoot,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 15 * 60 * 1000,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       });
       engineProcess = proc;
       let output = '';
