@@ -2,7 +2,7 @@
   <div class="app-container">
     <aside class="sidebar">
       <div class="logo">
-        <h1>XNOWPost</h1>
+        <h1>XNOWPost <span class="ver">v{{ version }}</span></h1>
         <p>内容营销引擎</p>
       </div>
       <nav>
@@ -36,6 +36,7 @@
 <script setup>
 import { useAppStore } from './stores/app.js';
 import { onMounted } from 'vue';
+import { version } from '../../package.json';
 
 const store = useAppStore();
 
@@ -76,6 +77,15 @@ onMounted(async () => {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   margin: 0;
+}
+.logo .ver {
+  font-size: 11px;
+  font-weight: 600;
+  background: #334155;
+  -webkit-text-fill-color: #94a3b8;
+  padding: 1px 6px;
+  border-radius: 4px;
+  vertical-align: middle;
 }
 .logo p { font-size: 12px; color: #64748b; margin: 4px 0 0; }
 .nav-item {
