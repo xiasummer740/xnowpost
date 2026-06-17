@@ -22,6 +22,7 @@ asarUnpack:
   - "**/*.node"
   - "src/**"
   - "package.json"
+  - "node_modules/**"
 win:
   target: nsis
   # icon: assets/icon.ico（暂无自定义图标，使用 Electron 默认图标）
