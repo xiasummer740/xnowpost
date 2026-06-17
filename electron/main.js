@@ -6,9 +6,11 @@ import { spawn } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+// 数据目录：安装版 → %APPDATA%/xnowpost，开发版 → 项目根目录
+let DATA_DIR = ROOT;
 
 // 配置文件路径
-const USER_CONFIG_PATH = path.join(ROOT, 'config', 'user.json');
+const USER_CONFIG_PATH = () => path.join(DATA_DIR, 'config', 'user.json');
 
 // 默认配置
 const DEFAULT_CONFIG = {
@@ -20,10 +22,6 @@ const DEFAULT_CONFIG = {
   cdpEndpoint: 'http://localhost:9222',
 };
 
-// 日志文件路径
-const LOG_DIR = path.join(ROOT, 'logs');
-const LOG_FILE = path.join(LOG_DIR, `app-${new Date().toISOString().split('T')[0]}.log`);
-
 // 窗口引用
 let mainWindow = null;
 let engineProcess = null;
@@ -34,8 +32,8 @@ let configWriteLock = Promise.resolve();
 
 function loadConfig() {
   try {
-    if (fs.existsSync(USER_CONFIG_PATH)) {
-      return { ...DEFAULT_CONFIG, ...fs.readJsonSync(USER_CONFIG_PATH) };
+    if (fs.existsSync(USER_CONFIG_PATH())) {
+      return { ...DEFAULT_CONFIG, ...fs.readJsonSync(USER_CONFIG_PATH()) };
     }
   } catch (e) {
     console.error('读取配置失败:', e);
@@ -48,8 +46,8 @@ function saveConfig(config) {
   configWriteLock = configWriteLock.then(() => {
     const current = loadConfig();
     const merged = { ...current, ...config };
-    fs.ensureDirSync(path.dirname(USER_CONFIG_PATH));
-    fs.writeJsonSync(USER_CONFIG_PATH, merged, { spaces: 2 });
+    fs.ensureDirSync(path.dirname(USER_CONFIG_PATH()));
+    fs.writeJsonSync(USER_CONFIG_PATH(), merged, { spaces: 2 });
     // 同步到环境变量供引擎使用
     process.env.DEEPSEEK_API_KEY = merged.deepseekApiKey || '';
     process.env.SILICONFLOW_API_KEY = merged.siliconflowApiKey || '';
@@ -62,10 +60,6 @@ function saveConfig(config) {
   return configWriteLock;
 }
 
-// 初始化配置
-const userConfig = loadConfig();
-saveConfig(userConfig);
-
 // === 日志记录（自动脱敏 + 持久化） ===
 function sanitizeLogMessage(msg) {
   return msg.replace(/sk-[a-zA-Z0-9]{10,}/g, 'sk-***');
@@ -73,9 +67,11 @@ function sanitizeLogMessage(msg) {
 
 function writeLogToFile(entry) {
   try {
-    fs.ensureDirSync(LOG_DIR);
+    const logDir = path.join(DATA_DIR, 'logs');
+    const logFile = path.join(logDir, `app-${new Date().toISOString().split('T')[0]}.log`);
+    fs.ensureDirSync(logDir);
     const line = `[${entry.time}] [${entry.type.toUpperCase()}] ${entry.message}\n`;
-    fs.appendFileSync(LOG_FILE, line);
+    fs.appendFileSync(logFile, line);
   } catch (e) { /* 日志文件写失败不影响主流程 */ }
 }
 
@@ -290,7 +286,7 @@ function setupIPC() {
       return historyCache;
     }
 
-    const outputDir = path.join(ROOT, 'output');
+    const outputDir = path.join(DATA_DIR, 'output');
     if (!fs.existsSync(outputDir)) { historyCache = []; historyCacheTime = now; return []; }
 
     const dateDirs = fs.readdirSync(outputDir)
@@ -339,7 +335,7 @@ function setupIPC() {
 
   // 获取最近一次生成费用
   ipcMain.handle('cost:latest', () => {
-    const outputDir = path.join(ROOT, 'output');
+    const outputDir = path.join(DATA_DIR, 'output');
     if (!fs.existsSync(outputDir)) return null;
 
     try {
@@ -416,7 +412,7 @@ function setupIPC() {
 
   // 打开输出目录
   ipcMain.handle('shell:openOutput', () => {
-    shell.openPath(path.join(ROOT, 'output'));
+    shell.openPath(path.join(DATA_DIR, 'output'));
     return { ok: true };
   });
 
@@ -431,7 +427,7 @@ function setupIPC() {
   });
 
   // 定时任务管理
-  const SCHEDULE_FILE = path.join(ROOT, 'config', 'schedule.json');
+  const SCHEDULE_FILE = path.join(DATA_DIR, 'config', 'schedule.json');
 
   ipcMain.handle('schedule:list', () => {
     try {
@@ -461,6 +457,7 @@ function setupIPC() {
         const client = new OpenAI({
           apiKey: config.deepseekApiKey,
           baseURL: 'https://api.deepseek.com',
+          timeout: 10000,
         });
         await client.chat.completions.create({
           model: 'deepseek-chat', max_tokens: 10,
@@ -566,17 +563,17 @@ async function healthCheck() {
 // === 自动备份 ===
 function autoBackup() {
   const today = new Date().toISOString().split('T')[0];
-  const backupDir = path.join(ROOT, 'backups', today);
+  const backupDir = path.join(DATA_DIR, 'backups', today);
   if (fs.existsSync(backupDir)) return; // 今天已备份
 
   try {
     fs.ensureDirSync(backupDir);
     // 备份配置
-    if (fs.existsSync(USER_CONFIG_PATH)) {
-      fs.copyFileSync(USER_CONFIG_PATH, path.join(backupDir, 'user.json'));
+    if (fs.existsSync(USER_CONFIG_PATH())) {
+      fs.copyFileSync(USER_CONFIG_PATH(), path.join(backupDir, 'user.json'));
     }
     // 备份数据库
-    const dbPath = path.resolve(ROOT, 'data', 'analytics.db');
+    const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
     if (fs.existsSync(dbPath)) {
       fs.copyFileSync(dbPath, path.join(backupDir, 'analytics.db'));
     }
@@ -588,6 +585,14 @@ function autoBackup() {
 
 // === 应用生命周期 ===
 app.whenReady().then(async () => {
+  // 安装版：DATA_DIR → userData（%APPDATA%/xnowpost），开发版沿用项目目录
+  if (app.isPackaged) {
+    DATA_DIR = app.getPath('userData');
+  }
+
+  // 初始化配置文件
+  { const cfg = loadConfig(); try { await saveConfig(cfg); } catch {} }
+
   setupIPC();
   createWindow();
   autoBackup();
