@@ -165,8 +165,12 @@ function setupIPC() {
     addLog('info', `🚀 引擎启动 — 模式: ${mode}${topic ? ` | 主题: ${topic}` : ''}`);
 
     return new Promise((resolve) => {
+      // 引擎源文件：安装版从 asar 解包到 app.asar.unpacked/src/
+      const engineCwd = app.isPackaged
+        ? path.join(process.resourcesPath, 'app.asar.unpacked')
+        : ROOT;
       const proc = spawn('node', ['src/index.js', ...args], {
-        cwd: ROOT,
+        cwd: engineCwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 15 * 60 * 1000,
       });

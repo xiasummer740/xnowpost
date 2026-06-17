@@ -27,7 +27,8 @@ export const useAppStore = defineStore('app', {
     },
 
     async saveConfig(config) {
-      await window.xnowpost.saveConfig(config);
+      const res = await window.xnowpost.saveConfig(config);
+      if (!res.ok) throw new Error(res.message || '保存配置失败');
       this.config = { ...config };
       this.status = await window.xnowpost.getEngineStatus();
     },

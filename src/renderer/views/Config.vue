@@ -96,6 +96,7 @@
     </div>
 
     <div class="error-banner" v-if="errorMsg">{{ errorMsg }}</div>
+    <div class="success-banner" v-if="saveMsg">{{ saveMsg }}</div>
 
     <div class="btn-row">
       <button class="btn btn-primary" @click="save" :disabled="saving">
@@ -129,11 +130,16 @@ onMounted(async () => {
   Object.assign(form, config);
 });
 
+const saveMsg = ref('');
+
 async function save() {
   saving.value = true;
   errorMsg.value = '';
+  saveMsg.value = '';
   try {
     await store.saveConfig({ ...form });
+    saveMsg.value = '✅ 配置已保存';
+    setTimeout(() => saveMsg.value = '', 3000);
   } catch (e) {
     errorMsg.value = '保存失败: ' + (e.message || e);
   }
@@ -195,4 +201,5 @@ h2 { font-size: 24px; margin-bottom: 24px; }
 .result-msg.success { background: #064e3b22; color: #22c55e; border: 1px solid #064e3b; }
 .result-msg.error { background: #7f1d1d22; color: #ef4444; border: 1px solid #7f1d1d; }
 .error-banner { background: #7f1d1d44; color: #fca5a5; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; border: 1px solid #7f1d1d; max-width: 600px; }
+.success-banner { background: #064e3b44; color: #22c55e; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; border: 1px solid #064e3b; max-width: 600px; }
 </style>
