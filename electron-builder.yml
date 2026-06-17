@@ -17,7 +17,7 @@ files:
   - package.json
 extraResources:
   - from: config
-    to: config
+    to: app.asar.unpacked/config
 asarUnpack:
   - "**/*.node"
   - "src/**"
