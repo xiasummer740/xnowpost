@@ -1,7 +1,10 @@
 import fs from 'fs-extra';
 import path from 'path';
 
-const OUTPUT_ROOT = path.resolve('output');
+// 允许 Electron 主进程通过环境变量指定输出目录（安装版指向 %APPDATA%/xnowpost/output）
+const OUTPUT_ROOT = process.env.XNOWPOST_DATA_DIR
+  ? path.join(process.env.XNOWPOST_DATA_DIR, 'output')
+  : path.resolve('output');
 
 function todayStr() {
   const d = new Date();

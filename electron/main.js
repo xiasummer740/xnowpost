@@ -176,7 +176,11 @@ function setupIPC() {
         cwd: engineRoot,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 15 * 60 * 1000,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: '1',
+          XNOWPOST_DATA_DIR: DATA_DIR,  // 引擎输出目录与"打开输出目录"按钮一致
+        },
       });
       engineProcess = proc;
       let output = '';
