@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { spawn } from 'child_process';
+import { initUpdater, downloadUpdate, quitAndInstall, checkForUpdates } from './updater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
@@ -586,6 +587,20 @@ function setupIPC() {
     }
   });
 
+  // === 自动更新 ===
+  ipcMain.handle('update:check', () => {
+    checkForUpdates();
+    return { ok: true };
+  });
+  ipcMain.handle('update:download', () => {
+    downloadUpdate();
+    return { ok: true };
+  });
+  ipcMain.handle('update:install', () => {
+    quitAndInstall();
+    return { ok: true };
+  });
+
 function getTodayDir() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -718,6 +733,7 @@ app.whenReady().then(async () => {
 
   setupIPC();
   createWindow();
+  initUpdater(mainWindow);
   autoBackup();
   healthCheck();
   startScheduler();

@@ -37,6 +37,31 @@ contextBridge.exposeInMainWorld('xnowpost', {
   // 采集数据
   getLatestCollect: () => ipcRenderer.invoke('collect:latest'),
 
+  // 自动更新
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  onUpdateAvailable: (callback) => {
+    const listener = (_event, info) => callback(info);
+    ipcRenderer.on('update:available', listener);
+    return () => ipcRenderer.removeListener('update:available', listener);
+  },
+  onUpdateNotAvailable: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('update:not-available', listener);
+    return () => ipcRenderer.removeListener('update:not-available', listener);
+  },
+  onUpdateProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('update:progress', listener);
+    return () => ipcRenderer.removeListener('update:progress', listener);
+  },
+  onUpdateDownloaded: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('update:downloaded', listener);
+    return () => ipcRenderer.removeListener('update:downloaded', listener);
+  },
+
   // 定时任务
   getSchedules: () => ipcRenderer.invoke('schedule:list'),
   saveSchedules: (jobs) => ipcRenderer.invoke('schedule:save', jobs),

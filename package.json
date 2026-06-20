@@ -1,6 +1,6 @@
 {
   "name": "xnowpost",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "type": "module",
   "description": "XNOWPost 内容营销自动化引擎",
   "author": "xiasummer740",
@@ -22,6 +22,7 @@
     "axios": "^1.7.0",
     "better-sqlite3": "^11.6.0",
     "dotenv": "^16.4.0",
+    "electron-updater": "^6.8.9",
     "form-data": "^4.0.0",
     "fs-extra": "^11.2.0",
     "node-cron": "^3.0.3",
