@@ -69,20 +69,23 @@ async function synthOne({ dirPath, outputPath, pkey, config, voicePath, scenes, 
   const concatFile = path.join(dirPath, `concat_${pkey}.txt`);
   fs.writeFileSync(concatFile, concatLines.join('\n'), 'utf-8');
 
-  // FFmpeg 直接输出到最终位置（sessionDir/video.mp4），不经过临时目录
+  // 先输出到 _video 内的临时文件，成功后再 move 到最终位置
+  // 防止进程被杀留下残缺 MP4（moov atom not found）
   const finalOutput = outputPath || path.join(dirPath, `video_${pkey}.mp4`);
+  const tmpOutput = path.join(dirPath, `video_${pkey}_tmp.mp4`);
   const batFile = path.join(dirPath, `_build_${pkey}.bat`);
   const ff = FFMPEG.replace(/\\/g, '/');
   const voiceRel = path.basename(voicePath);
-  const outRel = path.basename(finalOutput);
 
-  const bat = `@echo off\r\ncd /d "${dirPath.replace(/\\/g, '/')}"\r\n"${ff}" -y -f concat -safe 0 -i concat_${pkey}.txt -i ${voiceRel} -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -shortest "${finalOutput.replace(/\\/g, '/')}"\r\n`;
+  const bat = `@echo off\r\ncd /d "${dirPath.replace(/\\/g, '/')}"\r\n"${ff}" -y -f concat -safe 0 -i concat_${pkey}.txt -i ${voiceRel} -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -shortest "${tmpOutput.replace(/\\/g, '/')}"\r\n`;
   fs.writeFileSync(batFile, bat, 'utf-8');
 
   console.log(`  🎥 ${pkey}...`);
   try {
     execSync(`"${batFile}"`, { stdio: 'inherit', windowsHide: true });
-    if (fs.existsSync(finalOutput)) {
+    if (fs.existsSync(tmpOutput)) {
+      // 只在这步才移动到最终位置——进程被杀时临时文件随 _video 一起清理
+      await fs.move(tmpOutput, finalOutput, { overwrite: true });
       console.log(`  ✅ ${path.basename(finalOutput)} (${(fs.statSync(finalOutput).size/1024/1024).toFixed(1)}MB)`);
       return finalOutput;
     }
