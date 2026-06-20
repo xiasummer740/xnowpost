@@ -77,7 +77,9 @@ async function synthOne({ dirPath, outputPath, pkey, config, voicePath, scenes, 
   const ff = FFMPEG.replace(/\\/g, '/');
   const voiceRel = path.basename(voicePath);
 
-  const bat = `@echo off\r\ncd /d "${dirPath.replace(/\\/g, '/')}"\r\n"${ff}" -y -f concat -safe 0 -i concat_${pkey}.txt -i ${voiceRel} -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -shortest "${tmpOutput.replace(/\\/g, '/')}"\r\n`;
+  // 2>nul: 重定向 stderr 到 NUL，防止 Windows 管道缓冲区写阻塞
+  // FFmpeg 输出大量编码日志(~8KB) 超过默认管道缓冲区(4KB) 导致死锁
+  const bat = `@echo off\r\ncd /d "${dirPath.replace(/\\/g, '/')}"\r\n"${ff}" -y -f concat -safe 0 -i concat_${pkey}.txt -i ${voiceRel} -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -shortest "${tmpOutput.replace(/\\/g, '/')}" 2>nul\r\n`;
   fs.writeFileSync(batFile, bat, 'utf-8');
 
   console.log(`  🎥 ${pkey}...`);
