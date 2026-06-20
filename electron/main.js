@@ -9,6 +9,26 @@ import { initUpdater, downloadUpdate, quitAndInstall, checkForUpdates } from './
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 const ROOT = path.resolve(__dirname, '..');
+
+// 全局未捕获异常处理（写入日志文件，防止静默崩溃）
+process.on('uncaughtException', (err) => {
+  const logDir = path.join(ROOT, 'logs');
+  try {
+    fs.ensureDirSync(logDir);
+    fs.appendFileSync(path.join(logDir, 'crash.log'),
+      `[${new Date().toISOString()}] UNCAUGHT: ${err.stack || err.message}\n`);
+  } catch (_) {}
+  console.error('未捕获异常:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  const logDir = path.join(ROOT, 'logs');
+  try {
+    fs.ensureDirSync(logDir);
+    fs.appendFileSync(path.join(logDir, 'crash.log'),
+      `[${new Date().toISOString()}] UNHANDLED REJECTION: ${reason instanceof Error ? reason.stack : reason}\n`);
+  } catch (_) {}
+  console.error('未处理的 Promise 拒绝:', reason);
+});
 // 数据目录：安装版 → %APPDATA%/xnowpost，开发版 → 项目根目录
 let DATA_DIR = ROOT;
 
@@ -618,7 +638,7 @@ async function healthCheck() {
   // ffmpeg
   try {
     const { execSync } = await import('child_process');
-    execSync('ffmpeg -version', { stdio: 'pipe', timeout: 5000 });
+    execSync('ffmpeg -version', { stdio: 'pipe', timeout: 5000, windowsHide: true });
   } catch (e) {
     issues.push('ffmpeg 未安装或不在 PATH');
   }
@@ -626,7 +646,7 @@ async function healthCheck() {
   // edge-tts
   try {
     const { execSync } = await import('child_process');
-    execSync('edge-tts --version', { stdio: 'pipe', timeout: 5000 });
+    execSync('edge-tts --version', { stdio: 'pipe', timeout: 5000, windowsHide: true });
   } catch (e) {
     issues.push('edge-tts 未安装或不在 PATH');
   }
