@@ -672,14 +672,18 @@ if (!gotLock) {
 let schedulerProcess = null;
 
 function startScheduler() {
-  const scriptPath = path.join(ROOT, 'src', 'scheduler.js');
+  // 安装版用解包目录，开发版用项目目录
+  const schedulerRoot = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked')
+    : ROOT;
+  const scriptPath = path.join(schedulerRoot, 'src', 'scheduler.js');
   if (!fs.existsSync(scriptPath)) {
     console.warn('scheduler.js 不存在，跳过调度器启动');
     return;
   }
 
   schedulerProcess = spawn(process.execPath, [scriptPath], {
-    cwd: ROOT,
+    cwd: schedulerRoot,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,  // 不弹 CMD 窗口
     env: {
