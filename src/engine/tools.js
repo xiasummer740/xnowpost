@@ -37,7 +37,7 @@ export function findFFmpeg() {
 
   // 3. 尝试 PATH 查找
   try {
-    const result = execSync('where ffmpeg', { encoding: 'utf-8', stdio: ['pipe','pipe','ignore'] });
+    const result = execSync('where ffmpeg', { encoding: 'utf-8', stdio: ['pipe','pipe','ignore'], windowsHide: true });
     const lines = result.trim().split('\n');
     if (lines[0] && fs.existsSync(lines[0].trim())) return lines[0].trim().replace(/\\/g, '/');
   } catch (e) { /* ignore */ }
@@ -66,7 +66,7 @@ export function findEdgeTTS() {
 
   // 2. PATH 查找
   try {
-    const result = execSync('where edge-tts', { encoding: 'utf-8', stdio: ['pipe','pipe','ignore'] });
+    const result = execSync('where edge-tts', { encoding: 'utf-8', stdio: ['pipe','pipe','ignore'], windowsHide: true });
     const lines = result.trim().split('\n');
     if (lines[0] && fs.existsSync(lines[0].trim())) return lines[0].trim();
   } catch (e) { /* ignore */ }

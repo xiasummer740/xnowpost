@@ -1,11 +1,13 @@
 import 'dotenv/config';
 import cron from 'node-cron';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs-extra';
 
+// 数据目录：优先用环境变量（Electron 传入），否则用项目目录
+const DATA_DIR = process.env.XNOWPOST_DATA_DIR || path.resolve('.');
 const ROOT = path.resolve('.');
-const SCHEDULE_FILE = path.join(ROOT, 'config', 'schedule.json');
+const SCHEDULE_FILE = path.join(DATA_DIR, 'config', 'schedule.json');
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 60_000;
 
@@ -50,9 +52,15 @@ async function sendAlert(message) {
 }
 
 async function runWithRetry(script, label) {
+  // Electron 环境需要走 process.execPath + ELECTRON_RUN_AS_NODE
+  const nodeCmd = process.env.XNOWPOST_DATA_DIR ? process.execPath : 'node';
+  const env = process.env.XNOWPOST_DATA_DIR
+    ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+    : process.env;
+
   for (let i = 0; i <= MAX_RETRIES; i++) {
     try {
-      execSync(`node ${script}`, { cwd: ROOT, stdio: 'inherit', timeout: 10 * 60 * 1000 });
+      execSync(`${nodeCmd} ${script}`, { cwd: ROOT, stdio: 'inherit', timeout: 10 * 60 * 1000, env, windowsHide: true });
       log(`✅ ${label} 完成`);
       return;
     } catch (err) {
@@ -77,7 +85,7 @@ function parseCron(timeStr) {
 function runJob(job) {
   if (job.mode === 'collect') {
     runWithRetry('src/collector/index.js', job.label);
-    runWithRetry('src/analyzer/daily.js', `${job.label} 日报`);
+    // daily.js 已被 collector/index.js 内部调用，无需单独执行
   } else {
     const flag = job.mode === 'video' ? '--video-only' : job.mode === 'post' ? '--post-only' : '';
     runWithRetry(`src/index.js ${flag}`.trim(), job.label);

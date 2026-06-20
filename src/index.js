@@ -11,71 +11,74 @@ import fs from 'fs-extra';
 const TIME_LABEL = new Date().getHours() < 12 ? '早上' : '晚上';
 
 async function runVideoPipeline(sessionDir, index, topic) {
-  console.log(`\n🎬 === 视频 ===`);
-  const c = await generateVideoContent(topic);
-  console.log(`  ✅ ${c.title_zh}`);
-
-  await fs.ensureDir(sessionDir);
-
-  // 先保存文案
-  const tags = [...(c.tags_zh||[]), ...(c.tags_en||[])].map(t => '#'+t).join(' ');
-  const desc = `${c.title_zh}\n${c.title_en}\n\n${c.scenes.map((s,i)=>`${i+1}. ${s.scene_text_zh}`).join('\n')}\n\n${tags}\nxnow.taikon.top`;
-  await fs.writeFile(path.join(sessionDir, '文案.txt'), desc, 'utf-8');
-
-  const workDir = path.join(sessionDir, '_video');
-  const slidesDir = path.join(workDir, 'slides');
-  await fs.ensureDir(slidesDir);
-
-  // 并发生成（每批3张，9张约2分钟，比串行快3倍）
-  const BATCH = 3;
-  console.log(`  🎨 ${c.scenes.length} 张分镜图（并发${BATCH}）...`);
-  for (let i = 0; i < c.scenes.length; i += BATCH) {
-    const batch = c.scenes.slice(i, i + BATCH);
-    await Promise.all(batch.map((s, j) =>
-      generateImageToFile({
-        prompt: s.image_desc,
-        filepath: path.join(slidesDir, `scene_${String(i+j+1).padStart(2,'0')}.png`),
-        width: 1080, height: 1920, index: i + j + 1,
-        title: s.scene_text_zh, subtitle: s.scene_text_en,
-        shotType: s.shot_type, cameraMove: s.camera_move, mood: s.mood,
-      }).catch(err => console.log(`  ⚠️ 第${i+j+1}张失败: ${err.message}`))
-    ));
-  }
-
-  // 独立封面（失败不阻塞）
-  console.log('  🎨 封面...');
+  let workDir;
   try {
-    await generateImageToFile({
-      prompt: `${c.title_en}, dramatic lighting, movie poster style, bold composition`,
-      filepath: path.join(sessionDir, '封面.png'),
-      width: 1080, height: 1920, index: 0,
-      title: c.title_zh, subtitle: c.title_en,
-      tags: [...(c.tags_zh||[]), ...(c.tags_en||[])],
-    });
-  } catch (err) {
-    console.log('  ⚠️ 封面失败: ' + err.message);
-  }
+    console.log(`\n🎬 === 视频 ===`);
+    const c = await generateVideoContent(topic);
+    console.log(`  ✅ ${c.title_zh}`);
 
-  // 合成视频
-  let videoOK = false;
-  try {
-    console.log('  🎬 合成...');
-    const vr = await synthesizeAllPlatforms(workDir, c);
-    if (vr && await fs.pathExists(vr)) {
-      await fs.copy(vr, path.join(sessionDir, 'video.mp4'));
-      const size = (await fs.stat(vr)).size;
-      console.log(`  ✅ video.mp4 (${(size/1024/1024).toFixed(1)}MB)`);
-      videoOK = true;
-    } else {
-      console.log('  ⚠️ 未产出视频, 保留: ' + workDir);
+    await fs.ensureDir(sessionDir);
+
+    // 先保存文案
+    const tags = [...(c.tags_zh||[]), ...(c.tags_en||[])].map(t => '#'+t).join(' ');
+    const desc = `${c.title_zh}\n${c.title_en}\n\n${c.scenes.map((s,i)=>`${i+1}. ${s.scene_text_zh}`).join('\n')}\n\n${tags}\nxnow.taikon.top`;
+    await fs.writeFile(path.join(sessionDir, '文案.txt'), desc, 'utf-8');
+
+    workDir = path.join(sessionDir, '_video');
+    const slidesDir = path.join(workDir, 'slides');
+    await fs.ensureDir(slidesDir);
+
+    // 并发生成（每批3张，9张约2分钟，比串行快3倍）
+    const BATCH = 3;
+    console.log(`  🎨 ${c.scenes.length} 张分镜图（并发${BATCH}）...`);
+    for (let i = 0; i < c.scenes.length; i += BATCH) {
+      const batch = c.scenes.slice(i, i + BATCH);
+      await Promise.all(batch.map((s, j) =>
+        generateImageToFile({
+          prompt: s.image_desc,
+          filepath: path.join(slidesDir, `scene_${String(i+j+1).padStart(2,'0')}.png`),
+          width: 1080, height: 1920, index: i + j + 1,
+          title: s.scene_text_zh, subtitle: s.scene_text_en,
+          shotType: s.shot_type, cameraMove: s.camera_move, mood: s.mood,
+        }).catch(err => console.log(`  ⚠️ 第${i+j+1}张失败: ${err.message}`))
+      ));
     }
-  } catch (err) {
-    console.log('  ⚠️ 合成异常: ' + err.message);
-  }
 
-  if (videoOK) await fs.remove(workDir).catch(() => {});
-  console.log('  ✅ 完成');
-  return { content: c };
+    // 独立封面（失败不阻塞）
+    console.log('  🎨 封面...');
+    try {
+      await generateImageToFile({
+        prompt: `${c.title_en}, dramatic lighting, movie poster style, bold composition`,
+        filepath: path.join(sessionDir, '封面.png'),
+        width: 1080, height: 1920, index: 0,
+        title: c.title_zh, subtitle: c.title_en,
+        tags: [...(c.tags_zh||[]), ...(c.tags_en||[])],
+      });
+    } catch (err) {
+      console.log('  ⚠️ 封面失败: ' + err.message);
+    }
+
+    // 合成视频（FFmpeg 直接输出到 sessionDir/video.mp4，不经过临时目录）
+    try {
+      console.log('  🎬 合成...');
+      const videoOut = path.join(sessionDir, 'video.mp4');
+      const vr = await synthesizeAllPlatforms(workDir, c, videoOut);
+      if (vr && await fs.pathExists(vr)) {
+        const size = (await fs.stat(vr)).size;
+        console.log(`  ✅ video.mp4 (${(size/1024/1024).toFixed(1)}MB)`);
+      } else {
+        console.log('  ⚠️ 未产出视频');
+      }
+    } catch (err) {
+      console.log('  ⚠️ 合成异常: ' + err.message);
+    }
+
+    console.log('  ✅ 完成');
+    return { content: c };
+  } finally {
+    // 无论成功还是崩溃，都清理工作目录，只保留 4 个产出文件
+    if (workDir) await fs.remove(workDir).catch(() => {});
+  }
 }
 
 async function runPostPipeline(sessionDir, index, topic) {
@@ -129,11 +132,11 @@ async function main() {
   console.log(`\n🚀 XNOWPost — ${new Date().toLocaleString('zh-CN')}`);
   console.log(`📅 ${sessionDir} | 模式: ${mode}${topic ? ` | 主题: ${topic}` : ''}\n`);
 
+  // 先保存空费用记录，保证 cost.json 一定存在
+  try { await saveCostLog(sessionDir); } catch (_) {}
+
   try {
-    if (mode === 'auto') {
-      await runVideoPipeline(sessionDir, 1, topic);
-      if (new Date().getHours() < 12) await runPostPipeline(sessionDir, 2, topic);
-    } else if (mode === 'video') {
+    if (mode === 'auto' || mode === 'video') {
       await runVideoPipeline(sessionDir, 1, topic);
     } else {
       await runPostPipeline(sessionDir, 1, topic);
@@ -145,6 +148,9 @@ async function main() {
     console.log(`✅ 完成！📁 ${sessionDir}\n`);
   } catch (err) {
     console.error('\n❌ ' + err.message);
+    if (err.stack) console.error(err.stack.split('\n').slice(0, 3).join('\n'));
+    // 报错也保存费用
+    try { const cost = getSessionCost(); saveCostLog(sessionDir); } catch (_) {}
     process.exit(1);
   }
 }

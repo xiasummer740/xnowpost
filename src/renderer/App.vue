@@ -2,7 +2,11 @@
   <div class="app-container">
     <aside class="sidebar">
       <div class="logo">
-        <h1>XNOWPost <span class="ver">v{{ version }}</span></h1>
+        <h1>XNOWPost</h1>
+        <div class="logo-meta">
+          <span v-if="isDev" class="dev-badge">开发版</span>
+          <span class="ver">v{{ version }}</span>
+        </div>
         <p>内容营销引擎</p>
       </div>
       <nav>
@@ -35,10 +39,11 @@
 
 <script setup>
 import { useAppStore } from './stores/app.js';
-import { onMounted } from 'vue';
+import { onMounted, ref } from 'vue';
 import { version } from '../../package.json';
 
 const store = useAppStore();
+const isDev = ref(window.xnowpost?.isDev ?? false);
 
 onMounted(async () => {
   await store.loadConfig();
@@ -66,17 +71,23 @@ onMounted(async () => {
   border-right: 1px solid #334155;
 }
 .logo {
-  padding: 0 20px 20px;
+  padding: 0 16px 14px;
   border-bottom: 1px solid #334155;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .logo h1 {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 900;
   background: linear-gradient(135deg, #f59e0b, #ef4444);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  margin: 0;
+  margin: 0 0 3px 0;
+}
+.logo-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
 }
 .logo .ver {
   font-size: 11px;
@@ -85,9 +96,18 @@ onMounted(async () => {
   -webkit-text-fill-color: #94a3b8;
   padding: 1px 6px;
   border-radius: 4px;
-  vertical-align: middle;
 }
-.logo p { font-size: 12px; color: #64748b; margin: 4px 0 0; }
+.dev-badge {
+  font-size: 10px;
+  font-weight: 800;
+  background: #f97316;
+  -webkit-text-fill-color: #0f172a;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.logo p { font-size: 11px; color: #64748b; margin: 0; }
 .nav-item {
   display: block;
   padding: 12px 20px;

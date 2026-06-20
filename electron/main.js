@@ -2,9 +2,11 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
 import fs from 'fs-extra';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { spawn } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const _require = createRequire(import.meta.url);
 const ROOT = path.resolve(__dirname, '..');
 // 数据目录：安装版 → %APPDATA%/xnowpost，开发版 → 项目根目录
 let DATA_DIR = ROOT;
@@ -26,6 +28,8 @@ const DEFAULT_CONFIG = {
 let mainWindow = null;
 let engineProcess = null;
 let logBuffer = [];
+let schedulerRunning = false;  // 调度器是否正在执行引擎任务
+let schedulerLastRun = '';     // 最近一次调度执行时间
 
 // === 配置读写（带写锁防并发覆盖） ===
 let configWriteLock = Promise.resolve();
@@ -96,11 +100,12 @@ function createWindow() {
     height: 750,
     minWidth: 900,
     minHeight: 600,
-    title: 'XNOWPost',
+    title: app.isPackaged ? 'XNOWPost' : 'XNOWPost (开发版)',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      additionalArguments: [`--xnowpost-dev=${!app.isPackaged}`],
     },
     frame: true,
     autoHideMenuBar: true,
@@ -176,6 +181,7 @@ function setupIPC() {
         cwd: engineRoot,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 15 * 60 * 1000,
+        windowsHide: true,  // 不弹 CMD 窗口
         env: {
           ...process.env,
           ELECTRON_RUN_AS_NODE: '1',
@@ -328,11 +334,19 @@ function setupIPC() {
             title = txt.split('\n')[0] || session;
           } catch (e) {}
         }
+        // 从目录名提取时间（pm_1430 → 14:30）
+        let time = '';
+        const timeMatch = session.match(/(\d{2})(\d{2})$/);
+        if (timeMatch) {
+          const h = timeMatch[1], m = timeMatch[2];
+          time = `${h}:${m}`;
+        }
         items.push({
           id: session,
           title_zh: title.substring(0, 40),
           type: hasVideo ? 'video' : hasPost ? 'post' : 'unknown',
           status: 'ready',
+          time,
           dir: sp,
           date: dateDir,
           session,
@@ -435,6 +449,9 @@ function setupIPC() {
       configured: !!(config.deepseekApiKey || config.siliconflowApiKey),
       running: !!engineProcess,
       todayDir: getTodayDir(),
+      schedulerRunning: !!schedulerProcess,
+      schedulerActive: schedulerRunning, // 调度器正在执行任务
+      schedulerLastRun, // 最近一次调度执行时间
     };
   });
 
@@ -534,6 +551,41 @@ function setupIPC() {
   });
 }
 
+  // 获取最近采集数据
+  ipcMain.handle('collect:latest', () => {
+    try {
+      const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
+      if (!fs.existsSync(dbPath)) return null;
+
+      const Database = _require('better-sqlite3');
+      const db = new Database(dbPath, { readonly: true });
+
+      const rows = db.prepare(`
+        SELECT date, platform, metric, value FROM daily_stats
+        WHERE date = (SELECT MAX(date) FROM daily_stats)
+        ORDER BY platform, metric
+      `).all();
+      db.close();
+
+      if (!rows.length) return null;
+
+      // 按平台分组
+      const platforms = {};
+      for (const r of rows) {
+        if (!platforms[r.platform]) platforms[r.platform] = {};
+        platforms[r.platform][r.metric] = r.value;
+      }
+
+      return {
+        date: rows[0].date,
+        platforms,
+      };
+    } catch (e) {
+      console.error('读取采集数据失败:', e.message);
+      return null;
+    }
+  });
+
 function getTodayDir() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -595,6 +647,65 @@ function autoBackup() {
   }
 }
 
+// === 单实例锁（防重复启动） ===
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+}
+
+// === 调度器（定时任务后台进程） ===
+let schedulerProcess = null;
+
+function startScheduler() {
+  const scriptPath = path.join(ROOT, 'src', 'scheduler.js');
+  if (!fs.existsSync(scriptPath)) {
+    console.warn('scheduler.js 不存在，跳过调度器启动');
+    return;
+  }
+
+  schedulerProcess = spawn(process.execPath, [scriptPath], {
+    cwd: ROOT,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,  // 不弹 CMD 窗口
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      XNOWPOST_DATA_DIR: DATA_DIR,
+    },
+  });
+
+  schedulerProcess.stdout.on('data', (chunk) => {
+    const lines = chunk.toString().split('\n').filter(Boolean);
+    for (const line of lines) {
+      console.log(`[调度器] ${line}`);
+      addLog('info', `⏰ ${line}`);
+      // 检测调度器任务运行状态
+      if (line.includes('🚀') || line.includes('开始') || line.includes('引擎启动')) {
+        schedulerRunning = true;
+        schedulerLastRun = new Date().toLocaleString('zh-CN');
+      } else if (line.includes('完成') || line.includes('失败') || line.includes('已取消')) {
+        schedulerRunning = false;
+      }
+    }
+  });
+
+  schedulerProcess.stderr.on('data', (chunk) => {
+    const lines = chunk.toString().split('\n').filter(Boolean);
+    for (const line of lines) {
+      console.error(`[调度器] ${line}`);
+      addLog('warning', `⏰ ${line}`);
+    }
+  });
+
+  schedulerProcess.on('exit', (code) => {
+    schedulerProcess = null;
+    if (code !== 0 && code !== null) {
+      addLog('warning', `⚠️ 调度器异常退出 (code: ${code})，10s 后重启...`);
+      setTimeout(startScheduler, 10_000);
+    }
+  });
+}
+
 // === 应用生命周期 ===
 app.whenReady().then(async () => {
   // 安装版：DATA_DIR → userData（%APPDATA%/xnowpost），开发版沿用项目目录
@@ -609,6 +720,7 @@ app.whenReady().then(async () => {
   createWindow();
   autoBackup();
   healthCheck();
+  startScheduler();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -617,4 +729,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  if (schedulerProcess && !schedulerProcess.killed) {
+    schedulerProcess.kill('SIGTERM');
+  }
 });

@@ -11,7 +11,7 @@ function getAudioDuration(filePath) {
   try {
     const ffprobe = FFMPEG.replace(/ffmpeg\.exe"?$/, 'ffprobe.exe').replace(/"/g, '');
     const cmd = `"${ffprobe}" -v error -show_entries format=duration -of csv=p=0 "${filePath}"`;
-    const result = execSync(cmd, { stdio: 'pipe', timeout: 10000, encoding: 'utf-8' });
+    const result = execSync(cmd, { stdio: 'pipe', timeout: 10000, encoding: 'utf-8', windowsHide: true });
     return parseFloat(result.trim()) || 5;
   } catch (e) {
     return 5; // fallback 5秒
@@ -45,7 +45,7 @@ export async function generateVoice(scenes, outputDir, lang = 'zh') {
     const safeText = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
     execSync(
       `${EDGE_TTS} --voice ${config.voice} --rate=${config.rate} --text "${safeText}" --write-media "${clipPath}"`,
-      { stdio: 'pipe', timeout: 60000 }
+      { stdio: 'pipe', timeout: 60000, windowsHide: true }
     );
 
     // 读取真实时长
@@ -75,7 +75,7 @@ export async function generateVoice(scenes, outputDir, lang = 'zh') {
 
     execSync(
       `${FFMPEG} -y -f concat -safe 0 -i "${concatFile}" -c copy "${outputFile}"`,
-      { stdio: 'pipe', timeout: 30000 }
+      { stdio: 'pipe', timeout: 30000, windowsHide: true }
     );
   }
 

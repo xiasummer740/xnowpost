@@ -72,8 +72,36 @@ export async function collectAll() {
   const result = await connectBrowser();
   if (!result) {
     console.error('❌ 无法连接浏览器，数据采集跳过');
+    console.log('   ⚠️ 如需数据采集，请在配置页填写 CDP 端口');
     db.close();
+    // 即使没有采集数据，也尝试从已有数据库生成日报
+    const todayResults = getTodayStats(db, date);
+    if (todayResults.length > 0) {
+      await generateDailyReport(date, todayResults);
+    } else {
+      console.log('   📭 数据库暂无历史数据，跳过日报生成');
+    }
     return;
+  }
+
+  function getTodayStats(db, date) {
+    try {
+      const rows = db.prepare(
+        'SELECT DISTINCT platform FROM daily_stats WHERE date = ?'
+      ).all(date);
+      const results = [];
+      for (const row of rows) {
+        const stats = {};
+        const metrics = db.prepare(
+          'SELECT metric, value FROM daily_stats WHERE date = ? AND platform = ?'
+        ).all(date, row.platform);
+        for (const m of metrics) stats[m.metric] = m.value;
+        results.push({ platform: row.platform, stats });
+      }
+      return results;
+    } catch (e) {
+      return [];
+    }
   }
 
   const { context } = result;

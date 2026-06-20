@@ -51,7 +51,7 @@ function createAss(scenes, outPath, w, h, lang, durations) {
   return outPath.replace(/\\/g, '/');
 }
 
-async function synthOne({ dirPath, pkey, config, voicePath, scenes, durations }) {
+async function synthOne({ dirPath, outputPath, pkey, config, voicePath, scenes, durations }) {
   const { width, height } = config.video;
   const subLang = config.subtitleLang || 'cn+en';
 
@@ -69,20 +69,22 @@ async function synthOne({ dirPath, pkey, config, voicePath, scenes, durations })
   const concatFile = path.join(dirPath, `concat_${pkey}.txt`);
   fs.writeFileSync(concatFile, concatLines.join('\n'), 'utf-8');
 
-  const outFile = path.join(dirPath, `video_${pkey}.mp4`);
+  // FFmpeg 直接输出到最终位置（sessionDir/video.mp4），不经过临时目录
+  const finalOutput = outputPath || path.join(dirPath, `video_${pkey}.mp4`);
   const batFile = path.join(dirPath, `_build_${pkey}.bat`);
   const ff = FFMPEG.replace(/\\/g, '/');
   const voiceRel = path.basename(voicePath);
+  const outRel = path.basename(finalOutput);
 
-  const bat = `@echo off\r\ncd /d "${dirPath.replace(/\\/g, '/')}"\r\n"${ff}" -y -f concat -safe 0 -i concat_${pkey}.txt -i ${voiceRel} -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -shortest video_${pkey}.mp4\r\n`;
+  const bat = `@echo off\r\ncd /d "${dirPath.replace(/\\/g, '/')}"\r\n"${ff}" -y -f concat -safe 0 -i concat_${pkey}.txt -i ${voiceRel} -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -shortest "${finalOutput.replace(/\\/g, '/')}"\r\n`;
   fs.writeFileSync(batFile, bat, 'utf-8');
 
   console.log(`  🎥 ${pkey}...`);
   try {
-    execSync(`"${batFile}"`, { stdio: 'inherit' });
-    if (fs.existsSync(outFile)) {
-      console.log(`  ✅ video_${pkey}.mp4 (${(fs.statSync(outFile).size/1024/1024).toFixed(1)}MB)`);
-      return outFile;
+    execSync(`"${batFile}"`, { stdio: 'inherit', windowsHide: true });
+    if (fs.existsSync(finalOutput)) {
+      console.log(`  ✅ ${path.basename(finalOutput)} (${(fs.statSync(finalOutput).size/1024/1024).toFixed(1)}MB)`);
+      return finalOutput;
     }
     console.log(`  ⚠️ ffmpeg 执行完成但未生成文件`);
   } catch (err) {
@@ -91,7 +93,7 @@ async function synthOne({ dirPath, pkey, config, voicePath, scenes, durations })
   return null;
 }
 
-export async function synthesizeAllPlatforms(dirPath, content) {
+export async function synthesizeAllPlatforms(dirPath, content, outputPath) {
   console.log(`  🎬 视频合成...`);
 
   // 根据平台配置选择配音语言
@@ -110,17 +112,9 @@ export async function synthesizeAllPlatforms(dirPath, content) {
   }));
 
   const result = await synthOne({
-    dirPath, pkey: 'tiktok', config: tkConfig,
+    dirPath, outputPath, pkey: 'tiktok', config: tkConfig,
     voicePath, scenes, durations,
   });
-
-  // 复制到其他竖屏平台
-  if (result) {
-    const src = path.join(dirPath, 'video_tiktok.mp4');
-    for (const pk of ['xiaohongshu', 'instagram']) {
-      if (fs.existsSync(src)) await fs.copy(src, path.join(dirPath, `video_${pk}.mp4`));
-    }
-  }
 
   return result;
 }

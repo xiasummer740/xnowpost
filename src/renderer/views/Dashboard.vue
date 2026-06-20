@@ -4,8 +4,12 @@
 
     <div class="status-bar">
       <span>{{ statusText }}</span>
-      <span v-if="store.status.running" class="running-badge">⏳ 引擎运行中...</span>
-      <span v-else class="idle-badge">⚪ 空闲</span>
+      <div class="status-badges">
+        <span v-if="store.status.running" class="badge badge-engine">⏳ 引擎运行中</span>
+        <span v-else-if="store.status.schedulerActive" class="badge badge-scheduler">⏰ 调度器执行中</span>
+        <span v-else class="badge badge-idle">⚪ 空闲</span>
+        <span v-if="store.status.schedulerLastRun" class="badge badge-lastrun">🕐 {{ store.status.schedulerLastRun }}</span>
+      </div>
     </div>
 
     <!-- 未配置引导 -->
@@ -80,6 +84,25 @@
       </div>
     </div>
 
+    <!-- 采集数据概览 -->
+    <div v-if="collectData" class="collect-card">
+      <div class="collect-header">
+        <span>📊 数据概览</span>
+        <span class="collect-date">{{ collectData.date }}</span>
+      </div>
+      <div class="collect-grid">
+        <div v-for="(stats, platform) in collectData.platforms" :key="platform" class="platform-card">
+          <div class="platform-name">{{ platformNames[platform] || platform }}</div>
+          <div class="platform-stats">
+            <div v-for="(val, key) in stats" :key="key" class="stat-item">
+              <span class="stat-label">{{ metricLabels[key] || key }}</span>
+              <span class="stat-value">{{ formatNum(val) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 今日产出（缩略图卡片） -->
     <div class="today-preview" v-if="store.status.todayDir">
       <div class="section-header">
@@ -111,8 +134,9 @@
         <div class="item-body">
           <div class="item-title">{{ item.title_zh }}</div>
           <div class="item-meta">
-            {{ item.type === 'video' ? '视频' : '图文' }}
-            · {{ item.status === 'ready' ? '✅ 完成' : '⏳ 待合成' }}
+            {{ item.type === 'video' ? '🎬 视频' : '🟢 图文' }}
+            <span v-if="item.time" class="item-time">· {{ item.time }}</span>
+            <span class="item-status">· {{ item.status === 'ready' ? '✅ 完成' : '⏳ 待合成' }}</span>
           </div>
         </div>
       </div>
@@ -150,7 +174,22 @@ const isMorning = new Date().getHours() < 12;
 const cancelling = ref(false);
 const quickTopic = ref('');
 const logExpanded = ref(false);
+const collectData = ref(null);
 let refreshTimer = null;
+
+const platformNames = {
+  tiktok: 'TikTok', xiaohongshu: '小红书', facebook: 'Facebook',
+  instagram: 'Instagram', youtube: 'YouTube', x: 'X',
+};
+const metricLabels = {
+  followers: '粉丝', views: '播放', likes: '点赞',
+  comments: '评论', shares: '转发', reach: '触达', engagement: '互动',
+};
+function formatNum(n) {
+  if (n >= 10000) return (n / 10000).toFixed(1) + '万';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
 
 const statusText = computed(() => {
   if (!store.status.configured) return '🔑 还需要配置 API Key 才能开始工作';
@@ -222,10 +261,19 @@ async function runVideo() { await store.runEngine('video'); await refreshToday()
 async function runPost() { await store.runEngine('post'); await refreshToday(); }
 async function openDir() { await window.xnowpost.openOutputDir(); }
 
+async function refreshStatus() {
+  const status = await window.xnowpost.getEngineStatus();
+  Object.assign(store.status, status);
+}
+
 onMounted(async () => {
   await refreshToday();
   store.loadCost();
-  refreshTimer = setInterval(refreshToday, 10000);
+  collectData.value = await window.xnowpost.getLatestCollect();
+  refreshTimer = setInterval(() => {
+    refreshToday();
+    refreshStatus();
+  }, 10000);
 });
 
 onUnmounted(() => {
@@ -241,11 +289,18 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .btn-small:hover { background: #475569; }
 
 .status-bar {
-  display: flex; gap: 16px; align-items: center;
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
   padding: 12px 16px; background: #1e293b; border-radius: 8px; margin-bottom: 20px; font-size: 14px;
 }
-.running-badge { color: #f59e0b; animation: pulse 1.5s infinite; }
-.idle-badge { color: #64748b; }
+.status-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.badge {
+  font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 5px;
+  white-space: nowrap;
+}
+.badge-engine { color: #f59e0b; background: #f59e0b15; animation: pulse 1.5s infinite; }
+.badge-idle { color: #64748b; background: #33415533; }
+.badge-scheduler { color: #60a5fa; background: #2563eb15; animation: pulse 1.5s infinite; }
+.badge-lastrun { color: #94a3b8; background: #33415533; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 .actions { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
@@ -334,7 +389,8 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .thumb-placeholder { font-size: 24px; opacity: 0.5; }
 .item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
 .item-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-meta { font-size: 12px; color: #64748b; margin-top: 4px; }
+.item-meta { font-size: 12px; color: #64748b; margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+.item-time { color: #94a3b8; font-weight: 500; }
 
 /* 骨架屏 */
 .skeleton-list { display: flex; flex-direction: column; gap: 8px; }
@@ -353,6 +409,28 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .skeleton-line.w-60 { width: 60%; }
 .skeleton-line.w-30 { width: 30%; }
 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* 采集数据概览 */
+.collect-card {
+  background: linear-gradient(135deg, #1e3a5f22, #1e40af22);
+  border: 1px solid #2563eb44; border-radius: 12px;
+  padding: 14px 20px; margin-bottom: 20px;
+}
+.collect-header {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 14px; font-weight: 600; color: #e2e8f0; margin-bottom: 10px;
+}
+.collect-date { font-size: 12px; color: #64748b; font-weight: 400; }
+.collect-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.platform-card {
+  background: #0f172a; border-radius: 8px; padding: 10px 12px;
+  min-width: 140px; flex: 1;
+}
+.platform-name { font-size: 12px; font-weight: 700; color: #60a5fa; margin-bottom: 6px; }
+.platform-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.stat-item { display: flex; gap: 4px; font-size: 11px; }
+.stat-label { color: #64748b; }
+.stat-value { color: #e2e8f0; font-weight: 600; }
 
 /* 空状态 */
 .empty-box {

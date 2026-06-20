@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('xnowpost', {
+  // 是否为开发版（通过 main process 传入的可靠标记）
+  isDev: process.argv.find(a => a.startsWith('--xnowpost-dev='))?.split('=')[1] === 'true',
   // 诊断
   ping: () => ipcRenderer.invoke('ping'),
 
@@ -31,6 +33,9 @@ contextBridge.exposeInMainWorld('xnowpost', {
 
   // 费用
   getLatestCost: () => ipcRenderer.invoke('cost:latest'),
+
+  // 采集数据
+  getLatestCollect: () => ipcRenderer.invoke('collect:latest'),
 
   // 定时任务
   getSchedules: () => ipcRenderer.invoke('schedule:list'),
