@@ -31,6 +31,11 @@
   - 18 秒视频编码 8 分钟，卡在调度器 10 分钟超时边界
   - 修复：-pix_fmt yuv420p + -preset veryfast -crf 23（速度快 10-20 倍）
   - 调度器超时从 10 分钟提升到 15 分钟
+- [v1.0.14] 修复 FFmpeg bat 文件中转导致 0 字节文件的问题
+  - 根因：bat 文件通过 cmd.exe 中转执行 FFmpeg，管道重定向冲突导致输出 0 字节
+  - 修复：去掉 bat 文件，直接 execSync + cwd:dirPath 调用 FFmpeg
+  - stderr 改用 stdio:['pipe','pipe','ignore'] 防管道死锁（替代 2>nul）
+  - 增加 size > 0 检查防止虚假成功
 
 ## 关键决策
 - v1.0.12 恢复 NSIS 向导安装（oneClick: false），支持自定义路径
@@ -45,5 +50,5 @@
 - 无（目前已知问题均已在 v1.0.13 修复）
 
 ## 下一件事
-- 祥哥安装 v1.0.13（可覆盖安装到 E:\software\XNOWPost）
+- 祥哥在线更新到 v1.0.14（点ℹ️→检查更新→下载→安装）
 - 验证视频能否正常生成

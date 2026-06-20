@@ -73,19 +73,18 @@ async function synthOne({ dirPath, outputPath, pkey, config, voicePath, scenes, 
   // 防止进程被杀留下残缺 MP4（moov atom not found）
   const finalOutput = outputPath || path.join(dirPath, `video_${pkey}.mp4`);
   const tmpOutput = path.join(dirPath, `video_${pkey}_tmp.mp4`);
-  const batFile = path.join(dirPath, `_build_${pkey}.bat`);
   const ff = FFMPEG.replace(/\\/g, '/');
   const voiceRel = path.basename(voicePath);
 
-  // 2>nul: 重定向 stderr 到 NUL，防止 Windows 管道缓冲区写阻塞
-  // FFmpeg 输出大量编码日志(~8KB) 超过默认管道缓冲区(4KB) 导致死锁
-  const bat = `@echo off\r\ncd /d "${dirPath.replace(/\\/g, '/')}"\r\n"${ff}" -y -f concat -safe 0 -i concat_${pkey}.txt -i ${voiceRel} -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -c:a aac -b:a 192k -shortest "${tmpOutput.replace(/\\/g, '/')}" 2>nul\r\n`;
-  fs.writeFileSync(batFile, bat, 'utf-8');
+  // stderr: 'ignore' → 不经过管道，防止 Windows 管道缓冲区写阻塞死锁
+  // FFmpeg 输出大量编码日志(~8KB) 超过默认管道缓冲区(4KB)
+  // 不使用 bat 文件中转，直接 execSync 调用 FFmpeg
+  const ffCmd = `"${ff}" -y -f concat -safe 0 -i "concat_${pkey}.txt" -i "${voiceRel}" -vf "fps=24,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,subtitles=${assRel}" -map 0:v -map 1:a -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -c:a aac -b:a 192k -shortest "${tmpOutput}"`;
 
   console.log(`  🎥 ${pkey}...`);
   try {
-    execSync(`"${batFile}"`, { stdio: 'inherit', windowsHide: true });
-    if (fs.existsSync(tmpOutput)) {
+    execSync(ffCmd, { cwd: dirPath, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, timeout: 10 * 60 * 1000 });
+    if (fs.existsSync(tmpOutput) && fs.statSync(tmpOutput).size > 0) {
       // 只在这步才移动到最终位置——进程被杀时临时文件随 _video 一起清理
       await fs.move(tmpOutput, finalOutput, { overwrite: true });
       console.log(`  ✅ ${path.basename(finalOutput)} (${(fs.statSync(finalOutput).size/1024/1024).toFixed(1)}MB)`);
