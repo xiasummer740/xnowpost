@@ -17,3 +17,5 @@ dist/
 release/
 .firecrawl/
 *.zip
+XNOWPost-Setup-*.exe
+XNOWPost-Setup-*.exe.blockmap

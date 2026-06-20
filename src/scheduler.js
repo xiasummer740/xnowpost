@@ -60,7 +60,7 @@ async function runWithRetry(script, label) {
 
   for (let i = 0; i <= MAX_RETRIES; i++) {
     try {
-      execSync(`${nodeCmd} ${script}`, { cwd: ROOT, stdio: 'inherit', timeout: 10 * 60 * 1000, env, windowsHide: true });
+      execSync(`${nodeCmd} ${script}`, { cwd: ROOT, stdio: 'inherit', timeout: 15 * 60 * 1000, env, windowsHide: true });
       log(`✅ ${label} 完成`);
       return;
     } catch (err) {
