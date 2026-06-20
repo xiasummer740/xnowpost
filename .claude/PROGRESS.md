@@ -23,9 +23,13 @@
   - 导致：FFmpeg 卡住 → 引擎卡 → 调度器 10min 超时 → 全进程树被 kill
   - 附带：调度器重试 → "隔11分钟自动生成"的假象
 - [v1.0.11] NSIS oneClick: true — 自动更新静默安装，不弹安装向导
+- [v1.0.12] NSIS 恢复向导安装，支持自定义安装路径（allowToChangeInstallationDirectory: true）
+  - 根因：v1.0.11 oneClick 不提权，读不到旧版注册表，安装目录不一致
+  - 祥哥情况：v1.0.8 装在 E:\software\XNOWPost（自定义路径），oneClick 装到 %APPDATA%，两个版本并存
 
 ## 关键决策
-- NSIS oneClick: true — 自动更新时静默安装无感重启，不再弹向导
+- v1.0.12 恢复 NSIS 向导安装（oneClick: false），支持自定义路径
+- 后续版本自动更新时，NSIS 会从注册表读取旧安装目录，自动填好路径
 - FFmpeg stderr 2>nul：不经过管道，防止缓冲区死锁。FFmpeg 错误通过 exit code 捕获
 - FFmpeg 两步写入：先输出到 _video 内临时文件，execSync 成功后 fs.move 到最终位置。进程被杀时临时文件随 _video 一起清理，不会污染最终目录
 - scheduler 和 engine 分开进程：隔离崩溃，调度器挂了自动重启
@@ -36,6 +40,6 @@
 - 无（目前已知问题均已在 v1.0.11 修复）
 
 ## 下一件事
-- 祥哥验证 v1.0.11 打开后视频能否正常生成和播放
-- 祥哥验证自动更新是否静默安装成功（版本号从旧版变为 1.0.11）
-- 如一切正常，可继续开发新功能
+- 祥哥手动下载安装 v1.0.12 到 E:\software\XNOWPost
+- 验证安装后版本号显示 v1.0.12
+- 验证引擎功能正常
