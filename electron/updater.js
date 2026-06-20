@@ -1,5 +1,6 @@
-import { autoUpdater } from 'electron-updater';
+import pkg from 'electron-updater';
 import { BrowserWindow } from 'electron';
+const { autoUpdater } = pkg;
 
 autoUpdater.autoDownload = false;  // 不自动下载，等用户确认
 autoUpdater.autoInstallOnAppQuit = true;
