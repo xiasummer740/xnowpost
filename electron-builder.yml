@@ -26,8 +26,7 @@ asarUnpack:
 win:
   target: nsis
 nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
+  oneClick: true
 publish:
   - provider: github
     owner: xiasummer740

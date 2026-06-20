@@ -17,9 +17,14 @@
 - [费用记录] cost.json pipeline 开始前先保存
 - [调度器] 桌面版自动启动，崩溃自愈
 - [UI] 闹钟页面重写、首页调度器状态/产出时间/数据概览
-- [v1.0.9 fix] 修复视频输出残缺 — FFmpeg 先写临时文件，成功后再 move 到最终位置，防止进程被杀留下残缺 MP4
+- [v1.0.9] 修复视频输出残缺（表层修复）— FFmpeg 两步写入，防止被杀留下残缺 MP4
+- [v1.0.10] 修复 FFmpeg 管道死锁（根因修复）— stderr 重定向 2>nul，切断管道缓冲区写阻塞
+  - 真正根因：FFmpeg stderr ~8KB 超过 Windows 匿名管道默认缓冲区 4KB
+  - 导致：FFmpeg 卡住 → 引擎卡 → 调度器 10min 超时 → 全进程树被 kill
+  - 附带：调度器重试 → "隔11分钟自动生成"的假象
 
 ## 关键决策
+- FFmpeg stderr 2>nul：不经过管道，防止缓冲区死锁。FFmpeg 错误通过 exit code 捕获
 - FFmpeg 两步写入：先输出到 _video 内临时文件，execSync 成功后 fs.move 到最终位置。进程被杀时临时文件随 _video 一起清理，不会污染最终目录
 - scheduler 和 engine 分开进程：隔离崩溃，调度器挂了自动重启
 - 提示词多风格+多产品：AI 随机选择不同方向和产品
