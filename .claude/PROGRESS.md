@@ -4,6 +4,9 @@
   - 居中指示横条 + 渐变遮罩
   - 弹窗动效，暗黑主题
   - 确定/取消，点击遮罩关闭
+- [v1.0.15发布] 时间选择器升级 + CMD 窗口消除
+  - electron-builder GitHub Release + tag v1.0.15
+  - 3 个资产完整（exe + blockmap + latest.yml）
 
 - [v1.0.8发布] 安装版打包 + GitHub Release + 自动更新机制
 - [自动更新] electron-updater + 侧边栏红点角标 + 关于弹窗
