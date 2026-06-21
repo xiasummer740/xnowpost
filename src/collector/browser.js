@@ -13,7 +13,10 @@ let context = null;
  */
 export async function openBitProfile(envId, apiKey) {
   const key = apiKey || process.env.BIT_API_KEY || '';
-  const wsUrl = await callBitAPI('/browser/open', { id: String(envId) }, key);
+  // 环境 ID 和 API Key 相同时不传 key，防止 API 混淆
+  const body = { id: String(envId) };
+  if (key && key !== String(envId)) body.key = key;
+  const wsUrl = await callBitAPI('/browser/open', body, '');
   if (!wsUrl) {
     console.error(`❌ 比特环境 ${envId} 打开失败`);
     return null;

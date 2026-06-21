@@ -63,6 +63,9 @@
       <button class="btn btn-secondary" @click="runPost" :disabled="store.status.running || !store.status.configured">
         🟢 仅图文
       </button>
+      <button class="btn btn-publish" @click="handlePublish" :disabled="publishing">
+        {{ publishing ? '⏳ 发布中...' : '📤 发布' }}
+      </button>
     </div>
 
     <!-- 费用概览 -->
@@ -172,6 +175,7 @@ const todayItems = ref([]);
 const todayLoading = ref(true);
 const isMorning = new Date().getHours() < 12;
 const cancelling = ref(false);
+const publishing = ref(false);
 const quickTopic = ref('');
 const logExpanded = ref(false);
 const collectData = ref(null);
@@ -259,6 +263,19 @@ function quickGenerate() {
 async function runAuto() { await store.runEngine('auto'); await refreshToday(); }
 async function runVideo() { await store.runEngine('video'); await refreshToday(); }
 async function runPost() { await store.runEngine('post'); await refreshToday(); }
+
+async function handlePublish() {
+  publishing.value = true
+  try {
+    const result = await window.xnowpost.runPublish()
+    if (!result.ok) {
+      store.addLog('error', '发布失败: ' + (result.message || ''))
+    }
+  } catch (e) {
+    store.addLog('error', '发布调用失败: ' + (e.message || e))
+  }
+  publishing.value = false
+}
 async function openDir() { await window.xnowpost.openOutputDir(); }
 
 async function refreshStatus() {
@@ -313,6 +330,8 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(245,158,11,0.3); }
 .btn-secondary { background: #334155; color: #e2e8f0; }
 .btn-secondary:hover:not(:disabled) { background: #475569; }
+.btn-publish { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
+.btn-publish:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
 
 /* 进度面板 */
 .progress-panel {
