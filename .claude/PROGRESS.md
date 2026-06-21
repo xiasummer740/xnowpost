@@ -83,22 +83,30 @@
 - **时间选择器 @wheel 劫持**：CSS scroll-snap 在 Electron 中不可靠，改 JS 直接控制每格滚动
 
 ## 本轮完成
-- [比特 API 密钥配置] 配置页新增 API Key 输入框
-  - Config.vue 新增 `bitApiKey` 字段 + 密码框（眼睛切换）+ 测试按钮
-  - main.js DEFAULT_CONFIG + saveConfig 同步到 `process.env.BIT_API_KEY`
-  - `config:testBit` IPC 带 key 参数调 `/browser/list`，返回环境列表
-- [browser.js 传密钥] `callBitAPI()` + `openBitProfile()` 增加 apiKey 参数
-  - POST body 传 `key` 字段，优先用参数、fallback 到 `process.env.BIT_API_KEY`
-  - 调度器 spawn 子进程也通过 config 文件直读覆盖
-- [v1.0.16 发布] 版本推进，68 个单元测试全部通过，Vite 构建成功
+- [TikTok 自动发布模块] 新建 `src/publisher/` 模块
+  - `publisher/index.js` — 发布器入口，扫描未发布内容 → 调用各平台发布器
+  - `publisher/tiktok.js` — TikTok Studio 上传发布（Playwright + 比特浏览器）
+  - `Schedule.vue` 新增「自动发布」模式 + 调度器 `publish` 任务类型
+  - 首页新增「📤 发布」按钮，IPC `publish:run` 一键触发
+- [比特环境 ID 探测] 从 db.sqlite 查出环境为 UUID 格式
+  - `browser_persistent_data` 表查到 4 个 browser_id，2 个可用环境
+  - 可用环境: `24056554bc0e479784f054c161670a53` ✅ / `fee00b3d51cb41bfbe517ff2c25f0ec4`（同 API Key，打不开）
+  - `browser.js` 修复：环境 ID 和 API Key 相同时不传 key 防止 API 混淆
+  - `config:testBit` 增加环境探测逻辑（UUID 探测 + 打开测试）
+- [无 CMD 弹窗启动] 所有启动命令加 `WindowStyle Hidden`
+- [v1.0.16 发布] 版本推进，68 个单元测试全部通过
 
 ## 遗留问题
-- **比特环境 ID 未知** — 已有 2 个环境，需在比特后台手动查看环境 ID 填入配置
+- **TikTok 发布器上传后可发布按钮检测失败** — 当前版本 `playwright` Selector 不匹配 TikTok Studio 2026 UI
+  - 上传 ✅ / 标题填写 ❌ / 标签添加 ❌ / 发布点击 ❌（`dialog` handler 已加）
+  - 需要新对话用浏览器 DevTools 确认 TikTok Studio 的 DOM 结构
+- **fee00b3d51cb41bfbe517ff2c25f0ec4 无法打开** — 既是 API Key 又是环境 ID，API 混淆
+  - 实际可用环境仅 `24056554bc0e479784f054c161670a53` 一个
 - **多平台 scraper URL** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
-- **TG 推送 404** — bot token 未配或频道 ID 无效，不影响本地日报
+- **TG 推送 404** — bot token 未配或频道 ID 无效
 
 ## 下个对话优先级
-1. 引导用户从比特后台找到真实环境 ID 填入配置页
-2. 测试完整多账号采集→日报流程
-3. 为其他平台补充真实采集 URL
-4. 修复 TG 推送
+1. 调试 TikTok 发布器的 DOM 选择器（打开 TikTok Studio → F12 → 看上传页面的按钮/输入框结构）
+2. 修复标题填写和发布按钮点击
+3. 测试完整 v1.0.16 发版流程（含打包）
+4. 考虑在比特后台新建第二个环境

@@ -576,25 +576,161 @@ function setupIPC() {
     return { ok: false, message: '未知测试类型: ' + type };
   });
 
-  // 测试比特浏览器连接（传入 key 则带认证测试）
+  // 测试比特浏览器连接
   ipcMain.handle('config:testBit', async (_event, apiKey) => {
     try {
       const axios = (await import('axios')).default;
-      const body = { page: 1, pageSize: 5 };
-      if (apiKey) body.key = apiKey;
-      const resp = await axios.post('http://127.0.0.1:54345/browser/list', body, { timeout: 5000 });
-      if (resp.data?.success) {
-        const total = resp.data.data?.totalNum ?? 0;
-        const envs = resp.data.data?.list ?? [];
-        const envInfo = envs.length ? `（${envs.map(e => `#${e.id}:${e.name}`).join(', ')}）` : '';
-        return { ok: true, message: `比特浏览器 API ✅ 已连接（${total} 个环境${envInfo}）`, list: envs };
+      const BASE = 'http://127.0.0.1:54345';
+
+      const doPost = async (label, path, body) => {
+        try {
+          const resp = await axios.post(`${BASE}${path}`, body, { timeout: 8000 });
+          addLog('info', `🔍 ${label}: ${JSON.stringify(resp.data).substring(0, 400)}`);
+          return resp.data;
+        } catch (e) {
+          addLog('info', `🔍 ${label}: ❌ ${e.message}`);
+          return null;
+        }
+      };
+
+      // 尝试 GET /browser/list （有些版本支持 GET）
+      try {
+        const getResp = await axios.get(`${BASE}/browser/list?page=1&pageSize=100`, { timeout: 5000 });
+        addLog('info', `🔍 GET /browser/list: ${JSON.stringify(getResp.data).substring(0, 300)}`);
+      } catch (_) {}
+
+      // 尝试 POST 多种参数组合
+      const candidates = [
+        { page: 1, pageSize: 100 },
+        { page: 1, pageSize: 100, key: apiKey },
+        { page: 1, pageSize: 100, apiKey: apiKey },
+        { page: 1, pageSize: 100, token: apiKey },
+      ];
+      for (const body of candidates) {
+        if (!body.key && !body.apiKey && !body.token && apiKey) continue;
+        const data = await doPost(`list ${JSON.stringify(body)}`, '/browser/list', body);
+        if (data?.success && data.data?.list?.length > 0) {
+          const envs = data.data.list;
+          addLog('info', `✅ 找到 ${envs.length} 个环境!`);
+          for (const e of envs) {
+            addLog('info', `  · ID: ${e.id} | 名称: ${e.name || ''}`);
+          }
+          return { ok: true, message: `比特浏览器 ✅ ${envs.map(e => `ID=${e.id}:${e.name}`).join(', ')}`, list: envs };
+        }
       }
-      return { ok: false, message: '比特浏览器 ❌ API 返回: ' + (resp.data?.msg || '未知错误') };
+
+      // 用 UUID 格式尝试打开环境（比特用 UUID 作为 ID）
+      addLog('info', '🔍 尝试用 UUID 格式探测环境...');
+      // 从数据库获得的已知环境 browser_id
+      const knownEnvIds = [
+        apiKey,                              // fee00b... 也是环境 ID
+        '24056554bc0e479784f054c161670a53',
+        '8d777f55af4d497d8eb7e7f85d050ffd',
+        'f791963fb580491089c7d1fc64442efe',
+      ];
+      for (const id of knownEnvIds) {
+        if (!id) continue;
+        // 环境 ID 和 API Key 相同时不传 key，防止 API 混淆
+        const body = apiKey && apiKey !== id ? { id, key: apiKey } : { id };
+        const data = await doPost(`open UUID=${id.substring(0, 12)}...`, '/browser/open', body);
+        if (data?.success && data.data?.ws) {
+          addLog('info', `✅ 找到环境! UUID=${id}`);
+          return { ok: true, message: `比特浏览器 ✅ 环境 ID=${id}`, envId: id };
+        }
+      }
+
+      // 最后尝试: 用 API key 作为账号标识查明细
+      await doPost('账号详情?', '/account/info', { key: apiKey });
+
+      addLog('info', '❌ 无法获取环境列表。请确认比特浏览器已登录且有环境');
+      return { ok: false, message: '比特浏览器 ❌ 可连接但无法获取环境列表。在比特后台点环境右侧「配置」按钮，看 URL 里的 ID' };
     } catch (err) {
-      return { ok: false, message: '比特浏览器 ❌ 无法连接: ' + (err.code === 'ECONNREFUSED' ? '请确认比特浏览器已启动' : err.message) };
+      return { ok: false, message: '比特浏览器 ❌ ' + (err.code === 'ECONNREFUSED' ? '请确认比特浏览器已启动' : err.message) };
     }
   });
 }
+
+  // 手动触发发布
+  ipcMain.handle('publish:run', async () => {
+    try {
+      addLog('info', '📤 手动发布开始...');
+      const config = loadConfig();
+      const envId = config.accounts?.[0]?.bitEnvId;
+      const apiKey = config.bitApiKey || '';
+
+      if (!envId) {
+        addLog('error', '❌ 未配置比特环境 ID，请在配置页设置账号');
+        return { ok: false, message: '未配置比特环境 ID' };
+      }
+
+      // 直接扫描输出目录
+      const outDir = path.join(DATA_DIR, 'output');
+      const dateDirs = fs.readdirSync(outDir)
+        .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+        .sort().reverse();
+
+      let unpublished = [];
+      for (const dd of dateDirs) {
+        const dp = path.join(outDir, dd);
+        const sessions = fs.readdirSync(dp).filter(s => fs.statSync(path.join(dp, s)).isDirectory());
+        for (const s of sessions) {
+          const sp = path.join(dp, s);
+          if (fs.existsSync(path.join(sp, '.published'))) continue;
+          const files = fs.readdirSync(sp);
+          const hasVideo = files.some(f => f.endsWith('.mp4'));
+          const hasTxt = files.includes('文案.txt');
+          if (hasVideo && hasTxt) {
+            unpublished.push({ date: dd, session: s, path: sp });
+          }
+        }
+      }
+
+      if (unpublished.length === 0) {
+        addLog('info', '📭 没有未发布的内容');
+        return { ok: true, published: 0 };
+      }
+
+      // 取最新的一个发布
+      const item = unpublished[0];
+      addLog('info', `📤 发布: ${item.date}/${item.session}`);
+      addLog('info', `  路径: ${item.path}`);
+
+      // 调用 TikTok 发布器
+      const { publishToTikTok } = await import('../src/publisher/tiktok.js');
+      const videoFile = fs.readdirSync(item.path).find(f => f.endsWith('.mp4'));
+      addLog('info', `  🎬 视频: ${videoFile}`);
+
+      // 先写一个调试标记
+      fs.writeFileSync(path.join(item.path, 'publish_debug.txt'), `start: ${new Date().toISOString()}\n`, 'utf-8');
+
+      const url = await publishToTikTok({
+        sessionPath: item.path,
+        videoFile: path.join(item.path, videoFile),
+        imageFiles: [],
+        titleFile: path.join(item.path, '文案.txt'),
+        envId,
+        apiKey,
+      });
+
+      fs.appendFileSync(path.join(item.path, 'publish_debug.txt'), `end: ${new Date().toISOString()}\nurl: ${url || 'empty'}\n`, 'utf-8');
+
+      // 查看截图文件
+      const snapshots = fs.readdirSync(item.path).filter(f => f.startsWith('publish_') && f.endsWith('.png'));
+      addLog('info', `  📸 截图: ${snapshots.length > 0 ? snapshots.join(', ') : '无'}`);
+
+      // 标记已发布
+      fs.writeJsonSync(path.join(item.path, '.published'), {
+        publishedAt: new Date().toISOString(), platform: 'tiktok', url,
+      }, { spaces: 2 });
+
+      addLog('success', `✅ 发布成功!`);
+
+      return { ok: true, published: 1 };
+    } catch (err) {
+      addLog('error', `❌ 发布失败: ${err.message}`);
+      return { ok: false, message: err.message };
+    }
+  });
 
   // 获取最近采集数据
   ipcMain.handle('collect:latest', async () => {

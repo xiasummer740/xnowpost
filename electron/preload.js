@@ -67,4 +67,7 @@ contextBridge.exposeInMainWorld('xnowpost', {
   // 定时任务
   getSchedules: () => ipcRenderer.invoke('schedule:list'),
   saveSchedules: (jobs) => ipcRenderer.invoke('schedule:save', jobs),
+
+  // 发布
+  runPublish: () => ipcRenderer.invoke('publish:run'),
 });

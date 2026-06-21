@@ -76,6 +76,7 @@ const modeOptions = [
   { value: 'video', label: '仅视频' },
   { value: 'post', label: '仅图文' },
   { value: 'collect', label: '采集+日报' },
+  { value: 'publish', label: '自动发布', icon: '📤' },
 ]
 
 async function load() {
