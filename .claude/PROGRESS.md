@@ -82,12 +82,23 @@
 - **多账号数据隔离**：数据库加 `account` 字段，日报页按账号 tab 分组
 - **时间选择器 @wheel 劫持**：CSS scroll-snap 在 Electron 中不可靠，改 JS 直接控制每格滚动
 
-## 遗留问题（下个对话处理）
-- **账号保存报错** `An object could not be cloned` — 配置页账号管理保存仍可能报错，待排查
-- **TikTok 粉丝数不准** — "Followers" 文本被误解析为 1，关键词匹配需优化
-- **多平台 scraper URL** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`，需用户填写
-- **TG 推送 404** — 日报推送 TG 时报 404（bot token 未配或频道 ID 无效），不影响本地日报展示
+## 本轮完成
+- [比特 API 密钥配置] 配置页新增 API Key 输入框
+  - Config.vue 新增 `bitApiKey` 字段 + 密码框（眼睛切换）+ 测试按钮
+  - main.js DEFAULT_CONFIG + saveConfig 同步到 `process.env.BIT_API_KEY`
+  - `config:testBit` IPC 带 key 参数调 `/browser/list`，返回环境列表
+- [browser.js 传密钥] `callBitAPI()` + `openBitProfile()` 增加 apiKey 参数
+  - POST body 传 `key` 字段，优先用参数、fallback 到 `process.env.BIT_API_KEY`
+  - 调度器 spawn 子进程也通过 config 文件直读覆盖
+- [v1.0.16 发布] 版本推进，68 个单元测试全部通过，Vite 构建成功
 
-## 下一件事
-- 修账号保存报错后，测试完整的多账号采集流程
-- 配置多个 BitBrowser 环境 ID，验证日报页账号 tab 切换
+## 遗留问题
+- **比特环境 ID 未知** — 已有 2 个环境，需在比特后台手动查看环境 ID 填入配置
+- **多平台 scraper URL** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
+- **TG 推送 404** — bot token 未配或频道 ID 无效，不影响本地日报
+
+## 下个对话优先级
+1. 引导用户从比特后台找到真实环境 ID 填入配置页
+2. 测试完整多账号采集→日报流程
+3. 为其他平台补充真实采集 URL
+4. 修复 TG 推送

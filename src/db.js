@@ -79,7 +79,7 @@ export async function ensureDB(dbPath) {
   await fs.ensureDir(path.dirname(dbPath));
   const db = await openDB(dbPath);
 
-  // 主表
+  // 主表（仅建表，CREATE INDEX 放在迁移之后）
   db.exec(`
     CREATE TABLE IF NOT EXISTS daily_stats (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,18 +90,37 @@ export async function ensureDB(dbPath) {
       account TEXT NOT NULL DEFAULT 'default',
       UNIQUE(date, account, platform, metric)
     );
-    CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
-    CREATE INDEX IF NOT EXISTS idx_daily_stats_account ON daily_stats(account);
   `);
 
-  // 迁移：旧表没有 account 列，则加一列并重建唯一索引
+  // 迁移：旧表没有 account 列，则重建表（sqlite 不允许直接改 UNIQUE 约束）
   const cols = db.all("PRAGMA table_info(daily_stats)").map(c => c.name);
   if (!cols.includes('account')) {
     db.exec(`
-      ALTER TABLE daily_stats ADD COLUMN account TEXT NOT NULL DEFAULT 'default';
-      DROP INDEX IF EXISTS sqlite_autoindex_daily_stats_1;
+      ALTER TABLE daily_stats RENAME TO daily_stats_old;
     `);
+    db.exec(`
+      CREATE TABLE daily_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        metric TEXT NOT NULL,
+        value INTEGER NOT NULL,
+        account TEXT NOT NULL DEFAULT 'default',
+        UNIQUE(date, account, platform, metric)
+      );
+    `);
+    db.exec(`
+      INSERT INTO daily_stats (date, platform, metric, value, account)
+        SELECT date, platform, metric, value, 'default' FROM daily_stats_old;
+    `);
+    db.exec(`DROP TABLE daily_stats_old;`);
   }
+
+  // 索引放迁移之后，确保 account 列已存在
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
+    CREATE INDEX IF NOT EXISTS idx_daily_stats_account ON daily_stats(account);
+  `);
 
   // 内容表现表（暂未使用）
   db.exec(`

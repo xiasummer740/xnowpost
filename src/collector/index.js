@@ -50,10 +50,19 @@ export async function collectAll() {
 
   const allResults = [];
 
+  // 读取比特 API 密钥
+  let bitApiKey = '';
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      const cfg = fs.readJsonSync(CONFIG_PATH);
+      bitApiKey = cfg.bitApiKey || '';
+    }
+  } catch (_) {}
+
   for (const acc of accounts) {
     console.log(`\n📊 采集账号: ${acc.name} (${acc.platform})`);
 
-    const result = await openBitProfile(acc.bitEnvId);
+    const result = await openBitProfile(acc.bitEnvId, bitApiKey);
     if (!result) {
       console.log(`  ⚠️ 跳过账号 ${acc.name}`);
       continue;

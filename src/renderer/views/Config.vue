@@ -7,7 +7,11 @@
       <div class="form-group flex-1">
         <label>DeepSeek API Key（文案生成）</label>
         <div class="input-with-toggle">
-          <input v-model="form.deepseekApiKey" :type="showKeys.deepseek ? 'text' : 'password'" placeholder="sk-..." />
+          <input
+            v-model="form.deepseekApiKey"
+            :type="showKeys.deepseek ? 'text' : 'password'"
+            placeholder="sk-..."
+          />
           <button class="btn-eye" @click="showKeys.deepseek = !showKeys.deepseek" type="button">
             {{ showKeys.deepseek ? '👁️' : '👁️‍🗨️' }}
           </button>
@@ -16,9 +20,15 @@
       <button class="btn btn-test" @click="test('deepseek')" :disabled="testing.deepseek">
         {{ testing.deepseek ? '⏳' : '🔌' }}
       </button>
-      <span class="status-icon" v-if="results.deepseek">{{ results.deepseek.ok ? '✅' : '❌' }}</span>
+      <span class="status-icon" v-if="results.deepseek">{{
+        results.deepseek.ok ? '✅' : '❌'
+      }}</span>
     </div>
-    <div class="result-msg" v-if="results.deepseek" :class="results.deepseek.ok ? 'success' : 'error'">
+    <div
+      class="result-msg"
+      v-if="results.deepseek"
+      :class="results.deepseek.ok ? 'success' : 'error'"
+    >
       {{ results.deepseek.message }}
     </div>
 
@@ -27,8 +37,16 @@
       <div class="form-group flex-1">
         <label>硅基流动 API Key（AI 生图）</label>
         <div class="input-with-toggle">
-          <input v-model="form.siliconflowApiKey" :type="showKeys.siliconflow ? 'text' : 'password'" placeholder="sk-..." />
-          <button class="btn-eye" @click="showKeys.siliconflow = !showKeys.siliconflow" type="button">
+          <input
+            v-model="form.siliconflowApiKey"
+            :type="showKeys.siliconflow ? 'text' : 'password'"
+            placeholder="sk-..."
+          />
+          <button
+            class="btn-eye"
+            @click="showKeys.siliconflow = !showKeys.siliconflow"
+            type="button"
+          >
             {{ showKeys.siliconflow ? '👁️' : '👁️‍🗨️' }}
           </button>
         </div>
@@ -36,9 +54,15 @@
       <button class="btn btn-test" @click="test('siliconflow')" :disabled="testing.siliconflow">
         {{ testing.siliconflow ? '⏳' : '🔌' }}
       </button>
-      <span class="status-icon" v-if="results.siliconflow">{{ results.siliconflow.ok ? '✅' : '❌' }}</span>
+      <span class="status-icon" v-if="results.siliconflow">{{
+        results.siliconflow.ok ? '✅' : '❌'
+      }}</span>
     </div>
-    <div class="result-msg" v-if="results.siliconflow" :class="results.siliconflow.ok ? 'success' : 'error'">
+    <div
+      class="result-msg"
+      v-if="results.siliconflow"
+      :class="results.siliconflow.ok ? 'success' : 'error'"
+    >
       {{ results.siliconflow.message }}
     </div>
     <div class="hint-block">注册: cloud.siliconflow.cn，新用户送 14 元</div>
@@ -48,7 +72,11 @@
       <div class="form-group flex-1">
         <label>Pexels API Key（真实素材搜索）</label>
         <div class="input-with-toggle">
-          <input v-model="form.pexelsApiKey" :type="showKeys.pexels ? 'text' : 'password'" placeholder="免费注册获取..." />
+          <input
+            v-model="form.pexelsApiKey"
+            :type="showKeys.pexels ? 'text' : 'password'"
+            placeholder="免费注册获取..."
+          />
           <button class="btn-eye" @click="showKeys.pexels = !showKeys.pexels" type="button">
             {{ showKeys.pexels ? '👁️' : '👁️‍🗨️' }}
           </button>
@@ -69,7 +97,11 @@
       <div class="form-group flex-1">
         <label>Telegram Bot Token（消息推送）</label>
         <div class="input-with-toggle">
-          <input v-model="form.tgBotToken" :type="showKeys.tg ? 'text' : 'password'" placeholder="123456:ABC-DEF..." />
+          <input
+            v-model="form.tgBotToken"
+            :type="showKeys.tg ? 'text' : 'password'"
+            placeholder="123456:ABC-DEF..."
+          />
           <button class="btn-eye" @click="showKeys.tg = !showKeys.tg" type="button">
             {{ showKeys.tg ? '👁️' : '👁️‍🗨️' }}
           </button>
@@ -95,11 +127,43 @@
       <input v-model="form.cdpEndpoint" placeholder="http://localhost:9222" />
     </div>
 
+    <!-- BitBrowser API Key -->
+    <div class="api-row">
+      <div class="form-group flex-1">
+        <label>比特浏览器 API Key（采集认证）</label>
+        <div class="input-with-toggle">
+          <input
+            v-model="form.bitApiKey"
+            :type="showKeys.bitKey ? 'text' : 'password'"
+            placeholder="32位UUID，如 fee00b3d51cb41bfbe517ff2c25f0ec4"
+          />
+          <button class="btn-eye" @click="showKeys.bitKey = !showKeys.bitKey" type="button">
+            {{ showKeys.bitKey ? '👁️' : '👁️‍🗨️' }}
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="hint-block">
+      比特浏览器控制台 → 设置 → API 密钥（32位十六进制 UUID）
+    </div>
+
     <hr class="section-divider" />
 
     <!-- 账号管理 -->
     <h3 class="section-title">👤 采集账号管理</h3>
     <p class="section-desc">通过比特浏览器 API 自动打开环境采集数据</p>
+
+    <!-- 比特连接测试 -->
+    <div class="bit-test-row">
+      <button class="btn btn-test" @click="testBit" :disabled="testing.bit">
+        {{ testing.bit ? '⏳' : '🔌' }}
+      </button>
+      <span>测试比特连接</span>
+      <span class="status-icon" v-if="results.bit">{{ results.bit.ok ? '✅' : '❌' }}</span>
+    </div>
+    <div class="result-msg" v-if="results.bit" :class="results.bit.ok ? 'success' : 'error'">
+      {{ results.bit.message }}
+    </div>
 
     <div class="account-list">
       <div v-for="(acc, i) in form.accounts" :key="i" class="account-row">
@@ -133,10 +197,10 @@
 </template>
 
 <script setup>
-import { reactive, ref, onMounted } from 'vue';
-import { useAppStore } from '../stores/app.js';
+import { reactive, ref, onMounted } from 'vue'
+import { useAppStore } from '../stores/app.js'
 
-const store = useAppStore();
+const store = useAppStore()
 const form = reactive({
   deepseekApiKey: '',
   siliconflowApiKey: '',
@@ -144,129 +208,313 @@ const form = reactive({
   tgBotToken: '',
   tgChannelId: '@your_channel',
   cdpEndpoint: 'http://localhost:9222',
+  bitApiKey: '',
   accounts: [],
-});
-const testing = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false });
-const results = reactive({ deepseek: null, siliconflow: null, pexels: null, tg: null });
-const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false });
-const saving = ref(false);
-const errorMsg = ref('');
+})
+const testing = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false, bit: false })
+const results = reactive({ deepseek: null, siliconflow: null, pexels: null, tg: null, bit: null })
+const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false, bitKey: false })
+const saving = ref(false)
+const errorMsg = ref('')
 
 onMounted(async () => {
-  const config = await window.xnowpost.getConfig();
-  Object.assign(form, config);
-});
+  const config = await window.xnowpost.getConfig()
+  Object.assign(form, config)
+})
 
-const saveMsg = ref('');
+const saveMsg = ref('')
 
 function addAccount() {
-  form.accounts.push({ name: '', platform: 'tiktok', bitEnvId: '' });
+  form.accounts.push({ name: '', platform: 'tiktok', bitEnvId: '' })
 }
 
 function removeAccount(i) {
-  form.accounts.splice(i, 1);
+  form.accounts.splice(i, 1)
 }
 
 async function save() {
-  saving.value = true;
-  errorMsg.value = '';
-  saveMsg.value = '';
+  saving.value = true
+  errorMsg.value = ''
+  saveMsg.value = ''
   try {
-    await store.saveConfig({ ...form });
-    saveMsg.value = '✅ 配置已保存';
-    setTimeout(() => saveMsg.value = '', 3000);
+    await store.saveConfig(JSON.parse(JSON.stringify(form)))
+    saveMsg.value = '✅ 配置已保存'
+    setTimeout(() => (saveMsg.value = ''), 3000)
   } catch (e) {
-    errorMsg.value = '保存失败: ' + (e.message || e);
+    errorMsg.value = '保存失败: ' + (e.message || e)
   }
-  saving.value = false;
+  saving.value = false
 }
 
 async function test(type) {
-  testing[type] = true;
-  results[type] = null;
-  errorMsg.value = '';
+  testing[type] = true
+  results[type] = null
+  errorMsg.value = ''
   try {
-    await store.saveConfig({ ...form });
-    results[type] = await window.xnowpost.testApi(type);
+    await store.saveConfig(JSON.parse(JSON.stringify(form)))
+    results[type] = await window.xnowpost.testApi(type)
   } catch (e) {
-    results[type] = { ok: false, message: 'IPC 调用失败: ' + (e.message || e) };
+    results[type] = { ok: false, message: 'IPC 调用失败: ' + (e.message || e) }
   }
-  testing[type] = false;
+  testing[type] = false
+}
+
+async function testBit() {
+  testing.bit = true
+  results.bit = null
+  try {
+    results.bit = await window.xnowpost.testBit(form.bitApiKey || undefined)
+  } catch (e) {
+    results.bit = { ok: false, message: '调用失败: ' + (e.message || e) }
+  }
+  testing.bit = false
 }
 </script>
 
 <style scoped>
-h2 { font-size: 24px; margin-bottom: 24px; }
-.api-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 4px; }
-.flex-1 { flex: 1; margin-bottom: 0 !important; }
-.form-group { margin-bottom: 16px; }
-.form-group label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; }
+h2 {
+  font-size: 24px;
+  margin-bottom: 24px;
+}
+.api-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 4px;
+}
+.flex-1 {
+  flex: 1;
+  margin-bottom: 0 !important;
+}
+.form-group {
+  margin-bottom: 16px;
+}
+.form-group label {
+  display: block;
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
 .form-group input {
-  width: 100%; max-width: 500px;
-  padding: 10px 14px; border: 1px solid #334155; border-radius: 8px;
-  background: #1e293b; color: #e2e8f0; font-size: 14px;
-  outline: none; transition: border-color 0.2s;
+  width: 100%;
+  max-width: 500px;
+  padding: 10px 14px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
 }
-.form-group input:focus { border-color: #f59e0b; }
-.input-with-toggle { display: flex; align-items: stretch; max-width: 500px; }
-.input-with-toggle input { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: none; max-width: none; }
-.btn-eye {
-  padding: 0 12px; border: 1px solid #334155; border-left: none; border-radius: 0 8px 8px 0;
-  background: #1e293b; color: #64748b; cursor: pointer; font-size: 14px; line-height: 1;
-  transition: background 0.2s;
+.form-group input:focus {
+  border-color: #f59e0b;
 }
-.btn-eye:hover { background: #334155; color: #e2e8f0; }
-.hint-block { font-size: 11px; color: #64748b; margin-bottom: 16px; margin-left: 2px; }
-.status-icon { font-size: 18px; padding-bottom: 10px; }
-.btn-row { display: flex; gap: 12px; margin-top: 24px; }
-.btn {
-  padding: 10px 24px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
-}
-.btn-primary { background: linear-gradient(135deg, #f59e0b, #d97706); color: #0f172a; }
-.btn-test {
-  background: #334155; color: #e2e8f0; border: none; border-radius: 6px; cursor: pointer;
-  font-size: 18px; padding: 8px 14px; height: 44px; min-width: 48px;
-}
-.btn-test:hover { background: #475569; }
-.btn-test:disabled { opacity: 0.5; }
-.result-msg {
-  margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; font-size: 12px;
+.input-with-toggle {
+  display: flex;
+  align-items: stretch;
   max-width: 500px;
 }
-.result-msg.success { background: #064e3b22; color: #22c55e; border: 1px solid #064e3b; }
-.result-msg.error { background: #7f1d1d22; color: #ef4444; border: 1px solid #7f1d1d; }
-.section-divider { border: none; border-top: 1px solid #334155; margin: 24px 0; }
-.section-title { font-size: 16px; color: #e2e8f0; margin: 0 0 4px; }
-.section-desc { font-size: 12px; color: #64748b; margin: 0 0 16px; }
+.input-with-toggle input {
+  flex: 1;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+  max-width: none;
+}
+.btn-eye {
+  padding: 0 12px;
+  border: 1px solid #334155;
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  background: #1e293b;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.2s;
+}
+.btn-eye:hover {
+  background: #334155;
+  color: #e2e8f0;
+}
+.hint-block {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 16px;
+  margin-left: 2px;
+}
+.status-icon {
+  font-size: 18px;
+  padding-bottom: 10px;
+}
+.btn-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+.btn {
+  padding: 10px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-primary {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #0f172a;
+}
+.btn-test {
+  background: #334155;
+  color: #e2e8f0;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 18px;
+  padding: 8px 14px;
+  height: 44px;
+  min-width: 48px;
+}
+.btn-test:hover {
+  background: #475569;
+}
+.btn-test:disabled {
+  opacity: 0.5;
+}
+.result-msg {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  max-width: 500px;
+}
+.result-msg.success {
+  background: #064e3b22;
+  color: #22c55e;
+  border: 1px solid #064e3b;
+}
+.result-msg.error {
+  background: #7f1d1d22;
+  color: #ef4444;
+  border: 1px solid #7f1d1d;
+}
+.section-divider {
+  border: none;
+  border-top: 1px solid #334155;
+  margin: 24px 0;
+}
+.section-title {
+  font-size: 16px;
+  color: #e2e8f0;
+  margin: 0 0 4px;
+}
+.section-desc {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0 0 16px;
+}
 
 /* 账号列表 */
-.account-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 .account-row {
-  display: flex; gap: 8px; align-items: center;
-  padding: 10px 12px; background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
 }
 .acc-input {
-  padding: 7px 10px; border: 1px solid #334155; border-radius: 6px;
-  background: #0f172a; color: #e2e8f0; font-size: 13px; outline: none;
+  padding: 7px 10px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 13px;
+  outline: none;
   transition: border-color 0.15s;
 }
-.acc-input:focus { border-color: #f59e0b; }
-.acc-name { flex: 2; min-width: 80px; }
-.acc-platform { flex: 1; min-width: 90px; cursor: pointer; }
-.acc-env { flex: 1; min-width: 70px; }
+.acc-input:focus {
+  border-color: #f59e0b;
+}
+.acc-name {
+  flex: 2;
+  min-width: 80px;
+}
+.acc-platform {
+  flex: 1;
+  min-width: 90px;
+  cursor: pointer;
+}
+.acc-env {
+  flex: 1;
+  min-width: 70px;
+}
 .btn-del {
-  width: 28px; height: 28px; border: none; border-radius: 6px;
-  background: transparent; color: #64748b; cursor: pointer; font-size: 12px;
-  transition: all 0.15s; flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+  flex-shrink: 0;
 }
-.btn-del:hover { background: #7f1d1d44; color: #ef4444; }
+.btn-del:hover {
+  background: #7f1d1d44;
+  color: #ef4444;
+}
 .btn-add-acc {
-  padding: 8px 16px; border: 2px dashed #334155; border-radius: 8px;
-  background: transparent; color: #64748b; cursor: pointer; font-size: 13px;
-  transition: all 0.15s; margin-bottom: 8px;
+  padding: 8px 16px;
+  border: 2px dashed #334155;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+  margin-bottom: 8px;
 }
-.btn-add-acc:hover { border-color: #f59e0b44; color: #f59e0b; }
+.btn-add-acc:hover {
+  border-color: #f59e0b44;
+  color: #f59e0b;
+}
 
-.error-banner { background: #7f1d1d44; color: #fca5a5; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; border: 1px solid #7f1d1d; max-width: 600px; }
-.success-banner { background: #064e3b44; color: #22c55e; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; border: 1px solid #064e3b; max-width: 600px; }
+/* 比特连接测试 */
+.bit-test-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.error-banner {
+  background: #7f1d1d44;
+  color: #fca5a5;
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  border: 1px solid #7f1d1d;
+  max-width: 600px;
+}
+.success-banner {
+  background: #064e3b44;
+  color: #22c55e;
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  border: 1px solid #064e3b;
+  max-width: 600px;
+}
 </style>

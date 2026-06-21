@@ -43,6 +43,7 @@ const DEFAULT_CONFIG = {
   tgBotToken: '',
   tgChannelId: '@your_channel',
   cdpEndpoint: 'http://localhost:9222',
+  bitApiKey: '',
 };
 
 // 窗口引用
@@ -67,8 +68,9 @@ function loadConfig() {
 }
 
 function saveConfig(config) {
-  // 串行化：后一个等前一个写完，读最新值再合并，防并发覆盖
-  configWriteLock = configWriteLock.then(() => {
+  // 串行化：后一个等前一个完成再执行，防并发覆盖
+  const currentLink = configWriteLock;
+  const result = currentLink.then(() => {
     const current = loadConfig();
     const merged = { ...current, ...config };
     fs.ensureDirSync(path.dirname(USER_CONFIG_PATH()));
@@ -80,9 +82,12 @@ function saveConfig(config) {
     process.env.PEXELS_API_KEY = merged.pexelsApiKey || '';
     process.env.TG_CHANNEL_ID = merged.tgChannelId || '';
     process.env.CDP_ENDPOINT = merged.cdpEndpoint || '';
+    process.env.BIT_API_KEY = merged.bitApiKey || '';
     return merged;
   });
-  return configWriteLock;
+  // 即使失败也不阻断后续保存链：前一个失败后下一个仍能正常写
+  configWriteLock = result.catch(() => {});
+  return result;
 }
 
 // === 日志记录（自动脱敏 + 持久化） ===
@@ -569,6 +574,25 @@ function setupIPC() {
     }
 
     return { ok: false, message: '未知测试类型: ' + type };
+  });
+
+  // 测试比特浏览器连接（传入 key 则带认证测试）
+  ipcMain.handle('config:testBit', async (_event, apiKey) => {
+    try {
+      const axios = (await import('axios')).default;
+      const body = { page: 1, pageSize: 5 };
+      if (apiKey) body.key = apiKey;
+      const resp = await axios.post('http://127.0.0.1:54345/browser/list', body, { timeout: 5000 });
+      if (resp.data?.success) {
+        const total = resp.data.data?.totalNum ?? 0;
+        const envs = resp.data.data?.list ?? [];
+        const envInfo = envs.length ? `（${envs.map(e => `#${e.id}:${e.name}`).join(', ')}）` : '';
+        return { ok: true, message: `比特浏览器 API ✅ 已连接（${total} 个环境${envInfo}）`, list: envs };
+      }
+      return { ok: false, message: '比特浏览器 ❌ API 返回: ' + (resp.data?.msg || '未知错误') };
+    } catch (err) {
+      return { ok: false, message: '比特浏览器 ❌ 无法连接: ' + (err.code === 'ECONNREFUSED' ? '请确认比特浏览器已启动' : err.message) };
+    }
   });
 }
 

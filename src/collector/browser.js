@@ -9,9 +9,11 @@ let context = null;
 /**
  * 通过比特浏览器 API 打开指定环境并返回 page
  * @param {string} envId - 比特浏览器环境 ID（数字）
+ * @param {string} [apiKey] - 比特 API 密钥（可选，默认从环境变量读取）
  */
-export async function openBitProfile(envId) {
-  const wsUrl = await callBitAPI('/browser/open', { id: String(envId) });
+export async function openBitProfile(envId, apiKey) {
+  const key = apiKey || process.env.BIT_API_KEY || '';
+  const wsUrl = await callBitAPI('/browser/open', { id: String(envId) }, key);
   if (!wsUrl) {
     console.error(`❌ 比特环境 ${envId} 打开失败`);
     return null;
@@ -65,8 +67,12 @@ export async function closeBrowser() {
 
 /**
  * 调用比特浏览器本地 REST API
+ * @param {string} path - API 路径
+ * @param {object} body - 请求体
+ * @param {string} [apiKey] - API 密钥（可选）
  */
-function callBitAPI(path, body) {
+function callBitAPI(path, body, apiKey) {
+  if (apiKey) body.key = apiKey;
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
     const options = {
