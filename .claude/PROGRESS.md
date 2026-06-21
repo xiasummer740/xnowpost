@@ -77,9 +77,17 @@
 - scheduler 和 engine 分开进程：隔离崩溃，调度器挂了自动重启
 - 提示词多风格+多产品：AI 随机选择不同方向和产品
 - 安装版路径：调度器用 app.asar.unpacked，引擎已经有解包路径
+- **better-sqlite3 → sql.js**：原生模块版本不匹配且缺 ClangCL 编译工具，换纯 JS SQLite
+- **采集器走比特 API**：不再依赖 CDP 端口直连，改调 `localhost:54345/browser/open`
+- **多账号数据隔离**：数据库加 `account` 字段，日报页按账号 tab 分组
+- **时间选择器 @wheel 劫持**：CSS scroll-snap 在 Electron 中不可靠，改 JS 直接控制每格滚动
 
-## 遗留问题
-- 无（视频已恢复正常生成 v1.0.14 ✅）
+## 遗留问题（下个对话处理）
+- **账号保存报错** `An object could not be cloned` — 配置页账号管理保存仍可能报错，待排查
+- **TikTok 粉丝数不准** — "Followers" 文本被误解析为 1，关键词匹配需优化
+- **多平台 scraper URL** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`，需用户填写
+- **TG 推送 404** — 日报推送 TG 时报 404（bot token 未配或频道 ID 无效），不影响本地日报展示
 
 ## 下一件事
-- 祥哥新开对话继续开发新功能
+- 修账号保存报错后，测试完整的多账号采集流程
+- 配置多个 BitBrowser 环境 ID，验证日报页账号 tab 切换
