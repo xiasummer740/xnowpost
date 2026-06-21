@@ -35,14 +35,14 @@
                 <!-- 小时 -->
                 <div class="tp-col">
                   <div class="tp-bar"></div>
-                  <div class="tp-scroll" ref="hourScrollEl" @scroll="onHourScroll">
+                  <div class="tp-scroll" ref="hourScrollEl" @wheel="onHourWheel">
                     <div class="tp-spacer"></div>
                     <div
                       v-for="h in 24"
                       :key="'h' + h"
                       class="tp-cell"
                       :class="{ on: tmpHour === h - 1 }"
-                      @click="tmpHour = h - 1"
+                      @click="selectHour(h)"
                     >
                       {{ pad(h - 1) }}
                     </div>
@@ -55,14 +55,14 @@
                 <!-- 分钟 -->
                 <div class="tp-col">
                   <div class="tp-bar"></div>
-                  <div class="tp-scroll" ref="minScrollEl" @scroll="onMinScroll">
+                  <div class="tp-scroll" ref="minScrollEl" @wheel="onMinWheel">
                     <div class="tp-spacer"></div>
                     <div
                       v-for="m in 60"
                       :key="'m' + m"
                       class="tp-cell"
                       :class="{ on: tmpMin === m - 1 }"
-                      @click="tmpMin = m - 1"
+                      @click="selectMin(m)"
                     >
                       {{ pad(m - 1) }}
                     </div>
@@ -107,19 +107,35 @@ function confirm() {
 
 function scrollToCenter(el, index) {
   if (!el) return
-  // spacer(1) + index items = (1 + index) * CELL_H, minus half visible height
-  const target = (1 + index) * CELL_H - el.clientHeight / 2 + CELL_H / 2
-  el.scrollTop = target
+  el.scrollTop = index * CELL_H
 }
 
-function onHourScroll(e) {
-  const idx = Math.round((e.target.scrollTop - CELL_H / 2) / CELL_H)
-  tmpHour.value = Math.max(0, Math.min(23, idx))
+function selectHour(h) {
+  tmpHour.value = h - 1
+  scrollToCenter(hourScrollEl.value, tmpHour.value)
 }
 
-function onMinScroll(e) {
-  const idx = Math.round((e.target.scrollTop - CELL_H / 2) / CELL_H)
-  tmpMin.value = Math.max(0, Math.min(59, idx))
+function selectMin(m) {
+  tmpMin.value = m - 1
+  scrollToCenter(minScrollEl.value, tmpMin.value)
+}
+
+function onHourWheel(e) {
+  e.preventDefault()
+  const next = tmpHour.value + Math.sign(e.deltaY)
+  if (next >= 0 && next <= 23) {
+    tmpHour.value = next
+    scrollToCenter(hourScrollEl.value, next)
+  }
+}
+
+function onMinWheel(e) {
+  e.preventDefault()
+  const next = tmpMin.value + Math.sign(e.deltaY)
+  if (next >= 0 && next <= 59) {
+    tmpMin.value = next
+    scrollToCenter(minScrollEl.value, next)
+  }
 }
 
 watch(show, async (v) => {
@@ -128,6 +144,8 @@ watch(show, async (v) => {
     tmpHour.value = isNaN(h) ? 7 : h
     tmpMin.value = isNaN(m) ? 0 : m
     await nextTick()
+    // wait for browser layout before setting scrollTop for accurate snap
+    await new Promise(r => requestAnimationFrame(r))
     scrollToCenter(hourScrollEl.value, tmpHour.value)
     scrollToCenter(minScrollEl.value, tmpMin.value)
   }

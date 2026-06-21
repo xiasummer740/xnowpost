@@ -1,7 +1,7 @@
 import 'dotenv/config';
-import Database from 'better-sqlite3';
 import path from 'path';
-import { connectBrowser, closeBrowser } from './browser.js';
+import fs from 'fs-extra';
+import { openBitProfile, closeBitProfile, connectBrowser, closeBrowser } from './browser.js';
 import { scrapeTikTok } from './scrapers/tiktok.js';
 import { scrapeXiaohongshu } from './scrapers/xiaohongshu.js';
 import { scrapeFacebook } from './scrapers/facebook.js';
@@ -9,103 +9,117 @@ import { scrapeInstagram } from './scrapers/instagram.js';
 import { scrapeYouTube } from './scrapers/youtube.js';
 import { scrapeX } from './scrapers/x.js';
 import { generateDailyReport } from '../analyzer/daily.js';
+import { openDB, ensureDB } from '../db.js';
 
 const DB_PATH = path.resolve('data/analytics.db');
+const CONFIG_PATH = path.resolve('config/user.json');
 
-function initDB() {
-  const db = new Database(DB_PATH);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS daily_stats (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
-      platform TEXT NOT NULL,
-      metric TEXT NOT NULL,
-      value INTEGER NOT NULL,
-      UNIQUE(date, platform, metric)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
-    CREATE INDEX IF NOT EXISTS idx_daily_stats_platform ON daily_stats(platform);
-
-    CREATE TABLE IF NOT EXISTS content_performance (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      content_id TEXT NOT NULL,
-      platform TEXT NOT NULL,
-      publish_date TEXT,
-      views INTEGER DEFAULT 0,
-      likes INTEGER DEFAULT 0,
-      comments INTEGER DEFAULT 0,
-      shares INTEGER DEFAULT 0
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_content_performance_date ON content_performance(publish_date);
-    CREATE INDEX IF NOT EXISTS idx_content_performance_platform ON content_performance(platform);
-  `);
-
-  return db;
+function loadAccounts() {
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      const cfg = fs.readJsonSync(CONFIG_PATH);
+      return cfg.accounts || [];
+    }
+  } catch (_) {}
+  return [];
 }
 
-function saveStats(db, platform, date, stats) {
-  const insert = db.prepare(`
-    INSERT OR REPLACE INTO daily_stats (date, platform, metric, value)
-    VALUES (?, ?, ?, ?)
-  `);
-
-  const tx = db.transaction(() => {
+async function saveStats(db, account, platform, date, stats) {
+  const sql = 'INSERT OR REPLACE INTO daily_stats (date, account, platform, metric, value) VALUES (?, ?, ?, ?, ?)';
+  db.transaction(() => {
     for (const [metric, value] of Object.entries(stats)) {
       if (typeof value === 'number' && !isNaN(value)) {
-        insert.run(date, platform, metric, value);
+        db.run(sql, [date, account, platform, metric, value]);
       }
     }
   });
-
-  tx();
 }
 
 export async function collectAll() {
   const date = new Date().toISOString().split('T')[0];
-  const db = initDB();
+  await ensureDB(DB_PATH);
 
-  console.log(`\n📊 数据采集 — ${date}\n`);
-
-  const result = await connectBrowser();
-  if (!result) {
-    console.error('❌ 无法连接浏览器，数据采集跳过');
-    console.log('   ⚠️ 如需数据采集，请在配置页填写 CDP 端口');
-    db.close();
-    // 即使没有采集数据，也尝试从已有数据库生成日报
-    const todayResults = getTodayStats(db, date);
-    if (todayResults.length > 0) {
-      await generateDailyReport(date, todayResults);
-    } else {
-      console.log('   📭 数据库暂无历史数据，跳过日报生成');
-    }
+  const accounts = loadAccounts();
+  if (accounts.length === 0) {
+    console.log('⚠️ 未配置账号，请在配置页添加账号');
+    console.log('   或者使用旧版 CDP 模式...');
+    // 旧模式兼容：直接连 CDP
+    await collectLegacy(date);
     return;
   }
 
-  function getTodayStats(db, date) {
-    try {
-      const rows = db.prepare(
-        'SELECT DISTINCT platform FROM daily_stats WHERE date = ?'
-      ).all(date);
-      const results = [];
-      for (const row of rows) {
-        const stats = {};
-        const metrics = db.prepare(
-          'SELECT metric, value FROM daily_stats WHERE date = ? AND platform = ?'
-        ).all(date, row.platform);
-        for (const m of metrics) stats[m.metric] = m.value;
-        results.push({ platform: row.platform, stats });
-      }
-      return results;
-    } catch (e) {
-      return [];
+  const allResults = [];
+
+  for (const acc of accounts) {
+    console.log(`\n📊 采集账号: ${acc.name} (${acc.platform})`);
+
+    const result = await openBitProfile(acc.bitEnvId);
+    if (!result) {
+      console.log(`  ⚠️ 跳过账号 ${acc.name}`);
+      continue;
     }
+
+    const { context } = result;
+
+    const scrapers = {
+      tiktok: scrapeTikTok,
+      xiaohongshu: scrapeXiaohongshu,
+      facebook: scrapeFacebook,
+      instagram: scrapeInstagram,
+      youtube: scrapeYouTube,
+      x: scrapeX,
+    };
+
+    const fn = scrapers[acc.platform];
+    if (!fn) {
+      console.log(`  ⚠️ 不支持的平台: ${acc.platform}`);
+      await closeBitProfile();
+      continue;
+    }
+
+    try {
+      const page = await context.newPage();
+      console.log(`  📡 ${acc.platform}: 开始采集...`);
+      const stats = await fn(page);
+      if (stats) {
+        const db = await openDB(DB_PATH);
+        saveStats(db, acc.name, acc.platform, date, stats);
+        fs.writeFileSync(DB_PATH, db.export());
+        db.close();
+        allResults.push({ account: acc.name, platform: acc.platform, stats });
+        console.log(`  ✅ ${acc.name}: ${JSON.stringify(stats)}`);
+      } else {
+        console.log(`  ⚠️ ${acc.name}: 无数据`);
+      }
+      await page.close();
+    } catch (err) {
+      console.error(`  ❌ ${acc.name}: ${err.message}`);
+    }
+
+    await closeBitProfile();
+  }
+
+  // 生成日报
+  if (allResults.length > 0) {
+    await generateDailyReport(date, allResults);
+  }
+
+  console.log('\n✅ 数据采集完成');
+}
+
+/**
+ * 旧版 CDP 直连（兼容无账号配置）
+ */
+async function collectLegacy(date) {
+  const db = await openDB(DB_PATH);
+  const result = await connectBrowser();
+  if (!result) {
+    console.log('❌ 无法连接浏览器，跳过');
+    db.close();
+    return;
   }
 
   const { context } = result;
-
   const scrapers = [
     { name: 'tiktok', fn: scrapeTikTok },
     { name: 'xiaohongshu', fn: scrapeXiaohongshu },
@@ -116,14 +130,13 @@ export async function collectAll() {
   ];
 
   const results = [];
-
   for (const { name, fn } of scrapers) {
     try {
       const page = await context.newPage();
       console.log(`  📡 ${name}: 开始采集...`);
       const stats = await fn(page);
       if (stats) {
-        saveStats(db, name, date, stats);
+        saveStats(db, 'default', name, date, stats);
         results.push({ platform: name, stats });
         console.log(`  ✅ ${name}: ${JSON.stringify(stats)}`);
       } else {
@@ -136,27 +149,22 @@ export async function collectAll() {
   }
 
   await closeBrowser();
+  fs.writeFileSync(DB_PATH, db.export());
+  db.close();
 
-  // 生成日报
   if (results.length > 0) {
     await generateDailyReport(date, results);
   }
-
-  db.close();
-  return results;
 }
 
-// 直接运行时执行采集
+// 直接运行时
 const isMain = process.argv[1] && (
   process.argv[1].includes('collector') ||
   process.argv[1].includes('index.js')
 );
 
 if (isMain && !process.argv[1].includes('src/index.js')) {
-  collectAll().then(() => {
-    console.log('\n✅ 数据采集完成');
-    process.exit(0);
-  }).catch(err => {
+  collectAll().then(() => process.exit(0)).catch(err => {
     console.error('\n❌ 采集失败:', err);
     process.exit(1);
   });

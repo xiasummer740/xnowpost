@@ -1,8 +1,4 @@
-import Database from 'better-sqlite3';
-import path from 'path';
 import { sendMessage } from '../notifier.js';
-
-const DB_PATH = path.resolve('data/analytics.db');
 
 const platformEmoji = {
   tiktok: '🎵',
@@ -29,8 +25,12 @@ function getYesterday(dateStr) {
   return d.toISOString().split('T')[0];
 }
 
-export async function generateDailyReport(date, todayResults) {
-  const db = new Database(DB_PATH);
+/**
+ * @param {string} date - 日期 YYYY-MM-DD
+ * @param {Array} todayResults - 当日采集结果
+ * @param {object} db - db 实例（来自 src/db.js openDB），可选
+ */
+export async function generateDailyReport(date, todayResults, db) {
   const yesterday = getYesterday(date);
 
   const lines = [
@@ -53,15 +53,19 @@ export async function generateDailyReport(date, todayResults) {
     for (const [metric, value] of Object.entries(stats)) {
       const label = metricLabels[metric] || metric;
 
-      // 查询昨日对比
-      const yesterdayRow = db.prepare(
-        'SELECT value FROM daily_stats WHERE date = ? AND platform = ? AND metric = ?'
-      ).get(yesterday, platform, metric);
+      if (db) {
+        const yesterdayRow = db.get(
+          'SELECT value FROM daily_stats WHERE date = ? AND platform = ? AND metric = ?',
+          [yesterday, platform, metric]
+        );
 
-      if (yesterdayRow && yesterdayRow.value !== undefined) {
-        const diff = value - yesterdayRow.value;
-        const arrow = diff >= 0 ? '↑' : '↓';
-        parts.push(`${label} ${formatNum(value)} ${arrow}${formatNum(Math.abs(diff))}`);
+        if (yesterdayRow && yesterdayRow.value !== undefined) {
+          const diff = value - yesterdayRow.value;
+          const arrow = diff >= 0 ? '↑' : '↓';
+          parts.push(`${label} ${formatNum(value)} ${arrow}${formatNum(Math.abs(diff))}`);
+        } else {
+          parts.push(`${label} ${formatNum(value)}`);
+        }
       } else {
         parts.push(`${label} ${formatNum(value)}`);
       }
@@ -83,8 +87,6 @@ export async function generateDailyReport(date, todayResults) {
   } catch (err) {
     console.error('❌ 日报推送失败:', err.message);
   }
-
-  db.close();
 }
 
 function formatNum(n) {

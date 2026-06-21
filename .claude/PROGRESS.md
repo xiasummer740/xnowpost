@@ -1,20 +1,32 @@
-## ⚠️ 遗留问题（下个对话优先处理）
-
-### 时间选择器选择时间错误 🐛
-自定义列式 TimePicker 在选择时间时结果不正确，需要修复。
-- **表现**：选择时间后实际设置的值不对
-- **待排查**：点击选中逻辑或 scroll 计算有偏移
-- **下个对话第一件事就是修这个**
-
----
-
 ## 本轮完成
-- [时间选择器升级] 原生 `<input type="time">` → 自定义列式 TimePicker
-  - 小时 + 分钟两列，点击选中/滚轮滚动
-  - 居中指示横条 + 渐变遮罩
-  - 弹窗动效，暗黑主题
-  - 确定/取消，点击遮罩关闭
-  - ⚠️ 选择时间有 bug，下个对话修复
+- [时间选择器 bug 修复+体验优化] 三个问题一起修
+  - 根因1：`scrollToCenter` 公式`(1+index)*36-90+18` 多减了36px → 选中偏移1格
+  - 修复：`scrollTop = index * CELL_H`
+  - 根因2：鼠标滚轮每tick滚动~108px = 3格 → 跳选
+  - 修复：`@wheel` 劫持滚轮，e.preventDefault()，每tick仅+1/-1
+  - 根因3：点击单元格后scroll位置不跟随
+  - 修复：`selectHour/selectMin` 函数同时设值+滚动
+  - 初始化：`requestAnimationFrame` 确保布局完成后再设scrollTop
+- [better-sqlite3 → sql.js 迁移] 原生模块版本不匹配无法编译
+  - 创建 `src/db.js` 统一封装 sql.js 的 openDB/ensureDB API
+  - 重构 collector、daily、trends、main.js 中所有 DB 操作
+  - 纯 JS 实现，不再依赖原生编译
+- [TikTok 采集适配] 新版 TikTok Studio 页面
+  - 旧选择器 `[data-testid="followers-count"]` 失效
+  - 改为 textContent 文本扫描提取数据（views/likes/comments/shares）
+  - `waitUntil: 'domcontentloaded'` 替代 `networkidle`（React 页面持续有网络活动）
+- [日报页面 📊] 全新页面展示采集数据
+  - 日期前后切换（← ▶ →）
+  - 平台数据卡片（粉丝/播放/点赞/评论/分享）
+  - 昨日对比（↑ 绿色 / ↓ 红色）
+  - 摘要文本区（类 TG 推送格式）
+  - 侧边栏新入口「📊 日报」
+- [多账号支持] 采集器 + 日报页面
+  - 配置页「账号管理」区块（名称/平台/比特环境ID）
+  - `browser.js` 新增 `openBitProfile()` — 走比特API `localhost:54345/browser/open`
+  - 采集器循环账号列表，逐个打开环境采集→关闭
+  - 数据库 `daily_stats` 加 `account` 字段 + schema 迁移
+  - 日报页顶部账号 tab 切换，每个账号独立展示数据
 - [v1.0.15发布] 时间选择器升级 + CMD 窗口消除
   - electron-builder GitHub Release + tag v1.0.15
   - 3 个资产完整（exe + blockmap + latest.yml）

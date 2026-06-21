@@ -573,36 +573,85 @@ function setupIPC() {
 }
 
   // 获取最近采集数据
-  ipcMain.handle('collect:latest', () => {
+  ipcMain.handle('collect:latest', async () => {
     try {
+      const { openDB } = await import('../src/db.js');
       const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
       if (!fs.existsSync(dbPath)) return null;
 
-      const Database = _require('better-sqlite3');
-      const db = new Database(dbPath, { readonly: true });
+      const db = await openDB(dbPath, { readonly: true });
 
-      const rows = db.prepare(`
-        SELECT date, platform, metric, value FROM daily_stats
-        WHERE date = (SELECT MAX(date) FROM daily_stats)
-        ORDER BY platform, metric
-      `).all();
+      const rows = db.all(
+        'SELECT date, platform, metric, value FROM daily_stats WHERE date = (SELECT MAX(date) FROM daily_stats) ORDER BY platform, metric'
+      );
       db.close();
 
       if (!rows.length) return null;
 
-      // 按平台分组
       const platforms = {};
       for (const r of rows) {
         if (!platforms[r.platform]) platforms[r.platform] = {};
         platforms[r.platform][r.metric] = r.value;
       }
 
-      return {
-        date: rows[0].date,
-        platforms,
-      };
+      return { date: rows[0].date, platforms };
     } catch (e) {
       console.error('读取采集数据失败:', e.message);
+      return null;
+    }
+  });
+
+  // 获取日报数据（含昨日对比 + 可用日期列表）
+  ipcMain.handle('report:daily', async (_event, targetDate) => {
+    try {
+      const { openDB } = await import('../src/db.js');
+      const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
+      if (!fs.existsSync(dbPath)) return null;
+
+      const db = await openDB(dbPath, { readonly: true });
+
+      // 可用日期列表（降序）
+      const dateRows = db.all('SELECT DISTINCT date FROM daily_stats ORDER BY date DESC');
+      const availableDates = dateRows.map(r => r.date);
+      if (!availableDates.length) { db.close(); return null; }
+
+      // 目标日期
+      const date = targetDate || availableDates[0];
+      // 昨日
+      const d = new Date(date);
+      d.setDate(d.getDate() - 1);
+      const yesterday = d.toISOString().split('T')[0];
+
+      // 当日数据（含 account）
+      const todayRows = db.all(
+        'SELECT account, platform, metric, value FROM daily_stats WHERE date = ? ORDER BY account, platform, metric',
+        [date]
+      );
+
+      // 昨日数据
+      const yesterdayRows = db.all(
+        'SELECT account, platform, metric, value FROM daily_stats WHERE date = ? ORDER BY account, platform, metric',
+        [yesterday]
+      );
+
+      db.close();
+
+      // 按账号 → 平台分组
+      const accounts = {};
+      for (const r of todayRows) {
+        if (!accounts[r.account]) accounts[r.account] = {};
+        if (!accounts[r.account][r.platform]) accounts[r.account][r.platform] = { stats: {}, yesterday: {} };
+        accounts[r.account][r.platform].stats[r.metric] = r.value;
+      }
+      for (const r of yesterdayRows) {
+        if (!accounts[r.account]) accounts[r.account] = {};
+        if (!accounts[r.account][r.platform]) accounts[r.account][r.platform] = { stats: {}, yesterday: {} };
+        accounts[r.account][r.platform].yesterday[r.metric] = r.value;
+      }
+
+      return { date, yesterday, availableDates, accounts };
+    } catch (e) {
+      console.error('读取日报数据失败:', e.message);
       return null;
     }
   });

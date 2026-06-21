@@ -22,6 +22,9 @@
         <router-link to="/logs" class="nav-item" :class="{ active: $route.path === '/logs' }">
           📜 日志
         </router-link>
+        <router-link to="/report" class="nav-item" :class="{ active: $route.path === '/report' }">
+          📊 日报
+        </router-link>
         <router-link to="/schedule" class="nav-item" :class="{ active: $route.path === '/schedule' }">
           ⏰ 闹钟
         </router-link>

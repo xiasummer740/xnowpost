@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('xnowpost', {
 
   // 采集数据
   getLatestCollect: () => ipcRenderer.invoke('collect:latest'),
+  getDailyReport: (date) => ipcRenderer.invoke('report:daily', date),
 
   // 自动更新
   checkUpdate: () => ipcRenderer.invoke('update:check'),

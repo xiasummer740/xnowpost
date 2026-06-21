@@ -1,10 +1,10 @@
-import Database from 'better-sqlite3';
 import path from 'path';
+import { openDB } from '../db.js';
 
 const DB_PATH = path.resolve('data/analytics.db');
 
-export function analyzeTrends(platform, days = 7) {
-  const db = new Database(DB_PATH);
+export async function analyzeTrends(platform, days = 7) {
+  const db = await openDB(DB_PATH, { readonly: true });
 
   const today = new Date().toISOString().split('T')[0];
   const weekAgo = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
@@ -13,11 +13,12 @@ export function analyzeTrends(platform, days = 7) {
   const alerts = [];
 
   for (const metric of metrics) {
-    const rows = db.prepare(`
-      SELECT date, value FROM daily_stats
-      WHERE platform = ? AND metric = ? AND date >= ? AND date <= ?
-      ORDER BY date ASC
-    `).all(platform, metric, weekAgo, today);
+    const rows = db.all(
+      `SELECT date, value FROM daily_stats
+       WHERE platform = ? AND metric = ? AND date >= ? AND date <= ?
+       ORDER BY date ASC`,
+      [platform, metric, weekAgo, today]
+    );
 
     if (rows.length < 3) continue;
 
