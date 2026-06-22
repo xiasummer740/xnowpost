@@ -13,10 +13,10 @@ const RETRY_DELAY = 60_000;
 
 // 默认配置（首次启动时写入）
 const DEFAULT_JOBS = [
-  { id: 1, time: '07:00', mode: 'auto',    label: '早间内容（视频+图文）', enabled: true  },
-  { id: 2, time: '19:00', mode: 'video',   label: '晚间视频',             enabled: true  },
+  { id: 1, time: '07:00', mode: 'auto',    label: '早间内容（视频+图文）', enabled: false, account: '' },
+  { id: 2, time: '19:00', mode: 'video',   label: '晚间视频',             enabled: false, account: '' },
   { id: 3, time: '21:00', mode: 'collect', label: '数据采集 + 日报',      enabled: false },
-  { id: 4, time: '20:00', mode: 'publish', label: '自动发布',             enabled: false },
+  { id: 4, time: '20:00', mode: 'publish', label: '自动发布（旧模式）',    enabled: false },
 ];
 
 // 所有活跃的 cron 任务引用，用于热重载
@@ -91,7 +91,14 @@ function runJob(job) {
     runWithRetry('src/publisher/index.js --all', job.label);
   } else {
     const flag = job.mode === 'video' ? '--video-only' : job.mode === 'post' ? '--post-only' : '';
-    runWithRetry(`src/index.js ${flag}`.trim(), job.label);
+    let cmd = `src/index.js ${flag}`.trim();
+
+    // 🔴 如果闹钟指定了账号，加自动发布参数
+    if (job.account) {
+      cmd += ` --auto-publish --account "${job.account}"`;
+    }
+
+    runWithRetry(cmd, job.label);
   }
 }
 

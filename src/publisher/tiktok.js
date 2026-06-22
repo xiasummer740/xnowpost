@@ -434,6 +434,19 @@ export async function publishToTikTok(options) {
       await btn.click();
       postedYet = true;
       posted = true;
+
+      // 🔴 关键修复：Post 按钮点击后立即写入 .published 标记
+      // 不等后续 35s 等待期，防止清理失败导致重复发布
+      try {
+        fs.writeJsonSync(path.join(sessionPath, '.published'), {
+          publishedAt: new Date().toISOString(),
+          platform: 'tiktok',
+          url: page.url() || '',
+        }, { spaces: 2 });
+        console.log('  ✅ .published 已标记');
+      } catch (e) {
+        console.warn(`  ⚠️ .published 写入失败: ${e.message}`);
+      }
     }, { domQuery: '[data-e2e="post_video_button"]',
         checkSelectors: ['[data-e2e="post_video_button"]'],
         waitAfterMs: 1000 });
@@ -516,13 +529,19 @@ export async function publishToTikTok(options) {
 
     await page.close();
   } catch (err) {
-    // 出错时也保存 trace
-    try { await trace.save(); } catch (_) {}
-    try {
-      await page?.screenshot({ path: path.join(screenshotDir, 'publish_error.png') });
-    } catch (_) {}
-    await closeBitProfile();
-    throw err;
+    // 🔴 关键修复：如果已经点击 Post（postedYet=true），
+    //    后续清理失败（trace.save / page.close 等）不致命
+    if (postedYet) {
+      console.log(`  ⚠️ 发布成功但后续清理出错: ${err.message}`);
+    } else {
+      // 发布未完成 → 保存 trace/截图后正常抛出
+      try { await trace.save(); } catch (_) {}
+      try {
+        await page?.screenshot({ path: path.join(screenshotDir, 'publish_error.png') });
+      } catch (_) {}
+      await closeBitProfile();
+      throw err;
+    }
   }
 
   await closeBitProfile();
