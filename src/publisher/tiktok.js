@@ -413,6 +413,33 @@ export async function publishToTikTok(options) {
       await page.waitForTimeout(2000);
     }
 
+    // ⏳ 等待 Content check lite 完成
+    // 位置：Post / Discard 按钮上方
+    // 状态1: "Checking in progress. This will take about 10 minutes..."
+    // 状态2: "No issues found. However, your video could still be removed later..."
+    console.log('  ⏳ 等待 Content check...');
+    let checkPassed = false;
+    for (let i = 0; i < 60; i++) {  // 最长等 5 分钟
+      await page.waitForTimeout(5000);
+      try {
+        const text = await page.evaluate(() => document.body.innerText);
+        if (text.includes('No issues found') || text.includes('no issues found')) {
+          checkPassed = true;
+          console.log(`  ✅ Content check 通过 (约${(i+1)*5}秒)`);
+          break;
+        }
+        if (text.includes('Checking in progress') || text.includes('checking in progress')) {
+          // 还在检测中，继续等
+          continue;
+        }
+        // 如果检测内容还没出现，继续等
+      } catch (_) {}
+    }
+    if (!checkPassed) {
+      console.log('  ⚠️ Content check 超时（5分钟），继续尝试发布');
+    }
+    await page.waitForTimeout(1000);
+
     // 查找并点击发布按钮 — 用 trace 记录全过程
     let posted = false;
     await trace.step('点击发布按钮', async () => {
