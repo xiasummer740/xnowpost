@@ -38,6 +38,17 @@
           >
         </div>
 
+        <!-- 账号选择（生成模式才显示） -->
+        <div class="acc-row" v-if="job.mode !== 'collect' && job.mode !== 'publish'">
+          <select v-model="job.account" class="acc-select">
+            <option value="">📄 仅生成，不发布</option>
+            <option v-for="acc in accounts" :key="acc.name" :value="acc.name">
+              📤 {{ acc.name }}{{ acc.bitEnvId ? '' : ' ⚠️ 未配置' }}
+            </option>
+          </select>
+          <span class="acc-hint" v-if="job.account">→ 生成后自动发布到此账号</span>
+        </div>
+
         <!-- 名称 -->
         <input v-model="job.label" class="label-input" placeholder="闹钟名称（如：早间内容）" />
       </div>
@@ -56,6 +67,7 @@
       <span class="tips-icon">💡</span>
       <div>
         <p>关闭开关 = 暂停闹钟，配置保留</p>
+        <p>选择「账号」= 生成后自动发布到此账号，不选 = 仅生成</p>
         <p>桌面版启动后调度器自动在后台运行</p>
       </div>
     </div>
@@ -68,6 +80,7 @@ import { ref, onMounted } from 'vue'
 import TimePicker from '../components/TimePicker.vue'
 
 const jobs = ref([])
+const accounts = ref([])
 const saving = ref(false)
 const saved = ref(false)
 
@@ -76,20 +89,25 @@ const modeOptions = [
   { value: 'video', label: '仅视频' },
   { value: 'post', label: '仅图文' },
   { value: 'collect', label: '采集+日报' },
-  { value: 'publish', label: '自动发布', icon: '📤' },
+  { value: 'publish', label: '批量发布(旧)', icon: '📤' },
 ]
 
 async function load() {
   jobs.value = await window.xnowpost.getSchedules()
   if (!jobs.value.length) resetDefaults()
+  // 加载账号列表（用于闹钟的账号选择器）
+  try {
+    const config = await window.xnowpost.getConfig()
+    accounts.value = config.accounts || []
+  } catch (_) {}
 }
 
 function resetDefaults() {
   // 默认全部关闭，用户按需开启
   jobs.value = [
-    { id: 1, time: '07:00', mode: 'auto', label: '早间内容（视频+图文）', enabled: false },
-    { id: 2, time: '19:00', mode: 'video', label: '晚间视频', enabled: false },
-    { id: 3, time: '21:00', mode: 'collect', label: '数据采集 + 日报', enabled: false },
+    { id: 1, time: '07:00', mode: 'auto',  label: '早间内容（视频+图文）', enabled: false, account: '' },
+    { id: 2, time: '19:00', mode: 'video', label: '晚间视频',             enabled: false, account: '' },
+    { id: 3, time: '21:00', mode: 'collect', label: '数据采集 + 日报',     enabled: false },
   ]
 }
 
@@ -101,6 +119,7 @@ function addJob() {
     mode: 'auto',
     label: '新闹钟',
     enabled: true,
+    account: '',
   })
 }
 
@@ -265,6 +284,35 @@ h2 {
   background: #f59e0b;
   color: #0f172a;
   border-color: #f59e0b;
+}
+
+/* 账号选择行 */
+.acc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.acc-select {
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #0f172a;
+  color: #94a3b8;
+  border: 1px solid #1e293b;
+  outline: none;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+}
+.acc-select:focus {
+  border-color: #f59e0b;
+}
+.acc-hint {
+  font-size: 11px;
+  color: #22c55e;
+  white-space: nowrap;
 }
 
 /* 名称 */

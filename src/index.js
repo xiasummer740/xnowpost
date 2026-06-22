@@ -122,9 +122,13 @@ async function main() {
   const args = process.argv.slice(2);
   const mode = args.includes('--video-only') ? 'video' : args.includes('--post-only') ? 'post' : 'auto';
 
-  // 解析用户主题（可选）
+  // 解析可选参数
   const topicIdx = args.indexOf('--topic');
   const topic = topicIdx !== -1 && topicIdx + 1 < args.length ? args[topicIdx + 1] : '';
+
+  const autoPublish = args.includes('--auto-publish');
+  const accountIdx = args.indexOf('--account');
+  const accountName = accountIdx !== -1 && accountIdx + 1 < args.length ? args[accountIdx + 1] : '';
 
   // 统一会话目录（只建一次）
   const sessionDir = getSessionDir();
@@ -146,6 +150,57 @@ async function main() {
     await saveCostLog(sessionDir);
     console.log(`\n💰 DeepSeek ¥${cost.deepseek.toFixed(4)} + Kolors ¥${cost.kolors.toFixed(2)} = ¥${cost.total.toFixed(2)}`);
     console.log(`✅ 完成！📁 ${sessionDir}\n`);
+
+    // === 自动发布（闹钟模式：生成后直接发布到指定账号） ===
+    if (autoPublish && accountName) {
+      console.log(`\n📤 自动发布到账号: ${accountName}`);
+      const configPath = path.resolve(process.env.XNOWPOST_DATA_DIR || '.', 'config', 'user.json');
+      let config;
+      try {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      } catch (e) {
+        console.error(`  ❌ 读取配置失败: ${e.message}`);
+        process.exit(1);
+      }
+
+      const account = config.accounts?.find(a => a.name === accountName);
+      if (!account) {
+        console.error(`  ❌ 配置中找不到账号: ${accountName}`);
+        process.exit(1);
+      }
+      if (!account.bitEnvId) {
+        console.error(`  ❌ 账号 ${accountName} 未配置比特环境 ID`);
+        process.exit(1);
+      }
+
+      // 查找生成的视频/图文文件
+      const files = fs.readdirSync(sessionDir);
+      const videoFile = files.find(f => f.endsWith('.mp4'));
+      const txtFile = files.find(f => f === '文案.txt');
+
+      if (!videoFile) {
+        console.error('  ❌ 没有找到生成的视频文件');
+        process.exit(1);
+      }
+
+      try {
+        const { publishToTikTok } = await import('./publisher/tiktok.js');
+        const url = await publishToTikTok({
+          sessionPath: sessionDir,
+          videoFile: path.join(sessionDir, videoFile),
+          titleFile: path.join(sessionDir, txtFile),
+          envId: account.bitEnvId,
+          apiKey: config.bitApiKey || '',
+        });
+        console.log(`  ✅ 自动发布完成 ${url ? `(${url})` : ''}`);
+      } catch (pubErr) {
+        // publishToTikTok 在 Post 点击后会写 .published，
+        // 所以即使这里报错也不会重复发布（但进程退出 code=1 触发调度器重试）
+        // 重试会生成新视频+新发布，不会碰已标记的 session
+        console.error(`  ❌ 自动发布失败: ${pubErr.message}`);
+        process.exit(1);
+      }
+    }
   } catch (err) {
     console.error('\n❌ ' + err.message);
     if (err.stack) console.error(err.stack.split('\n').slice(0, 3).join('\n'));
