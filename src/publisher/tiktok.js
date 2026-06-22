@@ -413,47 +413,22 @@ export async function publishToTikTok(options) {
       await page.waitForTimeout(2000);
     }
 
-    // ⏳ 等待 Content check lite 完成
-    // 位置：Post / Discard 按钮上方
-    // 状态1: "Checking in progress. This will take about 10 minutes..."
-    // 状态2: "No issues found. However, your video could still be removed later..."
-    // 失败: "Content violation" / "Restricted" / "Copyright" / "Community Guidelines"
-    console.log('  ⏳ 等待 Content check...');
-    let checkPassed = false;
-    let checkFailed = false;
-    for (let i = 0; i < 60; i++) {  // 最长等 5 分钟
-      await page.waitForTimeout(5000);
-      try {
-        const text = await page.evaluate(() => document.body.innerText);
-        const lower = text.toLowerCase();
-        if (lower.includes('no issues found')) {
-          checkPassed = true;
-          console.log(`  ✅ Content check 通过 (约${(i+1)*5}秒)`);
-          break;
-        }
-        // 检测 Content check 失败（违规/受限/版权）
-        if (lower.includes('content violation') || lower.includes('restricted')
-            || lower.includes('copyright') || lower.includes('community guidelines')
-            || lower.includes('内容违规') || lower.includes('违规')
-            || lower.includes('版权') || lower.includes('侵权')) {
-          checkFailed = true;
-          console.log(`  ❌ Content check 检测到问题: "${text.substring(0, 100)}"`);
-          break;
-        }
-        if (lower.includes('checking in progress')) {
-          // 还在检测中，继续等
-          continue;
-        }
-        // 如果检测内容还没出现，继续等
-      } catch (_) {}
+    // ⏳ 快速检查 Content check 状态（不轮询等待，只检测如果有明显违规标志则中止）
+    try {
+      const text = await page.evaluate(() => document.body.innerText);
+      const lower = text.toLowerCase();
+      if (lower.includes('content violation') || lower.includes('restricted')
+          || lower.includes('copyright') || lower.includes('community guidelines')
+          || lower.includes('内容违规') || lower.includes('违规')
+          || lower.includes('版权') || lower.includes('侵权')) {
+        throw new Error(`Content check 不通过: "${text.substring(0, 120)}"`);
+      }
+    } catch (e) {
+      if (e.message.startsWith('Content check 不通过')) throw e;
+      // 其他错误（如 DOM 操作失败）忽略
     }
-    if (checkFailed) {
-      throw new Error('Content check 未通过，视频被判定违规/受限');
-    }
-    if (!checkPassed) {
-      console.log('  ⚠️ Content check 超时（5分钟），继续尝试发布');
-    }
-    await page.waitForTimeout(1000);
+
+    // 查找并点击发布按钮 — 用 trace 记录全过程
 
     // 查找并点击发布按钮 — 用 trace 记录全过程
     let posted = false;
