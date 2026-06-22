@@ -413,20 +413,38 @@ export async function publishToTikTok(options) {
       await page.waitForTimeout(2000);
     }
 
-    // ⏳ 快速检查 Content check 状态（不轮询等待，只检测如果有明显违规标志则中止）
-    try {
-      const text = await page.evaluate(() => document.body.innerText);
-      const lower = text.toLowerCase();
-      if (lower.includes('content violation') || lower.includes('restricted')
-          || lower.includes('copyright') || lower.includes('community guidelines')
-          || lower.includes('内容违规') || lower.includes('违规')
-          || lower.includes('版权') || lower.includes('侵权')) {
-        throw new Error(`Content check 不通过: "${text.substring(0, 120)}"`);
+    // ⏳ 等待 Content check 完成
+    // 页面会先后出现两段文字（Post/Discard 按钮上方）：
+    //   ① "Checking in progress. This will take about 10 minutes..."
+    //   ② "No issues found. However, your video could still be removed later..."
+    // 等到 ② 出现才点 Post；如果出现违规提示则中止
+    console.log('  ⏳ 等待 Content check 完成...');
+    for (let i = 0; i < 120; i++) {  // 最长等 10 分钟
+      await page.waitForTimeout(5000);
+      try {
+        const text = await page.evaluate(() => document.body.innerText);
+        const lower = text.toLowerCase();
+
+        // ✅ 检测通过 → 跳出循环，继续点 Post
+        if (lower.includes('no issues found')) {
+          console.log(`  ✅ Content check 通过 (约${(i+1)*5}秒)`);
+          break;
+        }
+
+        // ❌ 检测到违规 → 抛错中止发布
+        if (lower.includes('content violation') || lower.includes('restricted')
+            || lower.includes('copyright') || lower.includes('community guidelines')
+            || lower.includes('内容违规') || lower.includes('违规')
+            || lower.includes('版权') || lower.includes('侵权')) {
+          throw new Error(`Content check 不通过: "${text.substring(0, 120)}"`);
+        }
+
+        // ⏳ 还在检测中（或检测文字还没出现），继续等
+      } catch (e) {
+        if (e.message.startsWith('Content check 不通过')) throw e;
       }
-    } catch (e) {
-      if (e.message.startsWith('Content check 不通过')) throw e;
-      // 其他错误（如 DOM 操作失败）忽略
     }
+    await page.waitForTimeout(1000);
 
     // 查找并点击发布按钮 — 用 trace 记录全过程
 
