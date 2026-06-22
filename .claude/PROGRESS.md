@@ -146,4 +146,25 @@
 - XNOWPost Setup 1.1.0.exe (107 MB)
 - XNOWPost Setup 1.1.0.exe.blockmap
 - latest.yml
-- 向后兼容：旧 schedule.json 无 `account` 字段 → 不触发自动发布
+
+---
+
+## v1.1.1-dev (2026-06-23)
+
+### Bug 修复
+- [postedYet 作用域 Bug] `let postedYet` 声明在 try 块内 → catch 访问不到 → 发布报错
+  - 移到 try 外面，同时作用域可用
+- [Content check 等待] 发布前轮询检测 "No issues found" 后点 Post，最长 5 分钟
+  - 检测到违规文字（content violation/copyright 等）直接中止并抛错
+  - tiktok.js 快速检测 + 等待循环（每 5 秒），不卡死
+
+### 优化
+- [AI 提示词 TikTok 合规] content_video.txt / content_post.txt 加 5 条合规要求
+  - 禁止虚假宣传、对比贬低、诱导互动
+  - 用"增长方案""曝光提升"等自然表述替代"买粉""刷量"
+
+### 下个对话优先级
+1. **发布流程实测** — 验证 Content check 等待 + postedYet 修复后发布正常
+2. **账号自动发布实测** — 闹钟选账号 → 生成 → 自动发布到对应 TikTok 环境
+3. **多账号多闹钟配置** — 创建 10 个账号 + 10 个闹钟的生产环境
+4. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X

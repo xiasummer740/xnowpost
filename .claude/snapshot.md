@@ -1,7 +1,7 @@
 ## 🏷️ 架构快照
-- **时间**: 2026-06-23 00:12
-- **提交**: feat: AI 提示词加 TikTok 合规要求，发布时不轮询 Content check
-- **文件**: .claude/snapshot.md, config/prompts/content_post.txt, config/prompts/content_video.txt, src/publisher/tiktok.js
+- **时间**: 2026-06-23 00:15
+- **提交**: fix: Content check 等待 'No issues found' 后点发布（最长等10分钟）
+- **文件**: .claude/snapshot.md, src/publisher/tiktok.js
 
 ## 📋 未完成项
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
