@@ -136,6 +136,7 @@
 - [清理错误不抛] `postedYet=true` 时清理失败不抛错，不阻塞调用方
 - [安装包缺少 publisher 模块] electron-builder.yml 补 `src/publisher/**/*` 白名单
 - [安装包文件名] 修正 GitHub Release 资产名（空格→短横线，对齐 latest.yml）
+- [Content check 未完成就发布] 填标题后、Post 前，轮询检测 "No issues found" 最多 5 分钟
 
 ### 架构决策
 - 生成+发布原子化：不扫 output 目录，闹钟直接定账号
