@@ -48,6 +48,7 @@ export async function publishToTikTok(options) {
   const { context } = result;
   let publishedUrl = '';
   let screenshotDir = sessionPath;  // 仅 error 截图保留
+  let postedYet = false;  // 是否已点发布按钮 — 移到 try 外面，catch 也能访问
 
   try {
     const page = await context.newPage();
@@ -56,7 +57,6 @@ export async function publishToTikTok(options) {
     const trace = new BrowserTracer(page, sessionPath);
 
     // 对话框处理策略
-    let postedYet = false;  // 是否已点发布按钮
     page.on('dialog', async dialog => {
       const msg = dialog.message().toLowerCase();
       // 点发布前：退出/检查未完成 → 取消（留在页面继续设置）
@@ -419,7 +419,7 @@ export async function publishToTikTok(options) {
     //   ② "No issues found. However, your video could still be removed later..."
     // 等到 ② 出现才点 Post；如果出现违规提示则中止
     console.log('  ⏳ 等待 Content check 完成...');
-    for (let i = 0; i < 120; i++) {  // 最长等 10 分钟
+    for (let i = 0; i < 60; i++) {  // 最长等 5 分钟
       await page.waitForTimeout(5000);
       try {
         const text = await page.evaluate(() => document.body.innerText);
