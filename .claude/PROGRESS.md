@@ -96,17 +96,31 @@
 - [无 CMD 弹窗启动] 所有启动命令加 `WindowStyle Hidden`
 - [v1.0.16 发布] 版本推进，68 个单元测试全部通过
 
+## 本轮完成 (v1.0.17-dev)
+- [TikTok 发布器 AI 开关修复] dispatchEvent + wait 600ms 解决点击问题
+  - 根因：`aigc_container` 在 DOM 里但 CSS 计算尺寸为 0 → `isVisible()` 拒点，force click 也被浏览器层拦截
+  - 修复：`dispatchEvent(new MouseEvent('click'))` 绕开可见性检查，**拆成两步**：dispatch → wait 600ms 等 React 渲染 → 再检查 `aria-checked`
+  - force click 保留为第一策略兜底
+- [TikTok 发布器 Post 按钮修复] 两条 bug
+  - `data-e2e="post_video_button"`（下划线）实际正确，但旧代码只搜了 `post-video-btn`（连字符）
+  - `isDisabled()` 超时默认 `true` → 按钮被跳过。改用 `getAttribute('data-disabled')`
+- [BrowserTracer 模块] 新建 `src/publisher/debug-trace.js` — 纯文本操作追踪器
+  - `trace.step()` 包裹每个操作，自动捕获前后 DOM 状态（switch/按钮/dialog/URL）
+  - 输出 `browser-trace.json`，兼容 DeepSeek 等不支持图片的大模型
+- [v1.0.17-dev] 版本推进
+
 ## 遗留问题
-- **TikTok 发布器上传后可发布按钮检测失败** — 当前版本 `playwright` Selector 不匹配 TikTok Studio 2026 UI
-  - 上传 ✅ / 标题填写 ❌ / 标签添加 ❌ / 发布点击 ❌（`dialog` handler 已加）
-  - 需要新对话用浏览器 DevTools 确认 TikTok Studio 的 DOM 结构
+- **TikTok 发布器退出弹窗** ✅ 已修复
+- **TikTok 发布器 AI 开关** ✅ 已修复（dispatchEvent + wait 600ms）
+- **TikTok 发布器 Post 按钮** ✅ 已修复（正确 data-e2e + 禁用状态检测）
+- **TikTok 发布器核心流程**：全部通过 ✅
 - **fee00b3d51cb41bfbe517ff2c25f0ec4 无法打开** — 既是 API Key 又是环境 ID，API 混淆
-  - 实际可用环境仅 `24056554bc0e479784f054c161670a53` 一个
+  - 实际可用环境仅 `31bea5b146af40f58b2a6eae0e2c2a6b` 一个
 - **多平台 scraper URL** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
 - **TG 推送 404** — bot token 未配或频道 ID 无效
 
 ## 下个对话优先级
-1. 调试 TikTok 发布器的 DOM 选择器（打开 TikTok Studio → F12 → 看上传页面的按钮/输入框结构）
-2. 修复标题填写和发布按钮点击
-3. 测试完整 v1.0.16 发版流程（含打包）
-4. 考虑在比特后台新建第二个环境
+1. **从面板手动发布测试** — 确认调度器 + 面板点击发布流程正常
+2. **稳定运行观察** — AI 开关 dispatchEvent 方案在有遮挡/弹窗等复杂场景下是否仍稳定
+3. **第二个比特环境** — 在比特后台新建环境并配置
+4. **多平台发布扩展** — 接入小红书/Facebook/Instagram/YouTube/X
