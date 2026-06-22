@@ -124,3 +124,22 @@
 2. **稳定运行观察** — AI 开关 dispatchEvent 方案在有遮挡/弹窗等复杂场景下是否仍稳定
 3. **第二个比特环境** — 在比特后台新建环境并配置
 4. **多平台发布扩展** — 接入小红书/Facebook/Instagram/YouTube/X
+
+---
+
+## v1.1.0 发布 (2026-06-22)
+
+### 功能
+- [闹钟账号自动发布] 闹钟新增「账号」选择器，生成后直接发布到指定账号
+  - Schedule.vue 新增 `accounts` 下拉列表（从 config.accounts 加载）
+  - scheduler.js 将 `--auto-publish --account <name>` 传给引擎
+  - index.js 新增 `--auto-publish` 解析+调用 tiktok.js
+  - tiktok.js Post 后立即写 `.published`（不等 35s）
+
+### Bug 修复
+- [重复发布] Post 点击后立即写 `.published`，防止 trace.save/page.close 失败导致重发
+- [清理错误不抛] `postedYet=true` 时清理失败不抛错，不阻塞调用方
+
+### 架构决策
+- 生成+发布原子化：不扫 output 目录，闹钟直接定账号
+- 向后兼容：旧 schedule.json 无 `account` 字段 → 不触发自动发布
