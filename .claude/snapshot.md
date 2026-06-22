@@ -1,7 +1,7 @@
 ## 🏷️ 架构快照
-- **时间**: 2026-06-22 23:25
-- **提交**: feat: 闹钟账号自动发布 + 修复重复发布 bug
-- **文件**: src/index.js, src/publisher/tiktok.js, src/renderer/views/Schedule.vue, src/scheduler.js
+- **时间**: 2026-06-22 23:27
+- **提交**: fix: electron-builder.yml 缺少 src/publisher 白名单
+- **文件**: electron-builder.yml
 
 ## 📋 未完成项
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
