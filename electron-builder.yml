@@ -9,10 +9,12 @@ files:
   - src/notifier.js
   - src/organizer.js
   - src/scheduler.js
+  - src/db.js
   - src/engine/**/*
   - src/platforms/**/*
   - src/collector/**/*
   - src/analyzer/**/*
+  - src/publisher/**/*
   - assets/**/*
   - package.json
 extraResources:
