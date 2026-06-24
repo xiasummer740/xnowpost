@@ -4,7 +4,7 @@
  */
 import { chromium } from 'playwright';
 import path from 'path';
-import fs from 'fs';
+import fs from 'fs-extra';
 import { BrowserTracer } from './debug-trace.js';
 
 /**
@@ -49,6 +49,7 @@ export async function publishToTikTok(options) {
   let publishedUrl = '';
   let screenshotDir = sessionPath;  // 仅 error 截图保留
   let postedYet = false;  // 是否已点发布按钮 — 移到 try 外面，catch 也能访问
+  let publishSuccess = false;  // 发布后页面是否跳离 /upload，决定是否关窗口
 
   try {
     const page = await context.newPage();
@@ -58,20 +59,32 @@ export async function publishToTikTok(options) {
 
     // 对话框处理策略
     page.on('dialog', async dialog => {
-      const msg = dialog.message().toLowerCase();
-      // 点发布前：退出/检查未完成 → 取消（留在页面继续设置）
+      const msg = (dialog.message() || '').toLowerCase();
       // 点发布后：所有弹窗 → 接受（确认发布）
       if (postedYet) {
         console.log(`  💬 弹窗(发布后) → 接受: "${dialog.message().substring(0, 60)}"`);
         await dialog.accept();
         return;
       }
+      // 空消息或未知消息 → 保守处理：dismiss（不离开页面）
+      // 实测 TikTok 会在填标题时弹出空白 dialog，accept 会导致页面关闭
+      if (!msg.trim()) {
+        console.log(`  💬 弹窗(发布前) → 取消(空消息): "${dialog.message().substring(0, 60)}"`);
+        await dialog.dismiss();
+        return;
+      }
+      // "检查尚未完成，仍要发布?" → Content check 还没跑完
+      // 等 10s 再点"立即发布"，给 TikTok 多一点检测时间
+      if (msg.includes('尚未完成') || msg.includes('still checking') || msg.includes('继续发布') || msg.includes('still want to')) {
+        console.log(`  💬 弹窗(检查未完成) → 等 10s 后立即发布...`);
+        await page.waitForTimeout(10000);
+        console.log(`  💬 弹窗(检查未完成) → 接受: "${dialog.message().substring(0, 60)}"`);
+        await dialog.accept();
+        return;
+      }
       const isCancel = msg.includes('exit') || msg.includes('离开') || msg.includes('退出')
         || msg.includes('not be saved') || msg.includes('不会保存') || msg.includes('确定要退出')
-        || msg.includes('changes will') || msg.includes('unsaved')
-        || msg.includes('检查') || msg.includes('check')
-        || msg.includes('still checking') || msg.includes('尚未完成')
-        || msg.includes('继续发布') || msg.includes('still want to');
+        || msg.includes('changes will') || msg.includes('unsaved');
       if (isCancel) {
         console.log(`  💬 弹窗(发布前) → 取消: "${dialog.message().substring(0, 60)}"`);
         await dialog.dismiss();
@@ -90,7 +103,7 @@ export async function publishToTikTok(options) {
     // 检查登录
     if (page.url().includes('login')) {
       await page.close();
-      await closeBitProfile();
+      await closeBitProfile(envId);
       throw new Error('TikTok 未登录，请在比特浏览器中先登录 TikTok');
     }
 
@@ -409,6 +422,15 @@ export async function publishToTikTok(options) {
       } catch (e) {
         console.log(`  ⚠️ 填标题失败: ${e.message}`);
       }
+      // 关闭 TikTok 标签联想下拉框：填完 # 标签后 TikTok 会弹出建议列表，
+      // 遮挡页面导致 Content check 和 Post 按钮点不到
+      try {
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(300);
+        // 点一下页面空白区，确保焦点离开输入框
+        await page.mouse.click(100, 300);
+        await page.waitForTimeout(500);
+      } catch (_) {}
       // 等待可能触发的退出弹窗被 dismiss（标题填写有时会触发 beforeunload）
       await page.waitForTimeout(2000);
     }
@@ -417,32 +439,26 @@ export async function publishToTikTok(options) {
     // 页面会先后出现两段文字（Post/Discard 按钮上方）：
     //   ① "Checking in progress. This will take about 10 minutes..."
     //   ② "No issues found. However, your video could still be removed later..."
-    // 等到 ② 出现才点 Post；如果出现违规提示则中止
+    // 等到 ② 出现才点 Post
+    // 注意：不用负面关键词检测（"违规""版权"等会误杀正常页面的展示文案），
+    // 只做正向等待。超时则警告但继续发，避免假失败导致重试浪费钱。
     console.log('  ⏳ 等待 Content check 完成...');
-    for (let i = 0; i < 60; i++) {  // 最长等 5 分钟
+    let contentCheckPassed = false;
+    for (let i = 0; i < 120; i++) {  // 最长等 10 分钟
       await page.waitForTimeout(5000);
-      try {
-        const text = await page.evaluate(() => document.body.innerText);
-        const lower = text.toLowerCase();
+      const text = await page.evaluate(() => document.body.innerText);
+      const lower = text.toLowerCase();
 
-        // ✅ 检测通过 → 跳出循环，继续点 Post
-        if (lower.includes('no issues found')) {
-          console.log(`  ✅ Content check 通过 (约${(i+1)*5}秒)`);
-          break;
-        }
-
-        // ❌ 检测到违规 → 抛错中止发布
-        if (lower.includes('content violation') || lower.includes('restricted')
-            || lower.includes('copyright') || lower.includes('community guidelines')
-            || lower.includes('内容违规') || lower.includes('违规')
-            || lower.includes('版权') || lower.includes('侵权')) {
-          throw new Error(`Content check 不通过: "${text.substring(0, 120)}"`);
-        }
-
-        // ⏳ 还在检测中（或检测文字还没出现），继续等
-      } catch (e) {
-        if (e.message.startsWith('Content check 不通过')) throw e;
+      // ✅ 检测通过 → 跳出循环，继续点 Post
+      if (lower.includes('no issues found') || lower.includes('未发现问题')) {
+        console.log(`  ✅ Content check 通过 (约${(i+1)*5}秒)`);
+        contentCheckPassed = true;
+        break;
       }
+      // ⏳ 还在检测中，继续等
+    }
+    if (!contentCheckPassed) {
+      console.log('  ⚠️ Content check 超时未检测到通过信号，仍继续尝试发布');
     }
     await page.waitForTimeout(1000);
 
@@ -467,6 +483,15 @@ export async function publishToTikTok(options) {
       }
 
       await btn.click();
+
+      // 再加 JS dispatchEvent 兜底：Playwright click 可能被透明浮层拦截
+      // dispatchEvent 直接发到目标元素，绕过层叠遮挡
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }, BTN_SELECTOR);
+      await page.waitForTimeout(500);
+
       postedYet = true;
       posted = true;
 
@@ -526,34 +551,82 @@ export async function publishToTikTok(options) {
 
     // 等待发布完成
     if (posted) {
-      console.log('  ⏳ 等待发布确认...');
-      await page.waitForTimeout(5000);
+      console.log('  ⏳ 等待 TikTok 处理发布...');
 
-      // 如果弹出二次确认（Post 后弹出 Confirm dialog），自动接受
-      // TikTok 有时会弹出 "Post now?" 或 "Schedule?" 确认窗
-      const confirmSelectors = [
-        'div[role="dialog"] button:has-text("Post")',
-        'div[role="dialog"] button:has-text("发布")',
-        'div[role="dialog"] button:has-text("Confirm")',
-        'div[role="dialog"] button:has-text("确认")',
-        'div[role="dialog"] button[data-type="primary"]',
-      ];
-      for (const sel of confirmSelectors) {
+      // 等待页面跳转到 /content（内容管理页）
+      // 如果一直没跳转（发布没触发），15s 后视为失败，保留窗口
+      let navigatedToContent = false;
+      for (let i = 0; i < 30; i++) {  // 最多等 2.5 分钟（5s × 30）
+        await page.waitForTimeout(5000);
+        const url = page.url();
+        if (url.includes('/content')) {
+          navigatedToContent = true;
+          console.log(`  ✅ 已跳转到内容管理页 (约${(i+1)*5}秒)`);
+          break;
+        }
+        // 如果弹出二次确认（Post 后弹出 Confirm dialog），自动接受
         try {
-          const btn = page.locator(sel).first();
-          if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
-            console.log(`  📋 二次确认: ${sel}, 点确定...`);
-            await btn.click();
-            console.log('  ✅ 二次确认已点击');
-            break;
+          const confirmBtn = page.locator(
+            'div[role="dialog"] button:has-text("Post"), ' +
+            'div[role="dialog"] button:has-text("发布"), ' +
+            'div[role="dialog"] button:has-text("Confirm"), ' +
+            'div[role="dialog"] button:has-text("确认"), ' +
+            'div[role="dialog"] button[data-type="primary"]'
+          ).first();
+          if (await confirmBtn.isVisible({ timeout: 500 }).catch(() => false)) {
+            await confirmBtn.click();
+            console.log('  📋 二次确认已点击');
           }
         } catch (_) {}
       }
 
-      await page.waitForTimeout(25000); // 等 TikTok 处理发布
+      if (navigatedToContent) {
+        // 已跳转到内容管理页 → 等待视频状态变为公开
+        // 刚发布的视频显示 "内容审查中" + 仅自己
+        // 等 "内容审查中" 消失 + "仅自己" → "所有人" → 才算真正发布成功
+        // 注意：必须先确认视频已渲染（"仅自己"或"内容审查中"出现过），
+        // 防止页面刚加载时 text 为空就误判为已公开
+        console.log('  ⏳ 等待视频出现在内容页...');
+        let videoSeen = false;
+        for (let i = 0; i < 30; i++) {  // 最多等 2.5 分钟视频渲染
+          await page.waitForTimeout(5000);
+          const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+          if (text.includes('仅自己') || text.includes('内容审查中')) {
+            videoSeen = true;
+            console.log(`  ✅ 视频已出现在内容页 (约${(i+1)*5}秒)`);
+            break;
+          }
+        }
 
-      // 检查是否跳转到发布成功页面
-      await page.waitForTimeout(5000);
+        if (videoSeen) {
+          // 视频已确认在页面上 → 等待审查完成 + 公开
+          console.log('  ⏳ 等待审查完成（内容审查中消失，仅自己 → 所有人）...');
+          for (let i = 0; i < 120; i++) {  // 最长等 10 分钟
+            await page.waitForTimeout(5000);
+            const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+            const reviewing = text.includes('内容审查中');
+            const onlyMe = text.includes('仅自己');
+            const everyone = text.includes('所有人');
+            if (!reviewing && everyone) {
+              publishSuccess = true;
+              console.log(`  ✅ 审查完成，视频已公开 (约${(i+1)*5}秒)`);
+              break;
+            }
+            if (!reviewing && !onlyMe) {
+              publishSuccess = true;
+              console.log(`  ✅ 审查完成，仅自己已消失 (约${(i+1)*5}秒)`);
+              break;
+            }
+          }
+          if (!publishSuccess) {
+            console.log('  ⚠️ 等待审查超时（10分钟），保留浏览器窗口');
+          }
+        } else {
+          console.log('  ⚠️ 内容页未检测到视频，保留浏览器窗口');
+        }
+      } else {
+        console.log('  ⚠️ 未跳转到内容管理页，发布可能未成功，保留浏览器窗口');
+      }
     }
 
     publishedUrl = page.url();
@@ -562,7 +635,11 @@ export async function publishToTikTok(options) {
     // 保存 trace
     await trace.save();
 
-    await page.close();
+    // 只有确认发布成功才关闭浏览器窗口
+    // 如果发布没成功，保留窗口让用户手动处理
+    if (publishSuccess) {
+      await page.close();
+    }
   } catch (err) {
     // 🔴 关键修复：如果已经点击 Post（postedYet=true），
     //    后续清理失败（trace.save / page.close 等）不致命
@@ -574,11 +651,13 @@ export async function publishToTikTok(options) {
       try {
         await page?.screenshot({ path: path.join(screenshotDir, 'publish_error.png') });
       } catch (_) {}
-      await closeBitProfile();
+      await closeBitProfile(envId);
       throw err;
     }
   }
 
-  await closeBitProfile();
+  if (publishSuccess) {
+    await closeBitProfile(envId);
+  }
   return publishedUrl;
 }

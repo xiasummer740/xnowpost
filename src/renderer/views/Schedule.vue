@@ -40,13 +40,40 @@
 
         <!-- 账号选择（生成模式才显示） -->
         <div class="acc-row" v-if="job.mode !== 'collect' && job.mode !== 'publish'">
-          <select v-model="job.account" class="acc-select">
-            <option value="">📄 仅生成，不发布</option>
-            <option v-for="acc in accounts" :key="acc.name" :value="acc.name">
-              📤 {{ acc.name }}{{ acc.bitEnvId ? '' : ' ⚠️ 未配置' }}
-            </option>
-          </select>
-          <span class="acc-hint" v-if="job.account">→ 生成后自动发布到此账号</span>
+          <div class="acc-picker" @click.stop>
+            <input
+              class="acc-input"
+              :value="displayAccountName(job.account)"
+              @input="onAccSearch($event, i)"
+              @focus="onAccFocus(i)"
+              @blur="onAccBlur(i)"
+              @keydown.down.prevent="onAccArrow(i, 1)"
+              @keydown.up.prevent="onAccArrow(i, -1)"
+              @keydown.enter.prevent="onAccEnter(i)"
+              placeholder="输入账号名搜索..."
+            />
+            <div v-if="job._showDropdown" class="acc-dropdown">
+              <div
+                v-for="(acc, ai) in filteredAccs(i)"
+                :key="acc.name"
+                class="acc-opt"
+                :class="{ 'acc-opt-active': ai === job._highlightIdx }"
+                @mousedown.prevent="selectAcc(i, acc.name)"
+              >
+                <span class="acc-opt-name">{{ acc.name }}</span>
+                <span class="acc-opt-env" v-if="!acc.bitEnvId">⚠️ 未配置</span>
+                <span class="acc-opt-env ok" v-else>✅</span>
+              </div>
+              <div v-if="filteredAccs(i).length === 0" class="acc-opt acc-opt-empty">无匹配账号</div>
+            </div>
+          </div>
+          <span
+            v-if="job.account"
+            class="acc-badge"
+            :style="{ background: accountColor(job.account) }"
+          >{{ job.account }}</span>
+          <span class="acc-hint" v-if="job.account">→ 发布</span>
+          <button class="btn-clone" @click="cloneJob(i)" title="复制此闹钟">📋</button>
         </div>
 
         <!-- 名称 -->
@@ -75,7 +102,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 
 import TimePicker from '../components/TimePicker.vue'
 
@@ -83,6 +110,7 @@ const jobs = ref([])
 const accounts = ref([])
 const saving = ref(false)
 const saved = ref(false)
+const searchTexts = ref({})  // 每个闹钟的账号搜索文本
 
 const modeOptions = [
   { value: 'auto', label: '视频+图文' },
@@ -91,6 +119,78 @@ const modeOptions = [
   { value: 'collect', label: '采集+日报' },
   { value: 'publish', label: '批量发布(旧)', icon: '📤' },
 ]
+
+// 账号按名称排序
+const sortedAccounts = computed(() =>
+  [...accounts.value].sort((a, b) => a.name.localeCompare(b.name))
+)
+
+// 账号颜色映射（基于名称的稳定色）
+const accColors = {}
+function accountColor(name) {
+  if (!accColors[name]) {
+    const palette = ['#f59e0b','#22c55e','#3b82f6','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#6366f1','#84cc16','#06b6d4','#d946ef']
+    let h = 0
+    for (const c of name) h = (h * 31 + c.charCodeAt(0)) % palette.length
+    accColors[name] = palette[h]
+  }
+  return accColors[name]
+}
+
+// 显示账号名
+function displayAccountName(accName) {
+  if (!accName || !sortedAccounts.value.find(a => a.name === accName)) return accName || ''
+  return accName
+}
+
+// 当前闹钟的过滤后账号列表
+function filteredAccs(jobIdx) {
+  const q = (searchTexts.value[jobIdx] || '').toLowerCase()
+  if (!q) return sortedAccounts.value
+  return sortedAccounts.value.filter(a => a.name.toLowerCase().includes(q))
+}
+
+// 搜索输入
+function onAccSearch(e, i) {
+  searchTexts.value[i] = e.target.value
+  jobs.value[i]._showDropdown = true
+  jobs.value[i]._highlightIdx = 0
+}
+
+// 聚焦→显示下拉
+function onAccFocus(i) {
+  searchTexts.value[i] = ''
+  jobs.value[i]._showDropdown = true
+  jobs.value[i]._highlightIdx = 0
+}
+
+// 失焦→隐藏下拉（延迟给点击选项留时间）
+function onAccBlur(i) {
+  setTimeout(() => { jobs.value[i]._showDropdown = false }, 150)
+}
+
+// 上下箭头
+function onAccArrow(i, dir) {
+  const list = filteredAccs(i)
+  const cur = jobs.value[i]._highlightIdx ?? 0
+  jobs.value[i]._highlightIdx = Math.max(0, Math.min(list.length - 1, cur + dir))
+}
+
+// 回车选中
+function onAccEnter(i) {
+  const list = filteredAccs(i)
+  const idx = jobs.value[i]._highlightIdx ?? 0
+  if (list[idx]) selectAcc(i, list[idx].name)
+}
+
+// 选中账号
+function selectAcc(i, name) {
+  jobs.value[i].account = name
+  jobs.value[i]._showDropdown = false
+  searchTexts.value[i] = ''
+}
+
+// ===== 闹钟管理 =====
 
 async function load() {
   jobs.value = await window.xnowpost.getSchedules()
@@ -103,7 +203,6 @@ async function load() {
 }
 
 function resetDefaults() {
-  // 默认全部关闭，用户按需开启
   jobs.value = [
     { id: 1, time: '07:00', mode: 'auto',  label: '早间内容（视频+图文）', enabled: false, account: '' },
     { id: 2, time: '19:00', mode: 'video', label: '晚间视频',             enabled: false, account: '' },
@@ -123,6 +222,15 @@ function addJob() {
   })
 }
 
+function cloneJob(i) {
+  const orig = jobs.value[i]
+  jobs.value.splice(i + 1, 0, {
+    ...JSON.parse(JSON.stringify(orig)),
+    id: nextId++,
+    label: orig.label + ' (复制)',
+  })
+}
+
 function removeJob(i) {
   jobs.value.splice(i, 1)
 }
@@ -130,7 +238,10 @@ function removeJob(i) {
 async function save() {
   saving.value = true
   try {
-    const raw = JSON.parse(JSON.stringify(jobs.value))
+    const raw = JSON.parse(JSON.stringify(jobs.value.map(j => {
+      const { _showDropdown, _highlightIdx, ...rest } = j
+      return rest
+    })))
     const result = await window.xnowpost.saveSchedules(raw)
     if (!result || !result.ok) {
       alert('保存失败: ' + (result?.message || '未知错误'))
@@ -164,24 +275,29 @@ h2 {
 }
 .subtitle {
   font-size: 13px;
-  color: #64748b;
+  color: #94a3b8;
   margin: 0;
 }
 
-/* 闹钟列表 */
+/* 闹钟列表 — 两列网格 */
 .alarm-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
   margin-bottom: 16px;
+}
+@media (max-width: 640px) {
+  .alarm-list {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* 闹钟卡片 */
 .alarm-card {
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: #2a3a4e;
+  border: 1px solid #3b4f66;
   border-radius: 10px;
-  padding: 16px;
+  padding: 14px;
   transition: all 0.2s;
 }
 .alarm-card:hover {
@@ -269,16 +385,16 @@ h2 {
   border-radius: 5px;
   font-size: 12px;
   font-weight: 600;
-  background: #0f172a;
-  color: #64748b;
-  border: 1px solid #1e293b;
+  background: #1e293b;
+  color: #94a3b8;
+  border: 1px solid #334155;
   cursor: pointer;
   transition: all 0.15s;
   user-select: none;
 }
 .mode-chip:hover {
-  color: #94a3b8;
-  border-color: #334155;
+  color: #cbd5e1;
+  border-color: #475569;
 }
 .mode-chip.active {
   background: #f59e0b;
@@ -293,26 +409,109 @@ h2 {
   gap: 8px;
   margin-bottom: 10px;
 }
-.acc-select {
+
+/* 账号搜索选择器 */
+.acc-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.acc-input {
+  width: 100%;
   padding: 4px 8px;
   border-radius: 5px;
   font-size: 12px;
   font-weight: 600;
-  background: #0f172a;
-  color: #94a3b8;
-  border: 1px solid #1e293b;
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #3b4f66;
   outline: none;
-  cursor: pointer;
-  flex: 1;
-  min-width: 0;
+  box-sizing: border-box;
 }
-.acc-select:focus {
+.acc-input:focus {
   border-color: #f59e0b;
+  color: #f1f5f9;
 }
+.acc-input::placeholder {
+  color: #64748b;
+  font-weight: 400;
+}
+.acc-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  max-height: 240px;
+  overflow-y: auto;
+  background: #2a3a4e;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  margin-top: 2px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.acc-opt {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #cbd5e1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acc-opt:hover,
+.acc-opt-active {
+  background: #3b4f66;
+  color: #f1f5f9;
+}
+.acc-opt-name {
+  flex: 1;
+}
+.acc-opt-env {
+  font-size: 10px;
+  color: #ef4444;
+}
+.acc-opt-env.ok {
+  color: #22c55e;
+}
+.acc-opt-empty {
+  color: #64748b;
+  cursor: default;
+}
+
+/* 账号彩色标签 */
+.acc-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .acc-hint {
   font-size: 11px;
   color: #22c55e;
   white-space: nowrap;
+}
+
+/* 复制按钮 */
+.btn-clone {
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: 0.15s;
+}
+.btn-clone:hover {
+  color: #f59e0b;
+  background: #f59e0b22;
 }
 
 /* 名称 */
@@ -321,18 +520,18 @@ h2 {
   padding: 6px 0;
   background: transparent;
   border: none;
-  border-top: 1px solid #1e293b;
-  color: #94a3b8;
+  border-top: 1px solid #334155;
+  color: #cbd5e1;
   font-size: 13px;
   outline: none;
   box-sizing: border-box;
 }
 .label-input:focus {
-  color: #e2e8f0;
-  border-top-color: #334155;
+  color: #f1f5f9;
+  border-top-color: #475569;
 }
 .label-input::placeholder {
-  color: #475569;
+  color: #64748b;
 }
 
 /* 添加按钮 */
