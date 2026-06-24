@@ -732,6 +732,64 @@ function setupIPC() {
     }
   });
 
+  // 手动触发采集
+  ipcMain.handle('collect:run', async () => {
+    try {
+      addLog('info', '📊 手动采集开始...');
+
+      return new Promise((resolve) => {
+        const engineRoot = app.isPackaged
+          ? path.join(process.resourcesPath, 'app.asar.unpacked')
+          : ROOT;
+        const scriptPath = path.join(engineRoot, 'src', 'collector', 'index.js');
+
+        const proc = spawn(process.execPath, [scriptPath], {
+          cwd: engineRoot,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 10 * 60 * 1000,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            ELECTRON_RUN_AS_NODE: '1',
+            XNOWPOST_DATA_DIR: DATA_DIR,
+          },
+        });
+
+        let stdoutBuf = '';
+        proc.stdout.on('data', (chunk) => {
+          stdoutBuf += chunk.toString();
+          const lines = stdoutBuf.split('\n');
+          stdoutBuf = lines.pop() || '';
+          for (const line of lines) {
+            const t = line.trim();
+            if (!t) continue;
+            if (t.includes('❌') || t.includes('失败')) addLog('error', t);
+            else if (t.includes('✅') || t.includes('完成')) addLog('success', t);
+            else addLog('info', t);
+          }
+        });
+
+        proc.on('close', (code) => {
+          if (code === 0) {
+            addLog('success', '✅ 数据采集完成');
+            resolve({ ok: true });
+          } else {
+            addLog('error', `采集进程异常退出 (code: ${code})`);
+            resolve({ ok: false, message: `进程异常退出 (code: ${code})` });
+          }
+        });
+
+        proc.on('error', (err) => {
+          addLog('error', `采集启动失败: ${err.message}`);
+          resolve({ ok: false, message: err.message });
+        });
+      });
+    } catch (err) {
+      addLog('error', `❌ 采集失败: ${err.message}`);
+      return { ok: false, message: err.message };
+    }
+  });
+
   // 获取最近采集数据
   ipcMain.handle('collect:latest', async () => {
     try {
@@ -813,6 +871,83 @@ function setupIPC() {
     } catch (e) {
       console.error('读取日报数据失败:', e.message);
       return null;
+    }
+  });
+
+  // 手动推送日报到 TG
+  ipcMain.handle('report:push', async (_event, targetDate) => {
+    try {
+      const { openDB } = await import('../src/db.js');
+      const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
+      if (!fs.existsSync(dbPath)) {
+        addLog('error', '❌ 暂无日报数据，无法推送');
+        return { ok: false, message: '暂无日报数据' };
+      }
+
+      const db = await openDB(dbPath, { readonly: true });
+      const dateRows = db.all('SELECT DISTINCT date FROM daily_stats ORDER BY date DESC');
+      if (!dateRows.length) { db.close(); addLog('error', '❌ 暂无日报数据'); return { ok: false, message: '暂无日报数据' }; }
+
+      const date = targetDate || dateRows[0].date;
+      const d = new Date(date); d.setDate(d.getDate() - 1);
+      const yesterday = d.toISOString().split('T')[0];
+
+      const todayRows = db.all('SELECT account, platform, metric, value FROM daily_stats WHERE date = ?', [date]);
+      const yesterdayRows = db.all('SELECT account, platform, metric, value FROM daily_stats WHERE date = ?', [yesterday]);
+
+      // 按账号分组
+      const accounts = {};
+      for (const r of todayRows) {
+        if (!accounts[r.account]) accounts[r.account] = {};
+        if (!accounts[r.account][r.platform]) accounts[r.account][r.platform] = { stats: {}, yesterday: {} };
+        accounts[r.account][r.platform].stats[r.metric] = r.value;
+      }
+      for (const r of yesterdayRows) {
+        if (!accounts[r.account]) accounts[r.account] = {};
+        if (!accounts[r.account][r.platform]) accounts[r.account][r.platform] = { stats: {}, yesterday: {} };
+        accounts[r.account][r.platform].yesterday[r.metric] = r.value;
+      }
+      db.close();
+
+      // 组装日报文本
+      const platformEmoji = { tiktok: '🎵', xiaohongshu: '📕', facebook: '📘', instagram: '📸', youtube: '▶️', x: '𝕏' };
+      const metricLabels = { followers: '粉', views: '播', likes: '赞', comments: '评', shares: '转', profile_views: '主页', reach: '触达', engagement: '互动' };
+      const platformNames = { tiktok: 'TikTok', xiaohongshu: '小红书', facebook: 'Facebook', instagram: 'Instagram', youtube: 'YouTube', x: 'X' };
+
+      const lines = [`━━━━━━━━━━━━━━━━━━━━━━━━`, `📊 XNOW 数据日报 · ${date}`, `━━━━━━━━━━━━━━━━━━━━━━━━`, ``];
+
+      for (const [account, platforms] of Object.entries(accounts)) {
+        if (Object.keys(accounts).length > 1) lines.push(`👤 ${account}`);
+        for (const [platform, pd] of Object.entries(platforms)) {
+          const emoji = platformEmoji[platform] || '📡';
+          const name = platformNames[platform] || platform;
+          const parts = [`${emoji} ${name}`];
+          for (const [metric, value] of Object.entries(pd.stats)) {
+            const label = metricLabels[metric] || metric;
+            const val = value >= 10000 ? (value/10000).toFixed(1)+'万' : value >= 1000 ? (value/1000).toFixed(1)+'K' : String(value);
+            if (pd.yesterday[metric] !== undefined) {
+              const diff = value - pd.yesterday[metric];
+              const arrow = diff >= 0 ? '↑' : '↓';
+              const diffStr = Math.abs(diff) >= 10000 ? (Math.abs(diff)/10000).toFixed(1)+'万' : Math.abs(diff) >= 1000 ? (Math.abs(diff)/1000).toFixed(1)+'K' : String(Math.abs(diff));
+              parts.push(`${label} ${val} ${arrow}${diffStr}`);
+            } else {
+              parts.push(`${label} ${val}`);
+            }
+          }
+          lines.push(parts.join(' | '));
+        }
+      }
+      lines.push(``, `━━━━━━━━━━━━━━━━━━━━━━━━`);
+      const text = lines.join('\n');
+
+      // 调用 TG 推送
+      const { sendMessage } = await import('../src/notifier.js');
+      await sendMessage(text);
+      addLog('success', `✅ 日报 ${date} 已推送到 TG`);
+      return { ok: true };
+    } catch (err) {
+      addLog('error', `❌ 日报推送失败: ${err.message}`);
+      return { ok: false, message: err.message };
     }
   });
 
