@@ -1,38 +1,79 @@
 export async function scrapeInstagram(page) {
-  // 导航到 Instagram 创作者后台（祥哥后续提供 URL）
   try {
-    await page.goto('#待祥哥提供URL', {
-      waitUntil: 'networkidle',
-      timeout: 30000,
+    await page.goto('https://www.instagram.com/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 20000,
     });
   } catch (e) {
-    console.log('  ⚠️ Instagram 创作者后台加载超时，跳过');
+    console.log('  ⚠️ Instagram 加载超时，跳过');
     return null;
   }
 
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(5000);
 
   const stats = {};
 
-  // 粉丝数 — 选择器待祥哥给页面后确认
   try {
-    const followerEl = await page.$('[data-testid="followers-count"], .follower-count');
-    if (followerEl) {
-      const text = await followerEl.textContent();
-      stats.followers = parseNumber(text);
-    }
+    // Instagram 个人主页的数据通常在页面文本中
+    const data = await page.evaluate(() => {
+      const text = document.body.innerText;
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+      const found = {};
+      const metrics = {
+        followers: ['粉丝', '关注者', 'Followers', 'followers', 'follower'],
+        following: ['正在关注', 'Following', 'following'],
+        posts: ['帖子', 'Posts', 'posts', '篇'],
+        likes: ['点赞', 'Likes', 'likes', '赞'],
+        comments: ['评论', 'Comments', 'comments'],
+        views: ['播放', '观看', 'Views', 'views', '次播放'],
+      };
+
+      function getMatchedKeyword(line) {
+        const lc = line.toLowerCase();
+        for (const [key, keywords] of Object.entries(metrics)) {
+          if (keywords.some(kw => lc.includes(kw.toLowerCase()))) return key;
+        }
+        return null;
+      }
+
+      for (const line of lines) {
+        // Instagram 个人主页常见格式: "1234 followers" 或 "1,234 followers"
+        const numVal = extractNum(line);
+        if (numVal === null) continue;
+
+        const kw = getMatchedKeyword(line);
+        if (kw) {
+          // 同行可能有多个（如 "1,234 posts  5.6M followers  0 following"）
+          // 取最大匹配值
+          found[kw] = found[kw] !== undefined ? Math.max(found[kw], numVal) : numVal;
+        }
+      }
+
+      return found;
+
+      function extractNum(str) {
+        const m = str.match(/(-?[\d,]+\.?\d*)\s*([KkMmB万]?)/);
+        if (!m) return null;
+        let num = parseFloat(m[1].replace(/,/g, ''));
+        const suffix = m[2];
+        if (suffix === 'K' || suffix === 'k') num *= 1000;
+        else if (suffix === 'M' || suffix === 'm') num *= 1000000;
+        else if (suffix === 'B' || suffix === 'b') num *= 1000000000;
+        else if (suffix === '万') num *= 10000;
+        return Math.round(num);
+      }
+    });
+
+    if (data.followers !== undefined) stats.followers = data.followers;
+    if (data.views !== undefined) stats.views = data.views;
+    if (data.likes !== undefined) stats.likes = data.likes;
+    if (data.comments !== undefined) stats.comments = data.comments;
+
+    console.log(`  📊 Instagram 数据: ${JSON.stringify(stats)}`);
   } catch (e) {
-    console.log('  ⚠️ Instagram 粉丝数提取失败');
+    console.log('  ⚠️ Instagram 数据提取失败:', e.message);
   }
 
   return Object.keys(stats).length > 0 ? stats : null;
-}
-
-function parseNumber(text) {
-  if (!text) return 0;
-  text = text.replace(/,/g, '').trim();
-  if (text.match(/[Kk]/)) return Math.round(parseFloat(text) * 1000);
-  if (text.match(/[Mm]/)) return Math.round(parseFloat(text) * 1000000);
-  if (text.includes('万')) return Math.round(parseFloat(text) * 10000);
-  return parseInt(text, 10) || 0;
 }

@@ -63,6 +63,9 @@
       <button class="btn btn-secondary" @click="runPost" :disabled="store.status.running || !store.status.configured">
         🟢 仅图文
       </button>
+      <button class="btn btn-collect" @click="handleCollect" :disabled="collecting">
+        {{ collecting ? '⏳ 采集中...' : '📊 采集' }}
+      </button>
       <button class="btn btn-publish" @click="handlePublish" :disabled="publishing">
         {{ publishing ? '⏳ 发布中...' : '📤 发布' }}
       </button>
@@ -176,6 +179,7 @@ const todayLoading = ref(true);
 const isMorning = new Date().getHours() < 12;
 const cancelling = ref(false);
 const publishing = ref(false);
+const collecting = ref(false);
 const quickTopic = ref('');
 const logExpanded = ref(false);
 const collectData = ref(null);
@@ -266,6 +270,30 @@ async function runAuto() { await store.runEngine('auto'); await refreshToday(); 
 async function runVideo() { await store.runEngine('video'); await refreshToday(); }
 async function runPost() { await store.runEngine('post'); await refreshToday(); }
 
+async function handleCollect() {
+  collecting.value = true
+  store.addLog('info', '📊 手动触发数据采集...')
+  try {
+    const result = await window.xnowpost.runCollect()
+    if (!result.ok) {
+      store.addLog('error', '采集失败: ' + (result.message || ''))
+    } else {
+      store.addLog('success', '✅ 采集完成，正在刷新数据...')
+      // 采集完成后自动刷新采集卡片
+      collectData.value = await window.xnowpost.getLatestCollect()
+    }
+  } catch (e) {
+    store.addLog('error', '采集调用失败: ' + (e.message || e))
+  }
+  collecting.value = false
+}
+
+async function refreshCollectData() {
+  try {
+    collectData.value = await window.xnowpost.getLatestCollect()
+  } catch (_) {}
+}
+
 async function handlePublish() {
   publishing.value = true
   try {
@@ -288,11 +316,12 @@ async function refreshStatus() {
 onMounted(async () => {
   await refreshToday();
   store.loadCost();
-  collectData.value = await window.xnowpost.getLatestCollect();
+  await refreshCollectData();
   refreshTimer = setInterval(() => {
     refreshToday();
     refreshStatus();
-  }, 10000);
+    refreshCollectData();
+  }, 15000);
 });
 
 onUnmounted(() => {
@@ -334,6 +363,8 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .btn-secondary:hover:not(:disabled) { background: #475569; }
 .btn-publish { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
 .btn-publish:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
+.btn-collect { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
+.btn-collect:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
 
 /* 进度面板 */
 .progress-panel {
