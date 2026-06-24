@@ -52,29 +52,33 @@ async function sendAlert(message) {
   }
 }
 
-async function runWithRetry(script, label) {
+async function runWithRetry(script, label, retryOnFail = true) {
   // Electron 环境需要走 process.execPath + ELECTRON_RUN_AS_NODE
   const nodeCmd = process.env.XNOWPOST_DATA_DIR ? process.execPath : 'node';
   const env = process.env.XNOWPOST_DATA_DIR
     ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
     : process.env;
 
-  for (let i = 0; i <= MAX_RETRIES; i++) {
+  const maxAttempts = retryOnFail ? MAX_RETRIES + 1 : 1;
+  for (let i = 0; i < maxAttempts; i++) {
     try {
       execSync(`${nodeCmd} ${script}`, { cwd: ROOT, stdio: 'inherit', timeout: 15 * 60 * 1000, env, windowsHide: true });
       log(`✅ ${label} 完成`);
       return;
     } catch (err) {
       log(`❌ ${label} 第${i+1}次失败: ${err.message}`);
-      if (i < MAX_RETRIES) {
+      if (i < maxAttempts - 1) {
         log(`⏳ 等待 ${RETRY_DELAY/1000}s 后重试...`);
         await new Promise(r => setTimeout(r, RETRY_DELAY));
       }
     }
   }
-  const msg = `⛔ 定时任务 <b>${label}</b> 失败\n已重试 ${MAX_RETRIES} 次均失败\n时间: ${new Date().toLocaleString('zh-CN')}`;
-  log(msg);
-  await sendAlert(msg);
+  // 自动发布模式（有 account）不重试，避免重跑 engine 生成新内容浪费钱
+  if (retryOnFail) {
+    const msg = `⛔ 定时任务 <b>${label}</b> 失败\n已重试 ${MAX_RETRIES} 次均失败\n时间: ${new Date().toLocaleString('zh-CN')}`;
+    log(msg);
+    await sendAlert(msg);
+  }
 }
 
 function parseCron(timeStr) {
@@ -94,11 +98,14 @@ function runJob(job) {
     let cmd = `src/index.js ${flag}`.trim();
 
     // 🔴 如果闹钟指定了账号，加自动发布参数
-    if (job.account) {
+    const hasAccount = !!job.account;
+    if (hasAccount) {
       cmd += ` --auto-publish --account "${job.account}"`;
     }
 
-    runWithRetry(cmd, job.label);
+    // 自动发布模式不重试：重试会跑完整 engine 生成新内容，浪费钱
+    // Content check 假失败已修复，首次发布成功率应大幅提升
+    runWithRetry(cmd, job.label, !hasAccount);
   }
 }
 

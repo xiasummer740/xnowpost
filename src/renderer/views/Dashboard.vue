@@ -24,8 +24,8 @@
       <p class="welcome-hint">👉 <router-link to="/config" class="welcome-link">去配置页填写</router-link></p>
     </div>
 
-    <!-- 快捷生成 -->
-    <div v-if="store.status.configured" class="quick-bar">
+    <!-- 快捷生成（仅空闲时显示，引擎/调度器运行时隐藏） -->
+    <div v-if="store.status.configured && !store.status.running && !store.status.schedulerActive" class="quick-bar">
       <input v-model="quickTopic" placeholder="输入主题（留空让 AI 自由发挥）..."
              class="quick-input" @keyup.enter="quickGenerate" :disabled="store.status.running" />
       <button class="btn btn-primary quick-btn" @click="quickGenerate" :disabled="store.status.running">
@@ -197,7 +197,9 @@ function formatNum(n) {
 
 const statusText = computed(() => {
   if (!store.status.configured) return '🔑 还需要配置 API Key 才能开始工作';
-  return '🟢 一切就绪，随时可以生成';
+  if (store.status.running) return '⏳ 引擎运行中...';
+  if (store.status.schedulerActive) return '⏰ 调度器执行中';
+  return '🟢 一切就绪';
 });
 
 const currentStep = computed(() => {

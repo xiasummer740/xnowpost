@@ -30,13 +30,23 @@ export async function openBitProfile(envId, apiKey) {
 }
 
 /**
- * 关闭当前浏览器窗口
+ * 关闭当前浏览器窗口并调用比特 API 关闭环境
+ * @param {string} [envId] - 比特环境 ID，传此参数会额外调 API 关闭浏览器窗口
  */
-export async function closeBitProfile() {
+export async function closeBitProfile(envId) {
   if (browser) {
     try { await browser.close(); } catch (_) {}
     browser = null;
     context = null;
+  }
+  // 调用比特 API 关闭浏览器窗口，防止多个闹钟累积窗口
+  if (envId) {
+    try {
+      await callBitAPI('/browser/close', { id: String(envId) }, '', false);
+      console.log(`  ✅ 比特环境 ${envId} 窗口已关闭`);
+    } catch (e) {
+      console.warn(`  ⚠️ 关闭比特环境 ${envId} 失败: ${e.message}`);
+    }
   }
 }
 
@@ -74,7 +84,7 @@ export async function closeBrowser() {
  * @param {object} body - 请求体
  * @param {string} [apiKey] - API 密钥（可选）
  */
-function callBitAPI(path, body, apiKey) {
+function callBitAPI(path, body, apiKey, requireWs = true) {
   if (apiKey) body.key = apiKey;
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
@@ -92,11 +102,17 @@ function callBitAPI(path, body, apiKey) {
       res.on('end', () => {
         try {
           const json = JSON.parse(respData);
-          if (json.success && json.data?.ws) {
-            resolve(json.data.ws);
+          if (requireWs) {
+            // /browser/open → 需返回 {success:true, data:{ws:"..."}}
+            if (json.success && json.data?.ws) {
+              resolve(json.data.ws);
+            } else {
+              console.error(`❌ 比特 API 返回错误: ${JSON.stringify(json)}`);
+              resolve(null);
+            }
           } else {
-            console.error(`❌ 比特 API 返回错误: ${JSON.stringify(json)}`);
-            resolve(null);
+            // /browser/close → 只需 success=true，data 可能是字符串"操作成功"
+            resolve(json.success ? true : null);
           }
         } catch (e) {
           reject(new Error(`比特 API 响应解析失败: ${respData}`));

@@ -194,9 +194,10 @@ async function main() {
         });
         console.log(`  ✅ 自动发布完成 ${url ? `(${url})` : ''}`);
       } catch (pubErr) {
-        // publishToTikTok 在 Post 点击后会写 .published，
-        // 所以即使这里报错也不会重复发布（但进程退出 code=1 触发调度器重试）
-        // 重试会生成新视频+新发布，不会碰已标记的 session
+        // publishToTikTok 在 Post 点击后会写 .published 标记，
+        // 并且 postedYet=true 时只警告不抛错。
+        // 能走到这里的 catch，说明发布确实没开始（没点 Post 按钮）。
+        // 调度器已配置为 auto-publish 模式不重试，避免重跑 engine 浪费钱。
         console.error(`  ❌ 自动发布失败: ${pubErr.message}`);
         process.exit(1);
       }

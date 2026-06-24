@@ -1,7 +1,7 @@
 ## 🏷️ 架构快照
-- **时间**: 2026-06-23 00:15
-- **提交**: fix: Content check 等待 'No issues found' 后点发布（最长等10分钟）
-- **文件**: .claude/snapshot.md, src/publisher/tiktok.js
+- **时间**: 2026-06-23 00:33
+- **提交**: docs: update PROGRESS.md for v1.1.1-dev
+- **文件**: .claude/PROGRESS.md, .claude/snapshot.md, src/publisher/tiktok.js
 
 ## 📋 未完成项
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
