@@ -10,6 +10,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 const ROOT = path.resolve(__dirname, '..');
 
+// 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
+function findNodeExe() {
+  const elDir = path.dirname(process.execPath);
+  const selfNode = path.join(elDir, 'node.exe');
+  if (fs.existsSync(selfNode)) return selfNode;
+  try {
+    const { execSync } = _require('child_process');
+    const r = execSync('where node', { stdio: 'pipe', encoding: 'utf-8', windowsHide: true });
+    const lines = r.trim().split('\n');
+    if (lines[0]) return lines[0].trim();
+  } catch (_) {}
+  return 'node';
+}
+const NODE_EXE = findNodeExe();
+
 // 全局未捕获异常处理（写入日志文件，防止静默崩溃）
 process.on('uncaughtException', (err) => {
   const logDir = path.join(ROOT, 'logs');
@@ -119,11 +134,34 @@ function addLog(type, message) {
   }
 }
 
+// 窗口状态持久化（尺寸/位置）
+const WIN_STATE_FILE = () => path.join(DATA_DIR, 'config', 'window-state.json');
+
+function loadWinState() {
+  try {
+    if (fs.existsSync(WIN_STATE_FILE())) return fs.readJsonSync(WIN_STATE_FILE());
+  } catch (_) {}
+  return null;
+}
+
+function saveWinState(win) {
+  if (!win) return;
+  try {
+    const bounds = win.getBounds();
+    const maximized = win.isMaximized();
+    fs.ensureDirSync(path.dirname(WIN_STATE_FILE()));
+    fs.writeJsonSync(WIN_STATE_FILE(), { ...bounds, maximized }, { spaces: 2 });
+  } catch (_) {}
+}
+
 // === 窗口创建 ===
 function createWindow() {
+  const saved = loadWinState();
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 750,
+    width: saved?.width || 1100,
+    height: saved?.height || 750,
+    x: saved?.x,
+    y: saved?.y,
     minWidth: 900,
     minHeight: 600,
     title: app.isPackaged ? 'XNOWPost' : 'XNOWPost (开发版)',
@@ -133,9 +171,12 @@ function createWindow() {
       nodeIntegration: false,
       additionalArguments: [`--xnowpost-dev=${!app.isPackaged}`],
     },
+    show: false,
     frame: true,
     autoHideMenuBar: true,
   });
+
+  if (saved?.maximized) mainWindow.maximize();
 
   // 始终加载打包文件
   const distIndex = path.join(ROOT, 'dist', 'index.html');
@@ -146,12 +187,27 @@ function createWindow() {
     mainWindow.loadURL('http://localhost:5173');
   }
 
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.center();
+    mainWindow.show();
+  });
+
+  // 窗口移动/调整大小时保存状态（防抖）
+  let saveTimer = null;
+  const onResizeOrMove = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveWinState(mainWindow), 500);
+  };
+  mainWindow.on('resize', onResizeOrMove);
+  mainWindow.on('move', onResizeOrMove);
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 
-  // 窗口关闭时杀死运行中的引擎子进程
+  // 窗口关闭时保存状态 + 杀死运行中的引擎子进程
   mainWindow.on('close', () => {
+    saveWinState(mainWindow);
     if (engineProcess && !engineProcess.killed) {
       try {
         engineProcess.kill('SIGTERM');
@@ -203,14 +259,13 @@ function setupIPC() {
       const scriptPath = path.join(engineRoot, 'src', 'index.js');
       addLog('info', `🚀 node ${scriptPath} ${args.join(' ')}`);
       // ELECTRON_RUN_AS_NODE → 让子进程以纯 Node.js 运行，不走 Chromium/GPU
-      const proc = spawn(process.execPath, [scriptPath, ...args], {
+      const proc = spawn(NODE_EXE, [scriptPath, ...args], {
         cwd: engineRoot,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 15 * 60 * 1000,
         windowsHide: true,  // 不弹 CMD 窗口
         env: {
           ...process.env,
-          ELECTRON_RUN_AS_NODE: '1',
           XNOWPOST_DATA_DIR: DATA_DIR,  // 引擎输出目录与"打开输出目录"按钮一致
         },
       });
@@ -466,6 +521,15 @@ function setupIPC() {
   ipcMain.handle('shell:openOutput', () => {
     shell.openPath(path.join(DATA_DIR, 'output'));
     return { ok: true };
+  });
+
+  // 打开外部链接（浏览器跳转）
+  ipcMain.handle('shell:openExternal', async (_event, url) => {
+    if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+      await shell.openExternal(url);
+      return { ok: true };
+    }
+    return { ok: false, message: 'invalid url' };
   });
 
   // 获取引擎状态
@@ -732,10 +796,11 @@ function setupIPC() {
     }
   });
 
-  // 手动触发采集
-  ipcMain.handle('collect:run', async () => {
+  // 手动触发采集（可选指定账号列表）
+  ipcMain.handle('collect:run', async (_event, accounts) => {
     try {
-      addLog('info', '📊 手动采集开始...');
+      const accArg = Array.isArray(accounts) && accounts.length ? `--accounts ${accounts.join(',')}` : '';
+      addLog('info', `📊 手动采集开始...${accArg ? ' (账号: ' + accounts.join(', ') + ')' : ''}`);
 
       return new Promise((resolve) => {
         const engineRoot = app.isPackaged
@@ -743,14 +808,16 @@ function setupIPC() {
           : ROOT;
         const scriptPath = path.join(engineRoot, 'src', 'collector', 'index.js');
 
-        const proc = spawn(process.execPath, [scriptPath], {
+        const args = [scriptPath];
+        if (accArg) args.push('--accounts', accounts.join(','));
+
+        const proc = spawn(NODE_EXE, args, {
           cwd: engineRoot,
           stdio: ['pipe', 'pipe', 'pipe'],
           timeout: 10 * 60 * 1000,
           windowsHide: true,
           env: {
             ...process.env,
-            ELECTRON_RUN_AS_NODE: '1',
             XNOWPOST_DATA_DIR: DATA_DIR,
           },
         });
@@ -867,7 +934,14 @@ function setupIPC() {
         accounts[r.account][r.platform].yesterday[r.metric] = r.value;
       }
 
-      return { date, yesterday, availableDates, accounts };
+      // 加载账号元数据（用户名/主页链接）
+      let accountMeta = {};
+      try {
+        const metaPath = path.join(DATA_DIR, 'data', 'account-meta.json');
+        if (fs.existsSync(metaPath)) accountMeta = fs.readJsonSync(metaPath);
+      } catch (_) {}
+
+      return { date, yesterday, availableDates, accounts, accountMeta };
     } catch (e) {
       console.error('读取日报数据失败:', e.message);
       return null;
@@ -1046,13 +1120,12 @@ function startScheduler() {
     return;
   }
 
-  schedulerProcess = spawn(process.execPath, [scriptPath], {
+  schedulerProcess = spawn(NODE_EXE, [scriptPath], {
     cwd: schedulerRoot,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,  // 不弹 CMD 窗口
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
       XNOWPOST_DATA_DIR: DATA_DIR,
     },
   });
@@ -1060,13 +1133,13 @@ function startScheduler() {
   schedulerProcess.stdout.on('data', (chunk) => {
     const lines = chunk.toString().split('\n').filter(Boolean);
     for (const line of lines) {
-      console.log(`[调度器] ${line}`);
       addLog('info', `⏰ ${line}`);
-      // 检测调度器任务运行状态
-      if (line.includes('🚀') || line.includes('开始') || line.includes('引擎启动')) {
+      // 检测调度器任务运行状态（匹配英文关键词）
+      const l = line.toLowerCase();
+      if (l.includes('start') || l.includes('run') || l.includes('begin')) {
         schedulerRunning = true;
-        schedulerLastRun = new Date().toLocaleString('zh-CN');
-      } else if (line.includes('完成') || line.includes('失败') || line.includes('已取消')) {
+        schedulerLastRun = new Date().toISOString().slice(0,19);
+      } else if (l.includes('done') || l.includes('fail') || l.includes('complete') || l.includes('cancel')) {
         schedulerRunning = false;
       }
     }
@@ -1075,7 +1148,6 @@ function startScheduler() {
   schedulerProcess.stderr.on('data', (chunk) => {
     const lines = chunk.toString().split('\n').filter(Boolean);
     for (const line of lines) {
-      console.error(`[调度器] ${line}`);
       addLog('warning', `⏰ ${line}`);
     }
   });

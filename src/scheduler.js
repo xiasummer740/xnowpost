@@ -11,12 +11,27 @@ const SCHEDULE_FILE = path.join(DATA_DIR, 'config', 'schedule.json');
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 60_000;
 
+// 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
+function findNodeExe() {
+  // 1. 优先用同目录下的 node.exe（electron 自带的）
+  const elDir = path.dirname(process.execPath);
+  const selfNode = path.join(elDir, 'node.exe');
+  if (fs.existsSync(selfNode)) return selfNode;
+  // 2. PATH 查找
+  try {
+    const r = execSync('where node', { stdio: 'pipe', encoding: 'utf-8', windowsHide: true });
+    const lines = r.trim().split('\n');
+    if (lines[0]) return lines[0].trim();
+  } catch (_) {}
+  // 3. fallback
+  return 'node';
+}
+const NODE_EXE = findNodeExe();
+
 // 默认配置（首次启动时写入）
 const DEFAULT_JOBS = [
-  { id: 1, time: '07:00', mode: 'auto',    label: '早间内容（视频+图文）', enabled: false, account: '' },
-  { id: 2, time: '19:00', mode: 'video',   label: '晚间视频',             enabled: false, account: '' },
-  { id: 3, time: '21:00', mode: 'collect', label: '数据采集 + 日报',      enabled: false },
-  { id: 4, time: '20:00', mode: 'publish', label: '自动发布（旧模式）',    enabled: false },
+  { id: 1, time: '07:00', mode: 'auto',  label: '视频+图文', enabled: false, account: '' },
+  { id: 2, time: '19:00', mode: 'video', label: '仅视频',    enabled: false, account: '' },
 ];
 
 // 所有活跃的 cron 任务引用，用于热重载
@@ -29,7 +44,7 @@ function getLogPath() {
 }
 
 function log(msg) {
-  const line = `[${new Date().toLocaleString('zh-CN')}] ${msg}`;
+  const line = `[${new Date().toISOString().slice(0,19)}] ${msg}`;
   console.log(line);
   fs.appendFileSync(getLogPath(), line + '\n');
 }
@@ -53,19 +68,29 @@ async function sendAlert(message) {
 }
 
 async function runWithRetry(script, label, retryOnFail = true) {
-  // Electron 环境需要走 process.execPath + ELECTRON_RUN_AS_NODE
-  const nodeCmd = process.env.XNOWPOST_DATA_DIR ? process.execPath : 'node';
-  const env = process.env.XNOWPOST_DATA_DIR
-    ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
-    : process.env;
-
+  // 用真正的 node.exe，不用 process.execPath（electron.exe 是 GUI 程序，windowsHide 对它无效）
   const maxAttempts = retryOnFail ? MAX_RETRIES + 1 : 1;
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      execSync(`${nodeCmd} ${script}`, { cwd: ROOT, stdio: 'inherit', timeout: 15 * 60 * 1000, env, windowsHide: true });
+      const result = execSync(`"${NODE_EXE}" ${script}`, { cwd: ROOT, stdio: 'pipe', timeout: 15 * 60 * 1000, windowsHide: true });
+      // 转发子进程输出到调度器日志
+      const output = result.toString().trim();
+      if (output) {
+        for (const line of output.split('\n').filter(Boolean)) {
+          log(line.trim());
+        }
+      }
       log(`✅ ${label} 完成`);
       return;
     } catch (err) {
+      if (err.stdout) {
+        const out = err.stdout.toString().trim();
+        if (out) for (const line of out.split('\n').filter(Boolean)) log(line.trim());
+      }
+      if (err.stderr) {
+        const errOut = err.stderr.toString().trim();
+        if (errOut) for (const line of errOut.split('\n').filter(Boolean)) log(line.trim());
+      }
       log(`❌ ${label} 第${i+1}次失败: ${err.message}`);
       if (i < maxAttempts - 1) {
         log(`⏳ 等待 ${RETRY_DELAY/1000}s 后重试...`);
@@ -164,13 +189,13 @@ function watchSchedule() {
 }
 
 // ===== 启动 =====
-console.log('\n⏰ XNOW 内容引擎调度器');
-console.log('  · 配置来源: config/schedule.json');
-console.log(`  · 失败重试 ${MAX_RETRIES} 次`);
-console.log('  · 修改 schedule.json 自动热重载\n');
+console.log('\n[Scheduler] XNOW Scheduler');
+console.log('  -> config: config/schedule.json');
+console.log('  -> retry: ' + MAX_RETRIES + ' times');
+console.log('  -> hot-reload enabled\n');
 
 loadSchedule();
 watchSchedule();
 
 process.stdin.resume();
-console.log(`✅ 调度器已就绪 (${cronTasks.length} 个任务)\n`);
+console.log('[Scheduler] ready (' + cronTasks.length + ' tasks)\n');

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import path from 'path';
 import fs from 'fs-extra';
-import { openBitProfile, closeBitProfile, connectBrowser, closeBrowser } from './browser.js';
+import { openBitProfile, closeBitProfile, closeAllBitProfiles, connectBrowser, closeBrowser } from './browser.js';
 import { scrapeTikTok } from './scrapers/tiktok.js';
 import { scrapeXiaohongshu } from './scrapers/xiaohongshu.js';
 import { scrapeFacebook } from './scrapers/facebook.js';
@@ -13,6 +13,21 @@ import { openDB, ensureDB } from '../db.js';
 
 const DB_PATH = path.resolve('data/analytics.db');
 const CONFIG_PATH = path.resolve('config/user.json');
+const ACCOUNT_META_PATH = path.resolve('data/account-meta.json');
+
+// 保存/更新账号元数据（用户名、主页链接等）
+function saveAccountMeta(account, platform, username) {
+  try {
+    fs.ensureDirSync(path.dirname(ACCOUNT_META_PATH));
+    let meta = {};
+    if (fs.existsSync(ACCOUNT_META_PATH)) meta = fs.readJsonSync(ACCOUNT_META_PATH);
+    const profileUrl = platform === 'tiktok' ? `https://www.tiktok.com/${username}` : '';
+    meta[account] = { platform, username, profileUrl, updatedAt: new Date().toISOString() };
+    fs.writeJsonSync(ACCOUNT_META_PATH, meta, { spaces: 2 });
+  } catch (e) {
+    console.warn(`  ⚠️ 保存账号元数据失败: ${e.message}`);
+  }
+}
 
 function loadAccounts() {
   try {
@@ -35,11 +50,25 @@ async function saveStats(db, account, platform, date, stats) {
   });
 }
 
-export async function collectAll() {
+export async function collectAll(filterAccounts = null) {
   const date = new Date().toISOString().split('T')[0];
   await ensureDB(DB_PATH);
 
-  const accounts = loadAccounts();
+  // 采集前清理所有残留比特窗口，防止堆积
+  console.log('🧹 清理残留比特窗口...');
+  await closeAllBitProfiles();
+
+  let accounts = loadAccounts();
+  // 过滤指定账号
+  if (filterAccounts && filterAccounts.length > 0) {
+    accounts = accounts.filter(a => filterAccounts.includes(a.name));
+    if (accounts.length === 0) {
+      console.log('⚠️ 没有匹配的账号，检查账号名称是否正确');
+      return;
+    }
+    console.log(`📋 将采集 ${accounts.length} 个账号: ${accounts.map(a=>a.name).join(', ')}`);
+  }
+
   if (accounts.length === 0) {
     console.log('⚠️ 未配置账号，请在配置页添加账号');
     console.log('   或者使用旧版 CDP 模式...');
@@ -82,30 +111,35 @@ export async function collectAll() {
     const fn = scrapers[acc.platform];
     if (!fn) {
       console.log(`  ⚠️ 不支持的平台: ${acc.platform}`);
-      await closeBitProfile();
+      await closeBitProfile(acc.bitEnvId);
       continue;
     }
 
     try {
       const page = await context.newPage();
       console.log(`  📡 ${acc.platform}: 开始采集...`);
-      const stats = await fn(page);
+      const result = await fn(page);
+      const stats = result && result.stats ? result.stats : result;
+      const username = result?.username || '';
+      // 保存用户名到账号元数据
+      if (username) saveAccountMeta(acc.name, acc.platform, username);
       if (stats) {
         const db = await openDB(DB_PATH);
         saveStats(db, acc.name, acc.platform, date, stats);
         fs.writeFileSync(DB_PATH, db.export());
         db.close();
         allResults.push({ account: acc.name, platform: acc.platform, stats });
-        console.log(`  ✅ ${acc.name}: ${JSON.stringify(stats)}`);
+        console.log(`  ✅ ${acc.name}: ${JSON.stringify(stats)}${username ? ' (@' + username + ')' : ''}`);
       } else {
         console.log(`  ⚠️ ${acc.name}: 无数据`);
       }
       await page.close();
     } catch (err) {
       console.error(`  ❌ ${acc.name}: ${err.message}`);
+    } finally {
+      // 无论成功失败都要关闭浏览器窗口，防止堆积
+      await closeBitProfile(acc.bitEnvId);
     }
-
-    await closeBitProfile();
   }
 
   // 生成日报
@@ -143,7 +177,8 @@ async function collectLegacy(date) {
     try {
       const page = await context.newPage();
       console.log(`  📡 ${name}: 开始采集...`);
-      const stats = await fn(page);
+      const result = await fn(page);
+      const stats = result && result.stats ? result.stats : result;
       if (stats) {
         saveStats(db, 'default', name, date, stats);
         results.push({ platform: name, stats });
@@ -173,7 +208,15 @@ const isMain = process.argv[1] && (
 );
 
 if (isMain && !process.argv[1].includes('src/index.js')) {
-  collectAll().then(() => process.exit(0)).catch(err => {
+  // 解析 --accounts 参数：只采集指定的账号
+  const accIdx = process.argv.indexOf('--accounts');
+  const filterAccounts = accIdx > -1 && accIdx + 1 < process.argv.length
+    ? process.argv[accIdx + 1].split(',').map(s => s.trim()).filter(Boolean)
+    : null;
+
+  if (filterAccounts) console.log(`📋 过滤账号: ${filterAccounts.join(', ')}`);
+
+  collectAll(filterAccounts).then(() => process.exit(0)).catch(err => {
     console.error('\n❌ 采集失败:', err);
     process.exit(1);
   });

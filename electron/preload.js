@@ -31,12 +31,13 @@ contextBridge.exposeInMainWorld('xnowpost', {
   readSession: (dir) => ipcRenderer.invoke('session:read', dir),
   getThumbnail: (dir) => ipcRenderer.invoke('session:thumbnail', dir),
   openOutputDir: () => ipcRenderer.invoke('shell:openOutput'),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 
   // 费用
   getLatestCost: () => ipcRenderer.invoke('cost:latest'),
 
   // 采集数据
-  runCollect: () => ipcRenderer.invoke('collect:run'),
+  runCollect: (accounts) => ipcRenderer.invoke('collect:run', accounts),
   getLatestCollect: () => ipcRenderer.invoke('collect:latest'),
   getDailyReport: (date) => ipcRenderer.invoke('report:daily', date),
   pushReport: (date) => ipcRenderer.invoke('report:push', date),

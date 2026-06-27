@@ -51,6 +51,59 @@ export async function closeBitProfile(envId) {
 }
 
 /**
+ * 关闭所有比特浏览器窗口（采集前清理残留窗口，防止堆积）
+ * @param {string} [apiKey] - 比特 API 密钥
+ */
+export async function closeAllBitProfiles(apiKey) {
+  // 1. 关闭本地 Playwright 连接
+  if (browser) {
+    try { await browser.close(); } catch (_) {}
+    browser = null;
+    context = null;
+  }
+
+  // 2. 尝试调用比特 API 关闭所有窗口
+  const key = apiKey || process.env.BIT_API_KEY || '';
+  try {
+    // 先尝试 /browser/closeAll（如果比特支持）
+    await callBitAPI('/browser/closeAll', {}, key, false);
+    console.log('  ✅ 已请求关闭所有比特窗口');
+  } catch (_) {
+    // /browser/closeAll 可能不存在，尝试 /browser/list 获取窗口列表
+    try {
+      const listResult = await new Promise((resolve) => {
+        const data = JSON.stringify(key ? { key } : {});
+        const req = http.request({
+          hostname: '127.0.0.1', port: 54345, path: '/browser/list',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+          timeout: 5000,
+        }, (res) => {
+          let d = '';
+          res.on('data', c => d += c);
+          res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.write(data);
+        req.end();
+      });
+
+      if (listResult?.success && Array.isArray(listResult.data)) {
+        const ids = listResult.data.map(b => b.id).filter(Boolean);
+        if (ids.length > 0) {
+          console.log(`  🧹 发现 ${ids.length} 个残留窗口，正在关闭...`);
+          await Promise.allSettled(ids.map(id =>
+            callBitAPI('/browser/close', { id: String(id) }, key, false)
+          ));
+          console.log(`  ✅ 已关闭 ${ids.length} 个残留窗口`);
+        }
+      }
+    } catch (_) {}
+  }
+}
+
+/**
  * 旧的 CDP 直连方式（兼容单窗口）
  */
 export async function connectBrowser() {

@@ -29,7 +29,9 @@
         <!-- 账号标题 -->
         <div class="account-title">
           <span class="ac-avatar">👤</span>
-          <span class="ac-name">{{ accName === 'default' ? '默认' : accName }}</span>
+          <span class="ac-name">{{ displayName(accName) }}</span>
+          <span v-if="accountMeta(accName)?.username" class="ac-username" @click="openProfile(accName)">{{ accountMeta(accName).username }}</span>
+          <span v-if="accountMeta(accName)?.profileUrl" class="ac-link" @click="openProfile(accName)">🔗</span>
           <span class="ac-meta">{{ Object.keys(data.accounts[accName]).length }} 个平台</span>
         </div>
 
@@ -84,10 +86,22 @@ const pushing = ref(false)
 
 const platformEmoji = { tiktok:'🎵', xiaohongshu:'📕', facebook:'📘', instagram:'📸', youtube:'▶️', x:'𝕏' }
 const platformNames = { tiktok:'TikTok', xiaohongshu:'小红书', facebook:'Facebook', instagram:'Instagram', youtube:'YouTube', x:'X (Twitter)' }
-const metricLabels = { followers:'粉丝', views:'播放', likes:'点赞', comments:'评论', shares:'转发', reach:'触达', engagement:'互动率', profile_views:'主页访问' }
-const metricsOrder = ['followers','views','profile_views','likes','comments','shares','reach','engagement']
+const metricLabels = { followers:'粉丝', views:'播放', likes:'点赞', comments:'评论', shares:'转发', saves:'收藏', reach:'触达', engagement:'互动率', profile_views:'主页访问', following:'关注', new_followers:'新增粉丝' }
+const metricsOrder = ['followers','new_followers','following','views','profile_views','likes','comments','shares','saves','reach','engagement']
 
 const accountNames = computed(() => data.value?.accounts ? Object.keys(data.value.accounts) : [])
+
+function accountMeta(acc) {
+  return data.value?.accountMeta?.[acc] || null
+}
+function displayName(acc) {
+  const meta = accountMeta(acc)
+  return meta?.username || (acc === 'default' ? '默认' : acc)
+}
+function openProfile(acc) {
+  const meta = accountMeta(acc)
+  if (meta?.profileUrl) window.xnowpost.openExternal(meta.profileUrl)
+}
 
 function summaryFor(acc) {
   const platforms = data.value?.accounts?.[acc]
@@ -193,6 +207,10 @@ onMounted(() => load())
 .account-title{display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 14px;background:linear-gradient(135deg,#1e3a5f22,#1e40af22);border:1px solid #2563eb44;border-radius:10px}
 .ac-avatar{font-size:15px}
 .ac-name{font-size:14px;font-weight:700;color:#60a5fa}
+.ac-username{font-size:12px;color:#22c55e;cursor:pointer;font-weight:600}
+.ac-username:hover{text-decoration:underline}
+.ac-link{font-size:14px;cursor:pointer;opacity:0.6;transition:opacity .15s}
+.ac-link:hover{opacity:1}
 .ac-meta{margin-left:auto;font-size:11px;color:#64748b}
 
 /* 摘要 */

@@ -191,7 +191,9 @@ const platformNames = {
 };
 const metricLabels = {
   followers: '粉丝', views: '播放', likes: '点赞',
-  comments: '评论', shares: '转发', reach: '触达', engagement: '互动',
+  comments: '评论', shares: '转发', saves: '收藏',
+  reach: '触达', engagement: '互动', profile_views: '主页访问',
+  following: '关注', new_followers: '新增粉丝',
 };
 function formatNum(n) {
   if (n >= 10000) return (n / 10000).toFixed(1) + '万';

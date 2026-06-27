@@ -9,114 +9,138 @@ export async function scrapeTikTok(page) {
     return null
   }
 
-  // 等待页面渲染完成（React 应用）
-  await page.waitForTimeout(5000)
+  await page.waitForTimeout(8000)
 
   const stats = {}
 
   try {
-    // 方法1：通过页面文本提取数据（兼容新版 TikTok Studio）
+    const pageInfo = await page.evaluate(() => {
+      const text = document.body.innerText
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+      const hasLoginPrompt = /log\s*in|sign\*up|登录|注册/i.test(text)
+      // 找 @用户名
+      const atMatch = text.match(/@([\w.]+)/)
+      const atUser = atMatch ? atMatch[0] : ''
+      return { hasLoginPrompt, lineCount: lines.length, atUser, url: window.location.href, title: document.title, preview: lines.slice(0, 40) }
+    })
+
+    console.log(`  📋 页面 ${pageInfo.lineCount} 行, URL=${pageInfo.url}, title=${pageInfo.title}`)
+    if (pageInfo.atUser) console.log(`  👤 发现用户名: ${pageInfo.atUser}`)
+    else console.log(`  ⚠️ 页面未发现 @用户名（检查前40行是否有）`)
+    console.log(`  📋 前10行: ${pageInfo.preview.slice(0, 10).join(' | ')}`)
+    if (pageInfo.preview.length > 10) console.log(`  📋 后续: ${pageInfo.preview.slice(10, 25).join(' | ')}`)
+    if (pageInfo.hasLoginPrompt) {
+      console.log('  ⚠️ TikTok 未登录，跳过')
+      return null
+    }
+
     const data = await page.evaluate(() => {
       const text = document.body.innerText
-
-      // 按行分割
-      const lines = text
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean)
-
-      const found = {}
-      // 常见指标关键词（中英）
-      const metrics = {
-        followers: ['Followers', '粉丝数', '关注者'],
-        'video views': ['Video views', '视频播放', '播放量'],
-        'profile views': ['Profile views', '主页访问', '主页浏览'],
-        likes: ['Likes', '点赞数', '获赞'],
-        comments: ['Comments', '评论数'],
-        shares: ['Shares', '分享数', '转发'],
+      // 同时按换行和 | 分割（TikTok 用管道符布局）
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+      // 展平：每行再按 | 切开
+      const tokens = []
+      for (const line of lines) {
+        const parts = line.split('|').map(s => s.trim()).filter(Boolean)
+        tokens.push(...parts)
       }
 
-      // 判断页面中指标关键词是否匹配某行
-      function getMatchedKeyword(line) {
-        const lc = line.toLowerCase()
+      const found = {}
+
+      // 指标关键词
+      const metrics = {
+        followers: ['粉丝', '关注者', 'Followers', 'follower'],
+        following: ['关注', 'Following', 'following'],
+        likes: ['点赞', '获赞', 'Likes', 'likes', '赞'],
+        comments: ['评论', 'Comments', 'comments'],
+        shares: ['分享', '转发', 'Shares', 'shares'],
+        saves: ['收藏', 'Saves', 'saves', 'Bookmarks'],
+        views: ['观看次数', '观看', '播放', '播放量', '视频播放', 'Views', 'views', 'Video views'],
+        profile_views: ['主页访问', '主页浏览', 'Profile views', 'Profile visits'],
+        reach: ['触达', '覆盖', 'Reach', 'reach'],
+        engagement: ['互动', 'Engagement', 'engagement'],
+        new_followers: ['新增粉丝', '新关注者', 'New followers'],
+      }
+
+      function extractNum(str) {
+        const m = str.match(/([\d,]+\.?\d*)\s*([KkMm万亿]?)/)
+        if (!m) return null
+        let num = parseFloat(m[1].replace(/,/g, ''))
+        const suffix = m[2]
+        if (suffix === 'K' || suffix === 'k') num *= 1000
+        else if (suffix === 'M' || suffix === 'm') num *= 1000000
+        else if (suffix === '万' || suffix === 'w') num *= 10000
+        else if (suffix === '亿') num *= 100000000
+        return Math.round(num)
+      }
+
+      // 匹配关键词（token 包含关键词即可）
+      function matchKw(token, keyword) {
+        const t = token.toLowerCase()
+        const kw = keyword.toLowerCase()
+        return t === kw || t.startsWith(kw + ' ') || t.startsWith(kw + ':') || t.includes(kw)
+      }
+
+      function findKw(token) {
+        const t = token.toLowerCase()
         for (const [key, keywords] of Object.entries(metrics)) {
-          if (keywords.some(kw => {
-            const klc = kw.toLowerCase()
-            return lc === klc || lc.startsWith(klc + ' ') || lc.startsWith(klc)
-          })) return key
+          if (keywords.some(kw => matchKw(t, kw))) return key
         }
         return null
       }
 
-      // 检测页面布局：数字在上 → 标签在下（num-first）or 标签在上 → 数字在下（label-first）
-      let numFirstCount = 0, labelFirstCount = 0
-      for (let i = 1; i < lines.length; i++) {
-        if (extractNum(lines[i - 1]) !== null && getMatchedKeyword(lines[i]) !== null) numFirstCount++
-        if (getMatchedKeyword(lines[i - 1]) !== null && extractNum(lines[i]) !== null) labelFirstCount++
-      }
-      const useNumFirst = numFirstCount >= labelFirstCount
-
-      // 扫描：从有数值的行出发，按布局方向找关联关键词
-      for (let i = 0; i < lines.length; i++) {
-        const numVal = extractNum(lines[i])
-        if (numVal === null) continue
-
-        // 同行关键词优先（如 "Followers 12.5K"）
-        const sameLineKw = getMatchedKeyword(lines[i])
-        if (sameLineKw) {
-          found[sameLineKw] = found[sameLineKw] !== undefined ? Math.max(found[sameLineKw], numVal) : numVal
-          continue
+      // 扫描 tokens：同行数字+关键词
+      for (const token of tokens) {
+        const num = extractNum(token)
+        if (num === null) continue
+        const kw = findKw(token)
+        if (kw) {
+          found[kw] = found[kw] !== undefined ? Math.max(found[kw], num) : num
         }
+      }
 
-        // 按布局方向查相邻行
-        const adjIdx = useNumFirst ? i + 1 : i - 1
-        if (adjIdx >= 0 && adjIdx < lines.length) {
-          const adjKw = getMatchedKeyword(lines[adjIdx])
-          if (adjKw) {
-            found[adjKw] = found[adjKw] !== undefined ? Math.max(found[adjKw], numVal) : numVal
+      // 如果没找到几个，尝试相邻行匹配
+      if (Object.keys(found).length < 3) {
+        for (let i = 0; i < tokens.length; i++) {
+          const num = extractNum(tokens[i])
+          if (num === null || findKw(tokens[i])) continue
+          // 找附近的关键词
+          for (let d = 1; d <= 3; d++) {
+            if (i - d >= 0) { const kw = findKw(tokens[i - d]); if (kw && found[kw] === undefined) { found[kw] = num; break } }
+            if (i + d < tokens.length) { const kw = findKw(tokens[i + d]); if (kw && found[kw] === undefined) { found[kw] = num; break } }
           }
         }
       }
 
       return found
-
-      function extractNum(str) {
-        // 匹配数字，可能带 K/M/万 后缀
-        const m = str.match(/(-?[\d,]+\.?\d*)\s*([KkMm万]?)/)
-        if (!m) return null
-        let num = parseFloat(m[1].replace(/,/g, ''))
-        const suffix = m[2]
-        if (suffix === 'K' || suffix === 'k') num *= 1000
-        else if (suffix === 'M' || suffix === 'm') num *= 1000000
-        else if (suffix === '万') num *= 10000
-        return Math.round(num)
-      }
-
-      function extractPureNum(str) {
-        // 整行必须是纯数值（可能带 K/M/万 后缀），排除 "Followers 1" 等混合行
-        const m = str.match(/^([\d,]+\.?\d*)\s*([KkMm万]?)$/)
-        if (!m) return null
-        let num = parseFloat(m[1].replace(/,/g, ''))
-        const suffix = m[2]
-        if (suffix === 'K' || suffix === 'k') num *= 1000
-        else if (suffix === 'M' || suffix === 'm') num *= 1000000
-        else if (suffix === '万') num *= 10000
-        return Math.round(num)
-      }
     })
 
-    // 映射到标准字段
     if (data.followers !== undefined) stats.followers = data.followers
-    if (data['video views'] !== undefined) stats.views = data['video views']
-    if (data['profile views'] !== undefined) stats.profile_views = data['profile views']
+    if (data.following !== undefined) stats.following = data.following
+    if (data.views !== undefined) stats.views = data.views
+    if (data.profile_views !== undefined) stats.profile_views = data.profile_views
     if (data.likes !== undefined) stats.likes = data.likes
     if (data.comments !== undefined) stats.comments = data.comments
     if (data.shares !== undefined) stats.shares = data.shares
+    if (data.saves !== undefined) stats.saves = data.saves
+    if (data.reach !== undefined) stats.reach = data.reach
+    if (data.engagement !== undefined) stats.engagement = data.engagement
+    if (data.new_followers !== undefined) stats.new_followers = data.new_followers
+
+    // 提取 @用户名（从页面信息中取，不二次 evaluate）
+    const username = pageInfo.atUser || ''
+    if (username) console.log(`  👤 账号: ${username}`)
 
     console.log(`  📊 TikTok 数据: ${JSON.stringify(stats)}`)
+    if (Object.keys(stats).length === 0) {
+      console.log('  ⚠️ 未提取到有效数据')
+    }
+
+    // 返回数据 + 用户名
+    return { stats: Object.keys(stats).length > 0 ? stats : null, username }
   } catch (e) {
     console.log('  ⚠️ TK 数据提取失败:', e.message)
   }
 
-  return Object.keys(stats).length > 0 ? stats : null
+  return { stats: null, username: '' }
 }
