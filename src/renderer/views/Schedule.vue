@@ -5,79 +5,100 @@
       <p class="subtitle">每天固定时间自动产出内容，保存后立即生效</p>
     </div>
 
-    <div class="alarm-list">
-      <div
-        v-for="(job, i) in jobs"
-        :key="job.id"
-        class="alarm-card"
-        :class="{ disabled: !job.enabled }"
-      >
-        <div class="card-row">
-          <!-- 开关 -->
-          <label class="toggle-switch">
-            <input type="checkbox" v-model="job.enabled" />
-            <span class="toggle-slider"></span>
-          </label>
+    <!-- 一键开关 -->
+    <div class="toggle-all-bar">
+      <span class="toggle-all-label">批量操作</span>
+      <button class="toggle-all-btn toggle-all-on" @click="toggleAll(true)">✅ 全部开启</button>
+      <button class="toggle-all-btn toggle-all-off" @click="toggleAll(false)">⛔ 全部关闭</button>
+    </div>
 
-          <!-- 时间 -->
-          <TimePicker v-model="job.time" />
+    <!-- 按账号分组循环 -->
+    <div v-for="(group, gIdx) in groupedJobs" :key="gIdx" class="alarm-group">
+      <div class="group-header" v-if="group.account">
+        <span class="group-avatar">👤</span>
+        <span class="group-name">{{ group.account === 'default' ? '默认账号' : group.account }}</span>
+        <span class="group-count">{{ group.jobs.length }} 个闹钟</span>
+      </div>
+      <div class="group-header" v-else>
+        <span class="group-avatar">📋</span>
+        <span class="group-name">未指定账号</span>
+        <span class="group-count">{{ group.jobs.length }} 个闹钟</span>
+      </div>
 
-          <!-- 删除 -->
-          <button class="btn-delete" @click="removeJob(i)" title="删除闹钟">✕</button>
-        </div>
+      <div class="alarm-row">
+        <div
+          v-for="(job, jIdx) in group.jobs"
+          :key="job.id"
+          class="alarm-card"
+          :class="{ disabled: !job.enabled }"
+        >
+          <div class="card-row">
+            <!-- 开关 -->
+            <label class="toggle-switch">
+              <input type="checkbox" v-model="job.enabled" />
+              <span class="toggle-slider"></span>
+            </label>
 
-        <!-- 模式标签 -->
-        <div class="mode-row">
-          <span
-            v-for="opt in modeOptions"
-            :key="opt.value"
-            class="mode-chip"
-            :class="{ active: job.mode === opt.value }"
-            @click="job.mode = opt.value"
-            >{{ opt.label }}</span
-          >
-        </div>
+            <!-- 时间 -->
+            <TimePicker v-model="job.time" />
 
-        <!-- 账号选择（生成模式才显示） -->
-        <div class="acc-row" v-if="job.mode !== 'collect' && job.mode !== 'publish'">
-          <div class="acc-picker" @click.stop>
-            <input
-              class="acc-input"
-              :value="displayAccountName(job.account)"
-              @input="onAccSearch($event, i)"
-              @focus="onAccFocus(i)"
-              @blur="onAccBlur(i)"
-              @keydown.down.prevent="onAccArrow(i, 1)"
-              @keydown.up.prevent="onAccArrow(i, -1)"
-              @keydown.enter.prevent="onAccEnter(i)"
-              placeholder="输入账号名搜索..."
-            />
-            <div v-if="job._showDropdown" class="acc-dropdown">
-              <div
-                v-for="(acc, ai) in filteredAccs(i)"
-                :key="acc.name"
-                class="acc-opt"
-                :class="{ 'acc-opt-active': ai === job._highlightIdx }"
-                @mousedown.prevent="selectAcc(i, acc.name)"
-              >
-                <span class="acc-opt-name">{{ acc.name }}</span>
-                <span class="acc-opt-env" v-if="!acc.bitEnvId">⚠️ 未配置</span>
-                <span class="acc-opt-env ok" v-else>✅</span>
-              </div>
-              <div v-if="filteredAccs(i).length === 0" class="acc-opt acc-opt-empty">无匹配账号</div>
-            </div>
+            <!-- 删除 -->
+            <button class="btn-delete" @click="removeJob(globalIndex(group, jIdx))" title="删除闹钟">✕</button>
           </div>
-          <span
-            v-if="job.account"
-            class="acc-badge"
-            :style="{ background: accountColor(job.account) }"
-          >{{ job.account }}</span>
-          <span class="acc-hint" v-if="job.account">→ 发布</span>
-          <button class="btn-clone" @click="cloneJob(i)" title="复制此闹钟">📋</button>
-        </div>
 
-        <!-- 名称 -->
-        <input v-model="job.label" class="label-input" placeholder="闹钟名称（如：早间内容）" />
+          <!-- 模式标签 -->
+          <div class="mode-row">
+            <span
+              v-for="opt in modeOptions"
+              :key="opt.value"
+              class="mode-chip"
+              :class="{ active: job.mode === opt.value }"
+              @click="job.mode = opt.value"
+              >{{ opt.label }}</span
+            >
+          </div>
+
+          <!-- 账号选择（生成模式才显示） -->
+          <div class="acc-row" v-if="job.mode !== 'collect' && job.mode !== 'publish'">
+            <div class="acc-picker" @click.stop>
+              <input
+                class="acc-input"
+                :value="displayAccountName(job.account)"
+                @input="onAccSearch($event, globalIndex(group, jIdx))"
+                @focus="onAccFocus(globalIndex(group, jIdx))"
+                @blur="onAccBlur(globalIndex(group, jIdx))"
+                @keydown.down.prevent="onAccArrow(globalIndex(group, jIdx), 1)"
+                @keydown.up.prevent="onAccArrow(globalIndex(group, jIdx), -1)"
+                @keydown.enter.prevent="onAccEnter(globalIndex(group, jIdx))"
+                placeholder="输入账号名搜索..."
+              />
+              <div v-if="job._showDropdown" class="acc-dropdown">
+                <div
+                  v-for="(acc, ai) in filteredAccs(globalIndex(group, jIdx))"
+                  :key="acc.name"
+                  class="acc-opt"
+                  :class="{ 'acc-opt-active': ai === job._highlightIdx }"
+                  @mousedown.prevent="selectAcc(globalIndex(group, jIdx), acc.name)"
+                >
+                  <span class="acc-opt-name">{{ acc.name }}</span>
+                  <span class="acc-opt-env" v-if="!acc.bitEnvId">⚠️ 未配置</span>
+                  <span class="acc-opt-env ok" v-else>✅</span>
+                </div>
+                <div v-if="filteredAccs(globalIndex(group, jIdx)).length === 0" class="acc-opt acc-opt-empty">无匹配账号</div>
+              </div>
+            </div>
+            <span
+              v-if="job.account"
+              class="acc-badge"
+              :style="{ background: accountColor(job.account) }"
+            >{{ job.account }}</span>
+            <span class="acc-hint" v-if="job.account">→ 发布</span>
+            <button class="btn-clone" @click="cloneJob(globalIndex(group, jIdx))" title="复制此闹钟">📋</button>
+          </div>
+
+          <!-- 名称 -->
+          <input v-model="job.label" class="label-input" placeholder="闹钟名称（如：早间内容）" />
+        </div>
       </div>
     </div>
 
@@ -235,6 +256,30 @@ function removeJob(i) {
   jobs.value.splice(i, 1)
 }
 
+function toggleAll(enabled) {
+  jobs.value.forEach(j => (j.enabled = enabled))
+}
+
+// 按账号分组（同账号闹钟排一起，无账号的放最后）
+const groupedJobs = computed(() => {
+  const groups = {}
+  for (const job of jobs.value) {
+    const key = job.account || ''
+    if (!groups[key]) groups[key] = { account: job.account || '', jobs: [] }
+    groups[key].jobs.push(job)
+  }
+  // 有账号的组在前，无账号在后
+  const hasAccount = Object.entries(groups).filter(([k]) => k)
+  const noAccount = Object.entries(groups).filter(([k]) => !k)
+  hasAccount.sort(([a], [b]) => a.localeCompare(b))
+  return [...hasAccount, ...noAccount].map(([, v]) => v)
+})
+
+// 获取组内闹钟在全局 jobs 中的索引
+function globalIndex(group, jIdx) {
+  return jobs.value.indexOf(group.jobs[jIdx])
+}
+
 async function save() {
   saving.value = true
   try {
@@ -279,17 +324,86 @@ h2 {
   margin: 0;
 }
 
-/* 闹钟列表 — 两列网格 */
-.alarm-list {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+/* 按账号分组 */
+.alarm-group {
   margin-bottom: 16px;
 }
-@media (max-width: 640px) {
-  .alarm-list {
-    grid-template-columns: 1fr;
-  }
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 12px;
+  background: #1e293b;
+  border-radius: 8px;
+  border: 1px solid #334155;
+}
+.group-avatar { font-size: 14px; }
+.group-name { font-size: 13px; font-weight: 700; color: #60a5fa; }
+.group-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: #64748b;
+  background: #0f172a;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+/* 同一账号的闹钟排在一行，自动折行 */
+.alarm-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.alarm-row > .alarm-card {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+/* 一键开关栏 */
+.toggle-all-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #1e293b;
+  border-radius: 8px;
+  border: 1px solid #334155;
+}
+.toggle-all-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin-right: 4px;
+}
+.toggle-all-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.toggle-all-btn:hover {
+  transform: translateY(-1px);
+}
+.toggle-all-on {
+  background: #22c55e22;
+  color: #22c55e;
+  border: 1px solid #22c55e44;
+}
+.toggle-all-on:hover {
+  background: #22c55e44;
+}
+.toggle-all-off {
+  background: #ef444422;
+  color: #ef4444;
+  border: 1px solid #ef444444;
+}
+.toggle-all-off:hover {
+  background: #ef444444;
 }
 
 /* 闹钟卡片 */
