@@ -5,6 +5,45 @@
       <p class="subtitle">每天固定时间自动产出内容，保存后立即生效</p>
     </div>
 
+    <!-- 📊 采集面板（独立于闹钟） -->
+    <div class="collect-panel">
+      <div class="cp-header" @click="collectExpanded = !collectExpanded">
+        <span>📊 采集面板</span>
+        <span class="cp-toggle">{{ collectExpanded ? '收起 ▲' : '展开 ▼' }}</span>
+      </div>
+      <div class="cp-body" v-if="collectExpanded">
+        <div class="cp-hint">勾选要采集的账号，点击「开始采集」立即执行</div>
+        <div class="cp-acc-list">
+          <label v-for="acc in uniqueAccounts" :key="acc.name" class="cp-acc-item">
+            <input type="checkbox" :value="acc.name" v-model="collectSelection" />
+            <span class="cp-acc-name">{{ acc.name }}</span>
+            <span class="cp-acc-plat">{{ platformLabel(acc.platform) }}</span>
+            <span class="cp-acc-env" :class="acc.bitEnvId ? 'ok' : ''">{{ acc.bitEnvId ? '✅' : '⚠️ 未配置环境' }}</span>
+          </label>
+          <div v-if="uniqueAccounts.length === 0" class="cp-empty">暂无账号，请先到配置页添加</div>
+        </div>
+        <div class="cp-actions">
+          <button class="btn btn-primary btn-sm" @click="selectAllCollect">全选</button>
+          <button class="btn btn-secondary btn-sm" @click="collectSelection = []">清空</button>
+          <button class="btn btn-collect btn-sm" @click="startCollect" :disabled="collectRunning || collectSelection.length === 0">
+            {{ collectRunning ? '⏳ 采集中...' : '🚀 开始采集' }}
+          </button>
+          <span v-if="collectDone" class="cp-done">✅ 采集完成</span>
+        </div>
+
+        <!-- 定时采集 -->
+        <div class="cp-schedule">
+          <span class="cp-sch-label">⏰ 定时采集</span>
+          <TimePicker v-model="collectTime" />
+          <button class="btn btn-primary btn-sm" @click="saveCollectSchedule" :disabled="!collectTime">
+            💾 保存
+          </button>
+          <span v-if="collectSchedSaved" class="cp-done">✅ 已保存</span>
+          <span v-if="collectSchedActive" class="cp-active">🟢 每天 {{ collectTime }} 自动执行</span>
+        </div>
+      </div>
+    </div>
+
     <!-- 一键开关 -->
     <div class="toggle-all-bar">
       <span class="toggle-all-label">批量操作</span>
@@ -53,13 +92,13 @@
               :key="opt.value"
               class="mode-chip"
               :class="{ active: job.mode === opt.value }"
-              @click="job.mode = opt.value"
+              @click="setMode(globalIndex(group, jIdx), opt.value)"
               >{{ opt.label }}</span
             >
           </div>
 
-          <!-- 账号选择（生成模式才显示） -->
-          <div class="acc-row" v-if="job.mode !== 'collect' && job.mode !== 'publish'">
+          <!-- 账号选择 -->
+          <div class="acc-row">
             <div class="acc-picker" @click.stop>
               <input
                 class="acc-input"
@@ -133,12 +172,96 @@ const saving = ref(false)
 const saved = ref(false)
 const searchTexts = ref({})  // 每个闹钟的账号搜索文本
 
+// 采集面板
+const collectExpanded = ref(false)
+const collectSelection = ref([])
+const collectRunning = ref(false)
+const collectDone = ref(false)
+const collectTime = ref('21:00')
+const collectSchedSaved = ref(false)
+const collectSchedActive = ref(false)
+
+// 去重后的账号列表（按名称去重，保留第一个）
+const uniqueAccounts = computed(() => {
+  const seen = new Set()
+  return sortedAccounts.value.filter(a => {
+    if (seen.has(a.name)) return false
+    seen.add(a.name)
+    return true
+  })
+})
+
+function platformLabel(val) {
+  const map = { tiktok:'TikTok', xiaohongshu:'小红书', facebook:'Facebook', instagram:'Instagram', youtube:'YouTube', x:'X (Twitter)' }
+  return map[val] || val
+}
+function selectAllCollect() {
+  collectSelection.value = uniqueAccounts.value.map(a => a.name)
+}
+async function startCollect() {
+  if (collectSelection.value.length === 0) return
+  collectRunning.value = true
+  collectDone.value = false
+  try {
+    const result = await window.xnowpost.runCollect(collectSelection.value)
+    if (!result.ok) {
+      console.error('采集失败:', result.message)
+    }
+    collectDone.value = true
+    setTimeout(() => { collectDone.value = false }, 3000)
+  } catch (e) {
+    console.error('采集调用失败:', e)
+  } finally {
+    collectRunning.value = false
+  }
+}
+async function saveCollectSchedule() {
+  if (!collectTime.value) return
+  collectSchedSaved.value = false
+  try {
+    // 保存一个特殊的 schedule 条目，mode 为 collect
+    const schedules = await window.xnowpost.getSchedules()
+    // 移除旧的 collect 定时任务
+    const filtered = schedules.filter(j => j.mode !== 'collect')
+    filtered.push({
+      id: Date.now(),
+      time: collectTime.value,
+      mode: 'collect',
+      label: '数据采集 + 日报',
+      enabled: true,
+      collectAccounts: collectSelection.value.join(','),
+    })
+    const result = await window.xnowpost.saveSchedules(filtered)
+    if (result && result.ok) {
+      collectSchedSaved.value = true
+      collectSchedActive.value = true
+      setTimeout(() => { collectSchedSaved.value = false }, 3000)
+    }
+  } catch (e) {
+    console.error('保存采集定时失败:', e)
+  }
+}
+
+// 加载时检查是否有 collect 的定时任务
+onMounted(async () => {
+  await load()
+  // 检测现有 collect 定时任务
+  const sched = await window.xnowpost.getSchedules()
+  const collectJob = (sched || []).find(j => j.mode === 'collect')
+  if (collectJob) {
+    collectTime.value = collectJob.time || '21:00'
+    collectSchedActive.value = collectJob.enabled !== false
+    // 恢复上一次勾选的账号
+    if (collectJob.collectAccounts) {
+      collectSelection.value = collectJob.collectAccounts.split(',').filter(Boolean)
+    }
+  }
+})
+
 const modeOptions = [
   { value: 'auto', label: '视频+图文' },
   { value: 'video', label: '仅视频' },
   { value: 'post', label: '仅图文' },
-  { value: 'collect', label: '采集+日报' },
-  { value: 'publish', label: '批量发布(旧)', icon: '📤' },
 ]
 
 // 账号按名称排序
@@ -216,6 +339,12 @@ function selectAcc(i, name) {
 async function load() {
   jobs.value = await window.xnowpost.getSchedules()
   if (!jobs.value.length) resetDefaults()
+  // 同步旧标签：确保标签与模式一致（"早间内容"→"视频+图文"等）
+  for (const job of jobs.value) {
+    if (modeLabelMap[job.mode] && job.label !== modeLabelMap[job.mode]) {
+      job.label = modeLabelMap[job.mode]
+    }
+  }
   // 加载账号列表（用于闹钟的账号选择器）
   try {
     const config = await window.xnowpost.getConfig()
@@ -225,9 +354,8 @@ async function load() {
 
 function resetDefaults() {
   jobs.value = [
-    { id: 1, time: '07:00', mode: 'auto',  label: '早间内容（视频+图文）', enabled: false, account: '' },
-    { id: 2, time: '19:00', mode: 'video', label: '晚间视频',             enabled: false, account: '' },
-    { id: 3, time: '21:00', mode: 'collect', label: '数据采集 + 日报',     enabled: false },
+    { id: 1, time: '07:00', mode: 'auto',  label: '视频+图文', enabled: false, account: '' },
+    { id: 2, time: '19:00', mode: 'video', label: '仅视频',    enabled: false, account: '' },
   ]
 }
 
@@ -237,10 +365,21 @@ function addJob() {
     id: nextId++,
     time: '12:00',
     mode: 'auto',
-    label: '新闹钟',
+    label: '视频+图文',
     enabled: true,
     account: '',
   })
+}
+
+// 模式名称映射
+const modeLabelMap = { auto: '视频+图文', video: '仅视频', post: '仅图文' }
+
+// 设置模式 + 自动更新标签
+function setMode(i, val) {
+  const job = jobs.value[i]
+  job.mode = val
+  // 标签始终跟随模式选择
+  job.label = modeLabelMap[val] || val
 }
 
 function cloneJob(i) {
@@ -302,12 +441,11 @@ async function save() {
   }
 }
 
-onMounted(load)
 </script>
 
 <style scoped>
 .schedule-page {
-  max-width: 600px;
+  max-width: none;
   margin: 0 auto;
 }
 
@@ -719,4 +857,58 @@ h2 {
 .tips p + p {
   margin-top: 2px;
 }
+
+/* 采集面板 */
+.collect-panel {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.cp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  color: #22c55e;
+  user-select: none;
+}
+.cp-header:hover { background: #33415533; }
+.cp-toggle { font-size: 11px; color: #64748b; font-weight: 400; }
+.cp-body { padding: 0 14px 14px; border-top: 1px solid #334155; }
+.cp-hint { font-size: 12px; color: #64748b; margin: 10px 0; }
+.cp-acc-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.cp-acc-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px; border-radius: 6px;
+  cursor: pointer; font-size: 13px;
+  transition: background 0.15s;
+}
+.cp-acc-item:hover { background: #33415566; }
+.cp-acc-item input[type="checkbox"] { accent-color: #22c55e; }
+.cp-acc-name { font-weight: 600; color: #e2e8f0; }
+.cp-acc-plat { font-size: 11px; color: #64748b; }
+.cp-acc-env { margin-left: auto; font-size: 11px; color: #ef4444; }
+.cp-acc-env.ok { color: #22c55e; }
+.cp-empty { font-size: 12px; color: #64748b; padding: 10px 0; text-align: center; }
+.cp-actions { display: flex; gap: 8px; align-items: center; }
+.btn-sm { padding: 6px 14px; font-size: 12px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+.btn-collect { background: #22c55e; color: #0f172a; }
+.btn-collect:hover:not(:disabled) { background: #16a34a; }
+.btn-collect:disabled { opacity: 0.5; cursor: not-allowed; }
+.cp-done { font-size: 12px; font-weight: 600; color: #22c55e; }
+
+/* 定时采集 */
+.cp-schedule {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid #334155;
+}
+.cp-sch-label { font-size: 13px; font-weight: 600; color: #94a3b8; white-space: nowrap; }
+.cp-active { font-size: 11px; color: #22c55e; font-weight: 600; }
+
 </style>

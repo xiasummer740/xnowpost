@@ -6,7 +6,7 @@
   "author": "xiasummer740",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "electron .",
+    "dev": "node node_modules/electron/cli.js .",
     "dev:engine": "node src/index.js",
     "dev:engine:video": "node src/index.js --video-only",
     "dev:engine:post": "node src/index.js --post-only",
