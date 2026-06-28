@@ -18,9 +18,14 @@ export async function scrapeTikTok(page) {
       const text = document.body.innerText
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
       const hasLoginPrompt = /log\s*in|sign\*up|登录|注册/i.test(text)
-      // 找 @用户名
-      const atMatch = text.match(/@([\w.]+)/)
-      const atUser = atMatch ? atMatch[0] : ''
+      // 找 @用户名（多源探测：body、title、URL）
+      let atUser = ''
+      const bodyMatch = text.match(/@([\w.]+)/)
+      const titleMatch = document.title?.match(/@([\w.]+)/)
+      const urlMatch = window.location.href.match(/@([\w.]+)/)
+      if (bodyMatch) atUser = bodyMatch[0]
+      else if (titleMatch) atUser = titleMatch[0]
+      else if (urlMatch) atUser = urlMatch[0]
       return { hasLoginPrompt, lineCount: lines.length, atUser, url: window.location.href, title: document.title, preview: lines.slice(0, 40) }
     })
 

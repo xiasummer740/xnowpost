@@ -95,8 +95,7 @@ function accountMeta(acc) {
   return data.value?.accountMeta?.[acc] || null
 }
 function displayName(acc) {
-  const meta = accountMeta(acc)
-  return meta?.username || (acc === 'default' ? '默认' : acc)
+  return acc === 'default' ? '默认' : acc
 }
 function openProfile(acc) {
   const meta = accountMeta(acc)
