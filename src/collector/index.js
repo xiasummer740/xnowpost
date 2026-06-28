@@ -29,6 +29,22 @@ function saveAccountMeta(account, platform, username) {
   }
 }
 
+// 将用户名写回 user.json 配置，日报直接从配置读取无需手动填写
+function saveUsernameToConfig(account, username) {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) return;
+    const cfg = fs.readJsonSync(CONFIG_PATH);
+    const acc = cfg.accounts?.find(a => a.name === account);
+    if (acc && acc.username !== username) {
+      acc.username = username;
+      fs.writeJsonSync(CONFIG_PATH, cfg, { spaces: 2 });
+      console.log(`  ✅ 已保存用户名 ${username} 到配置`);
+    }
+  } catch (e) {
+    console.warn(`  ⚠️ 保存用户名到配置失败: ${e.message}`);
+  }
+}
+
 function loadAccounts() {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
@@ -121,8 +137,11 @@ export async function collectAll(filterAccounts = null) {
       const result = await fn(page);
       const stats = result && result.stats ? result.stats : result;
       const username = result?.username || '';
-      // 保存用户名到账号元数据
-      if (username) saveAccountMeta(acc.name, acc.platform, username);
+      // 保存用户名（写两份：元数据文件 + user.json 配置，日报直接从配置读取）
+      if (username) {
+        saveAccountMeta(acc.name, acc.platform, username);
+        saveUsernameToConfig(acc.name, username);
+      }
       if (stats) {
         const db = await openDB(DB_PATH);
         saveStats(db, acc.name, acc.platform, date, stats);

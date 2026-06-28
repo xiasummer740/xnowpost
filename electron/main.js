@@ -886,6 +886,20 @@ function setupIPC() {
     }
   });
 
+  // 根据平台和用户名生成个人主页 URL
+  function profileUrlFor(platform, cleanUsername) {
+    if (!cleanUsername) return '';
+    const urls = {
+      tiktok: `https://www.tiktok.com/@${cleanUsername}`,
+      xiaohongshu: `https://www.xiaohongshu.com/user/profile/${cleanUsername}`,
+      facebook: `https://facebook.com/${cleanUsername}`,
+      instagram: `https://instagram.com/${cleanUsername}`,
+      youtube: `https://youtube.com/@${cleanUsername}`,
+      x: `https://x.com/${cleanUsername}`,
+    };
+    return urls[platform] || '';
+  }
+
   // 获取日报数据（含昨日对比 + 可用日期列表）
   ipcMain.handle('report:daily', async (_event, targetDate) => {
     try {
@@ -934,11 +948,26 @@ function setupIPC() {
         accounts[r.account][r.platform].yesterday[r.metric] = r.value;
       }
 
-      // 加载账号元数据（用户名/主页链接）
+      // 加载账号元数据：从配置取（用户名/主页链接），无则从 auto-save 文件补
+      const configAccounts = loadConfig().accounts || [];
       let accountMeta = {};
+      // 先从配置文件读取用户名
+      for (const a of configAccounts) {
+        if (a.name && a.username) {
+          const clean = a.username.replace(/^@/, '');
+          const profileUrl = profileUrlFor(a.platform, clean);
+          accountMeta[a.name] = { platform: a.platform, username: a.username, profileUrl };
+        }
+      }
+      // 再从自动保存文件补充（配置未填的账号）
       try {
         const metaPath = path.join(DATA_DIR, 'data', 'account-meta.json');
-        if (fs.existsSync(metaPath)) accountMeta = fs.readJsonSync(metaPath);
+        if (fs.existsSync(metaPath)) {
+          const autoMeta = fs.readJsonSync(metaPath);
+          for (const [k, v] of Object.entries(autoMeta)) {
+            if (!accountMeta[k]) accountMeta[k] = v;
+          }
+        }
       } catch (_) {}
 
       return { date, yesterday, availableDates, accounts, accountMeta };

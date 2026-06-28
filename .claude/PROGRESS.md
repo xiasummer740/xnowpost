@@ -1,3 +1,10 @@
+## v1.1.1-dev 进行中
+- [日报用户名显示修复] TikTok @用户名自动识别+展示
+  - scraper 多源探测：body/title/URL 三路找 @username
+  - 采集后自动写回 user.json 配置，日报从配置读取
+  - 新增 profileUrlFor() 各平台主页链接生成
+  - 回退手动输入框，全自动无需填写
+
 ## 本轮完成
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
   - 根因1：`scrollToCenter` 公式`(1+index)*36-90+18` 多减了36px → 选中偏移1格
