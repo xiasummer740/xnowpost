@@ -1,21 +1,35 @@
-## 本轮完成 (2026-07-05)
-### 第一次审查修复（按优先级）
-- **[GPU 闪退]** `start-dev.ps1` + `npm run dev` 改用 `--use-gl=swiftshader --no-sandbox`
-- **[日志上限]** Store 和 IPC 推送均限 500 条防 OOM
-- **[字号调整]** 全局 body → 14px，阅读字号提到 13px
-- **[Alert 改 banner]** Schedule.vue 报错改用 UI 横幅
-- **[窗口飞出]** `loadWinState` 校验屏幕边界，防拔外接屏后窗口不可见
-- **[轮询优化]** Dashboard 加 `document.hidden` 检测，后台暂停轮询
+## v1.1.2 发布 (2026-07-05)
+- 版本: 1.1.1 → 1.1.2（patch）
+- [v1.1.2 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.1.2)
+- 3 个资产: XNOWPost.Setup.1.1.2.exe + blockmap + latest.yml
 
-### 第二次审查修复
-- **[spawn timeout 修复]** `doRunEngine` 手动 setTimeout 替代不可靠的 spawn timeout 选项
-- **[大图 base64 限制]** `session:read` 加 2MB 单张限制，防大图阻塞 IPC
-- **[配置测试不先保存]** testApi 直接传 Key 值，不再调用 saveConfig 再测试
-- **[CSP 补充]** `media-src 'none'` 策略完善
-- **[logBuffer 上限]** 确认主进程已有 500 条上限（无需额外修复）
+### 修复（两轮审查共 11 项）
+**GPU 兼容性**
+- start-dev.ps1 + npm run dev 改用 `--use-gl=swiftshader --no-sandbox`
 
-## v1.1.1-dev 进行中
-- [日报用户名显示修复] TikTok @用户名自动识别+展示
+**稳定性**
+- 引擎子进程手动 setTimeout 替代不可靠的 spawn timeout
+- Store + IPC 日志限 500 条防 OOM
+- session:read 图片 base64 加 2MB 单张限制
+- Dashboard 轮询加 document.hidden 检测，后台暂停
+
+**安全/健壮**
+- CSP 补充 `media-src 'none'`
+- config:test 直接传 Key，不再先 saveConfig 再测试
+- loadWinState 校验窗口坐标在可见屏幕内
+
+**体验**
+- 全局 body → 14px，最小字号提到 13px
+- Schedule.vue alert() 改 UI banner
+- 移除了 dead dependency: better-sqlite3（与 Electron 43 编译冲突）
+
+## 下个对话待办
+
+1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
+2. **TikTok 发布器重构** — 当前 663 行，超规则 300 行上限 2 倍，需拆文件
+3. **TikTok 发布器错误重试** — 网络断开/环境关闭时无重试机制
+4. **多账号多闹钟生产配置** — 创建 10 个账号 + 10 个闹钟
+5. **多平台 scraper URL 补全** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
   - scraper 多源探测：body/title/URL 三路找 @username
   - 采集后自动写回 user.json 配置，日报从配置读取
   - 新增 profileUrlFor() 各平台主页链接生成
