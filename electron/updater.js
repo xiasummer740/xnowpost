@@ -1,64 +1,62 @@
-import pkg from 'electron-updater';
-import { BrowserWindow } from 'electron';
-const { autoUpdater } = pkg;
-
-autoUpdater.autoDownload = false;  // 不自动下载，等用户确认
-autoUpdater.autoInstallOnAppQuit = true;
-
+let autoUpdater = null;
 let mainWindow = null;
+let initialized = false;
 
 export function initUpdater(window) {
+  if (initialized) return;
   mainWindow = window;
+  initialized = true;
 
-  // 检查更新（静默，不弹窗）
-  autoUpdater.checkForUpdates().catch(() => {});
+  // 延迟加载 electron-updater，避开 app 未就绪的问题
+  import('electron-updater').then(mod => {
+    const pkg = mod.default || mod;
+    autoUpdater = pkg.autoUpdater;
+    if (!autoUpdater) { console.error('electron-updater: autoUpdater not found'); return; }
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = true;
 
-  // 有可用更新
-  autoUpdater.on('update-available', (info) => {
-    const version = info.version;
-    mainWindow?.webContents.send('update:available', {
-      version,
-      releaseDate: info.releaseDate,
+    autoUpdater.checkForUpdates().catch(() => {});
+
+    autoUpdater.on('update-available', (info) => {
+      mainWindow?.webContents.send('update:available', {
+        version: info.version,
+        releaseDate: info.releaseDate,
+      });
     });
-  });
 
-  // 已是最新
-  autoUpdater.on('update-not-available', () => {
-    mainWindow?.webContents.send('update:not-available');
-  });
-
-  // 下载进度
-  autoUpdater.on('download-progress', (progress) => {
-    mainWindow?.webContents.send('update:progress', {
-      percent: Math.round(progress.percent),
-      bytesPerSecond: progress.bytesPerSecond,
-      total: progress.total,
-      transferred: progress.transferred,
+    autoUpdater.on('update-not-available', () => {
+      mainWindow?.webContents.send('update:not-available');
     });
-  });
 
-  // 下载完成
-  autoUpdater.on('update-downloaded', () => {
-    mainWindow?.webContents.send('update:downloaded');
-  });
+    autoUpdater.on('download-progress', (progress) => {
+      mainWindow?.webContents.send('update:progress', {
+        percent: Math.round(progress.percent),
+        bytesPerSecond: progress.bytesPerSecond,
+        total: progress.total,
+        transferred: progress.transferred,
+      });
+    });
 
-  // 错误
-  autoUpdater.on('error', (err) => {
-    console.error('自动更新错误:', err.message);
+    autoUpdater.on('update-downloaded', () => {
+      mainWindow?.webContents.send('update:downloaded');
+    });
+
+    autoUpdater.on('error', (err) => {
+      console.error('自动更新错误:', err.message);
+    });
+  }).catch(err => {
+    console.error('electron-updater 加载失败:', err.message);
   });
 }
 
-// 用户点击"下载更新"
 export function downloadUpdate() {
-  autoUpdater.downloadUpdate();
+  if (autoUpdater) autoUpdater.downloadUpdate();
 }
 
-// 用户点击"立即安装"
 export function quitAndInstall() {
-  autoUpdater.quitAndInstall();
+  if (autoUpdater) autoUpdater.quitAndInstall();
 }
 
-// 检查更新（手动触发）
 export function checkForUpdates() {
-  autoUpdater.checkForUpdates().catch(() => {});
+  if (autoUpdater) autoUpdater.checkForUpdates().catch(() => {});
 }
