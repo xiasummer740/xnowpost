@@ -20,7 +20,6 @@
   "dependencies": {
     "@napi-rs/canvas": "^1.0.0",
     "axios": "^1.7.0",
-    "better-sqlite3": "^11.6.0",
     "dotenv": "^16.4.0",
     "electron-updater": "^6.8.9",
     "form-data": "^4.0.0",
