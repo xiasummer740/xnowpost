@@ -1,4 +1,3 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
 import fs from 'fs-extra';
 import { fileURLToPath } from 'url';
@@ -8,6 +7,9 @@ import { initUpdater, downloadUpdate, quitAndInstall, checkForUpdates } from './
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
+// 用 createRequire 加载 electron（ESM 的 import 在 Electron 中不可靠）
+const electron = _require('electron');
+const { app, BrowserWindow, ipcMain, shell } = electron;
 const ROOT = path.resolve(__dirname, '..');
 
 // 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
