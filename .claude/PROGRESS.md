@@ -1,3 +1,19 @@
+## 本轮完成 (2026-07-05)
+### 第一次审查修复（按优先级）
+- **[GPU 闪退]** `start-dev.ps1` + `npm run dev` 改用 `--use-gl=swiftshader --no-sandbox`
+- **[日志上限]** Store 和 IPC 推送均限 500 条防 OOM
+- **[字号调整]** 全局 body → 14px，阅读字号提到 13px
+- **[Alert 改 banner]** Schedule.vue 报错改用 UI 横幅
+- **[窗口飞出]** `loadWinState` 校验屏幕边界，防拔外接屏后窗口不可见
+- **[轮询优化]** Dashboard 加 `document.hidden` 检测，后台暂停轮询
+
+### 第二次审查修复
+- **[spawn timeout 修复]** `doRunEngine` 手动 setTimeout 替代不可靠的 spawn timeout 选项
+- **[大图 base64 限制]** `session:read` 加 2MB 单张限制，防大图阻塞 IPC
+- **[配置测试不先保存]** testApi 直接传 Key 值，不再调用 saveConfig 再测试
+- **[CSP 补充]** `media-src 'none'` 策略完善
+- **[logBuffer 上限]** 确认主进程已有 500 条上限（无需额外修复）
+
 ## v1.1.1-dev 进行中
 - [日报用户名显示修复] TikTok @用户名自动识别+展示
   - scraper 多源探测：body/title/URL 三路找 @username
