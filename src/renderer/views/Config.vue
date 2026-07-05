@@ -251,8 +251,9 @@ async function test(type) {
   results[type] = null
   errorMsg.value = ''
   try {
-    await store.saveConfig(JSON.parse(JSON.stringify(form)))
-    results[type] = await window.xnowpost.testApi(type)
+    const keyMap = { deepseek: 'deepseekApiKey', siliconflow: 'siliconflowApiKey', pexels: 'pexelsApiKey', tg: 'tgBotToken' }
+    const key = form[keyMap[type]] || ''
+    results[type] = await window.xnowpost.testApi(type, key)
   } catch (e) {
     results[type] = { ok: false, message: 'IPC 调用失败: ' + (e.message || e) }
   }
