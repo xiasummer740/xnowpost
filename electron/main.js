@@ -277,7 +277,7 @@ function setupIPC() {
       const proc = spawn(NODE_EXE, [scriptPath, ...args], {
         cwd: engineRoot,
         stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 15 * 60 * 1000,
+        // spawn 的 timeout 不生效，下方用 setTimeout 替代
         windowsHide: true,  // 不弹 CMD 窗口
         env: {
           ...process.env,
@@ -285,6 +285,15 @@ function setupIPC() {
         },
       });
       engineProcess = proc;
+      // 手动超时：spawn 的 timeout 不可靠，用 setTimeout 兜底
+      const ENGINE_TIMEOUT = 15 * 60 * 1000;
+      let engineTimer = setTimeout(() => {
+        if (!proc.killed) {
+          addLog('error', `⏰ 引擎执行超时(${ENGINE_TIMEOUT/60000}分钟)，强制终止`);
+          proc.kill('SIGTERM');
+          try { process.kill(-proc.pid, 'SIGTERM'); } catch (_) {}
+        }
+      }, ENGINE_TIMEOUT);
       let output = '';
 
       let stdoutBuf = '';
@@ -315,6 +324,7 @@ function setupIPC() {
       });
 
       proc.on('close', (code) => {
+        clearTimeout(engineTimer);
         engineProcess = null;
         if (stdoutBuf.trim()) addLog('info', stdoutBuf.trim());
         if (code === 0) {
@@ -328,6 +338,7 @@ function setupIPC() {
       });
 
       proc.on('error', (err) => {
+        clearTimeout(engineTimer);
         engineProcess = null;
         addLog('error', `引擎启动失败: ${err.message}`);
         resolve({ ok: false, message: err.message });
@@ -495,10 +506,11 @@ function setupIPC() {
       const txtFile = files.find(f => f === '文案.txt');
       if (txtFile) text = fs.readFileSync(path.join(sessionDir, txtFile), 'utf-8');
 
-      // 读图片（转 base64，限制尺寸避免卡 UI）
+      // 读图片（转 base64，限制数量 9 张 + 单张 2MB 避免卡 UI）
       const images = files
         .filter(f => /\.(png|jpg|jpeg)$/i.test(f))
         .slice(0, 9)
+        .filter(f => fs.statSync(path.join(sessionDir, f)).size <= 2 * 1024 * 1024)
         .map(f => ({
           name: f,
           data: `data:image/png;base64,${fs.readFileSync(path.join(sessionDir, f)).toString('base64')}`,
@@ -581,15 +593,17 @@ function setupIPC() {
   });
 
   // 测试 API 连接
-  ipcMain.handle('config:test', async (_event, type) => {
+  ipcMain.handle('config:test', async (_event, type, key) => {
+    // 优先用传入的 key，fallback 到已保存配置
     const config = loadConfig();
+    const apiKey = key || config[type === 'tg' ? 'tgBotToken' : type + 'ApiKey'] || '';
 
     if (type === 'deepseek') {
-      if (!config.deepseekApiKey) return { ok: false, message: '请先填写 DeepSeek API Key' };
+      if (!apiKey) return { ok: false, message: '请先填写 DeepSeek API Key' };
       try {
         const OpenAI = (await import('openai')).default;
         const client = new OpenAI({
-          apiKey: config.deepseekApiKey,
+          apiKey,
           baseURL: 'https://api.deepseek.com',
           timeout: 10000,
         });
@@ -604,14 +618,14 @@ function setupIPC() {
     }
 
     if (type === 'siliconflow') {
-      if (!config.siliconflowApiKey) return { ok: false, message: '请先填写硅基流动 API Key' };
+      if (!apiKey) return { ok: false, message: '请先填写硅基流动 API Key' };
       try {
         // 测试生图 API
         const axios = (await import('axios')).default;
         const resp = await axios.post(
           'https://api.siliconflow.cn/v1/images/generations',
           { model: 'Kwai-Kolors/Kolors', prompt: 'test', image_size: '512x512', batch_size: 1, guidance_scale: 7.5 },
-          { headers: { Authorization: `Bearer ${config.siliconflowApiKey}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+          { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 30000 }
         );
         if (resp.status === 200) {
           return { ok: true, message: '硅基流动 生图 API ✅ 连接成功（模型: Kolors）' };
@@ -623,10 +637,10 @@ function setupIPC() {
     }
 
     if (type === 'tg') {
-      if (!config.tgBotToken) return { ok: false, message: '请先填写 TG Bot Token' };
+      if (!apiKey) return { ok: false, message: '请先填写 TG Bot Token' };
       try {
         const axios = (await import('axios')).default;
-        const resp = await axios.get(`https://api.telegram.org/bot${config.tgBotToken}/getMe`, { timeout: 10000 });
+        const resp = await axios.get(`https://api.telegram.org/bot${apiKey}/getMe`, { timeout: 10000 });
         if (resp.data?.ok) {
           return { ok: true, message: `TG Bot ✅ @${resp.data.result.username} 连接成功` };
         }
@@ -637,11 +651,11 @@ function setupIPC() {
     }
 
     if (type === 'pexels') {
-      if (!config.pexelsApiKey) return { ok: false, message: '请先填写 Pexels API Key' };
+      if (!apiKey) return { ok: false, message: '请先填写 Pexels API Key' };
       try {
         const axios = (await import('axios')).default;
         const resp = await axios.get('https://api.pexels.com/v1/search?query=test&per_page=1', {
-          headers: { Authorization: config.pexelsApiKey }, timeout: 10000,
+          headers: { Authorization: apiKey }, timeout: 10000,
         });
         if (resp.status === 200) {
           return { ok: true, message: `Pexels 素材搜索 ✅ 连接成功（${resp.data?.total_results?.toLocaleString()||0} 张可用）` };

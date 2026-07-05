@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('xnowpost', {
   // 配置
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
-  testApi: (type) => ipcRenderer.invoke('config:test', type),
+  testApi: (type, key) => ipcRenderer.invoke('config:test', type, key),
   testBit: (apiKey) => ipcRenderer.invoke('config:testBit', apiKey),
 
   // 引擎
