@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 // 用 createRequire 加载 electron（ESM 的 import 在 Electron 中不可靠）
 const electron = _require('electron');
-const { app, BrowserWindow, ipcMain, shell } = electron;
+const { app, BrowserWindow, ipcMain, shell, screen } = electron;
 const ROOT = path.resolve(__dirname, '..');
 
 // 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
@@ -141,7 +141,20 @@ const WIN_STATE_FILE = () => path.join(DATA_DIR, 'config', 'window-state.json');
 
 function loadWinState() {
   try {
-    if (fs.existsSync(WIN_STATE_FILE())) return fs.readJsonSync(WIN_STATE_FILE());
+    if (fs.existsSync(WIN_STATE_FILE())) {
+      const state = fs.readJsonSync(WIN_STATE_FILE());
+      // 验证窗口位置在可见屏幕内，防拔掉外接屏后窗口飞出屏幕
+      if (state.x !== undefined && state.y !== undefined) {
+        const displays = screen.getAllDisplays();
+        const onScreen = displays.some(d => {
+          const { x, y, width, height } = d.bounds;
+          return state.x >= x && state.x < x + width - 50 &&
+                 state.y >= y && state.y < y + height - 50;
+        });
+        if (!onScreen) return null;
+      }
+      return state;
+    }
   } catch (_) {}
   return null;
 }

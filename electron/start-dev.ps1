@@ -3,7 +3,7 @@ $env:NODE_OPTIONS = ''
 $env:ELECTRON_RUN_AS_NODE = ''
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$cliJs = Join-Path $projectRoot "node_modules\electron\cli.js"
+$electronExe = Join-Path $projectRoot "node_modules\electron\dist\electron.exe"
 
 Write-Host "🚀 启动 XNOWPost 开发版..."
-node $cliJs $projectRoot
+& $electronExe $projectRoot --use-gl=swiftshader --no-sandbox

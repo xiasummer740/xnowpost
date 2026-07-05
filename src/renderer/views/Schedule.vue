@@ -148,6 +148,7 @@
         {{ saving ? '保存中...' : '💾 保存全部' }}
       </button>
       <span v-if="saved" class="saved-hint">✅ 已保存</span>
+      <span v-if="saveError" class="error-banner">{{ saveError }}</span>
     </div>
 
     <div class="tips">
@@ -170,6 +171,7 @@ const jobs = ref([])
 const accounts = ref([])
 const saving = ref(false)
 const saved = ref(false)
+const saveError = ref('')
 const searchTexts = ref({})  // 每个闹钟的账号搜索文本
 
 // 采集面板
@@ -428,14 +430,14 @@ async function save() {
     })))
     const result = await window.xnowpost.saveSchedules(raw)
     if (!result || !result.ok) {
-      alert('保存失败: ' + (result?.message || '未知错误'))
+      saveError.value = result?.message || '保存失败'
     } else {
       saved.value = true
+      saveError.value = ''
       setTimeout(() => (saved.value = false), 3000)
     }
   } catch (err) {
-    console.error('保存定时任务异常:', err)
-    alert('保存异常: ' + err.message)
+    saveError.value = err.message || '保存异常'
   } finally {
     saving.value = false
   }
@@ -457,7 +459,7 @@ h2 {
   margin: 0 0 4px;
 }
 .subtitle {
-  font-size: 13px;
+  font-size: 14px;
   color: #94a3b8;
   margin: 0;
 }
@@ -834,6 +836,14 @@ h2 {
 .saved-hint {
   font-size: 13px;
   color: #22c55e;
+}
+.error-banner {
+  font-size: 13px;
+  color: #ef4444;
+  background: #7f1d1d44;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #7f1d1d;
 }
 
 /* 提示 */

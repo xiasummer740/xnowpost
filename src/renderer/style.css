@@ -4,6 +4,7 @@ body {
   background: #0f172a;
   color: #e2e8f0;
   overflow: hidden;
+  font-size: 14px;
 }
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: #0f172a; }

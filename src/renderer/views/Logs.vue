@@ -41,7 +41,7 @@ function clear() {
 h2 { font-size: 24px; }
 .btn-secondary { padding: 8px 16px; background: #334155; color: #e2e8f0; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .log-container { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; max-height: calc(100vh - 160px); overflow-y: auto; }
-.log-line { display: flex; gap: 10px; padding: 3px 0; font-size: 12px; font-family: monospace; border-bottom: 1px solid #1e293b22; }
+.log-line { display: flex; gap: 10px; padding: 3px 0; font-size: 13px; font-family: monospace; border-bottom: 1px solid #1e293b22; }
 .log-time { color: #64748b; min-width: 140px; }
 .log-level { min-width: 24px; }
 .log-msg { color: #94a3b8; }

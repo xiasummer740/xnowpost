@@ -124,9 +124,10 @@ onMounted(async () => {
     downloadProgress.value = 100;
   });
 
-  // 监听引擎日志
+  // 监听引擎日志（上限 500 条防 OOM）
   window.xnowpost.onLog((entry) => {
     store.logs.push(entry);
+    if (store.logs.length > 500) store.logs.splice(0, store.logs.length - 500);
   });
 });
 </script>
