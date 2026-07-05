@@ -32,10 +32,14 @@ function getYesterday(dateStr) {
  */
 export async function generateDailyReport(date, todayResults, db) {
   const yesterday = getYesterday(date);
+  const timeStr = new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+
+  // 如果有用户名，取第一个账号的用户名显示
+  const firstUser = (todayResults || []).find(r => r.username)?.username || '';
 
   const lines = [
     `━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `📊 <b>XNOW 数据日报 · ${date}</b>`,
+    `📊 <b>XNOW 数据日报 · ${date}</b>${firstUser ? ` · ${firstUser}` : ''} 🕐${timeStr}`,
     `━━━━━━━━━━━━━━━━━━━━━━━━`,
     ``,
   ];

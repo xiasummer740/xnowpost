@@ -5,6 +5,7 @@
       <div class="date-nav" v-if="data">
         <button class="date-btn" @click="prevDate" :disabled="curIdx <= 0">◀</button>
         <span class="date-label">{{ data.date }}</span>
+        <span v-if="data.collectedAt" class="date-time" title="采集时间">🕐 {{ data.collectedAt }}</span>
         <button class="date-btn" @click="nextDate" :disabled="curIdx >= data.availableDates.length - 1">▶</button>
         <span class="nav-divider"></span>
         <button class="date-btn" @click="handleRefresh" title="刷新">🔄</button>
@@ -105,9 +106,12 @@ function openProfile(acc) {
 function summaryFor(acc) {
   const platforms = data.value?.accounts?.[acc]
   if (!platforms) return []
+  const meta = accountMeta(acc)
+  const userTag = meta?.username ? ` @${meta.username.replace(/^@/, '')}` : ''
+  const timeTag = data.value?.collectedAt ? ` 🕐${data.value.collectedAt}` : ''
   const lines = [
     `━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `📊 XNOW 数据日报 · ${data.value.date}${acc !== 'default' ? ` · ${acc}` : ''}`,
+    `📊 XNOW 数据日报 · ${data.value.date}${acc !== 'default' ? ` · ${acc}` : ''}${userTag}${timeTag}`,
     `━━━━━━━━━━━━━━━━━━━━━━━━`,
     ``,
   ]
@@ -192,6 +196,7 @@ onMounted(() => load())
 .date-btn:hover:not(:disabled){color:#f59e0b;background:#33415544}
 .date-btn:disabled{opacity:.3;cursor:not-allowed}
 .date-label{font-size:13px;font-weight:600;color:#e2e8f0;min-width:90px;text-align:center}
+.date-time{font-size:11px;color:#22c55e;background:#22c55e22;padding:2px 8px;border-radius:4px;white-space:nowrap}
 .nav-divider{width:1px;height:16px;background:#334155;margin:0 2px}
 
 .loading-box{display:flex;align-items:center;justify-content:center;gap:10px;padding:60px 0;color:#64748b}

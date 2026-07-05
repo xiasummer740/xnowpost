@@ -970,7 +970,17 @@ function setupIPC() {
         }
       } catch (_) {}
 
-      return { date, yesterday, availableDates, accounts, accountMeta };
+      // 采集时间戳
+      let collectedAt = '';
+      try {
+        const cmPath = path.join(DATA_DIR, 'data', 'collect-meta.json');
+        if (fs.existsSync(cmPath)) {
+          const cm = fs.readJsonSync(cmPath);
+          collectedAt = cm.collectedAtLocal || cm.collectedAt || '';
+        }
+      } catch (_) {}
+
+      return { date, yesterday, availableDates, accounts, accountMeta, collectedAt };
     } catch (e) {
       console.error('读取日报数据失败:', e.message);
       return null;
@@ -1012,15 +1022,43 @@ function setupIPC() {
       }
       db.close();
 
+      // 加载账号元数据（用户名/主页链接）
+      const configAccounts = loadConfig().accounts || [];
+      let pushMeta = {};
+      for (const a of configAccounts) {
+        if (a.name && a.username) pushMeta[a.name] = a.username;
+      }
+      try {
+        const metaPath = path.join(DATA_DIR, 'data', 'account-meta.json');
+        if (fs.existsSync(metaPath)) {
+          const autoMeta = fs.readJsonSync(metaPath);
+          for (const [k, v] of Object.entries(autoMeta)) {
+            if (!pushMeta[k]) pushMeta[k] = v.username || '';
+          }
+        }
+      } catch (_) {}
+      // 采集时间
+      let pushTime = '';
+      try {
+        const cmPath = path.join(DATA_DIR, 'data', 'collect-meta.json');
+        if (fs.existsSync(cmPath)) {
+          const cm = fs.readJsonSync(cmPath);
+          pushTime = cm.collectedAtLocal || '';
+        }
+      } catch (_) {}
+
       // 组装日报文本
       const platformEmoji = { tiktok: '🎵', xiaohongshu: '📕', facebook: '📘', instagram: '📸', youtube: '▶️', x: '𝕏' };
       const metricLabels = { followers: '粉', views: '播', likes: '赞', comments: '评', shares: '转', profile_views: '主页', reach: '触达', engagement: '互动' };
       const platformNames = { tiktok: 'TikTok', xiaohongshu: '小红书', facebook: 'Facebook', instagram: 'Instagram', youtube: 'YouTube', x: 'X' };
 
-      const lines = [`━━━━━━━━━━━━━━━━━━━━━━━━`, `📊 XNOW 数据日报 · ${date}`, `━━━━━━━━━━━━━━━━━━━━━━━━`, ``];
+      const lines = [`━━━━━━━━━━━━━━━━━━━━━━━━`, `📊 XNOW 数据日报 · ${date}${pushTime ? ` 🕐${pushTime}` : ''}`, `━━━━━━━━━━━━━━━━━━━━━━━━`, ``];
 
       for (const [account, platforms] of Object.entries(accounts)) {
-        if (Object.keys(accounts).length > 1) lines.push(`👤 ${account}`);
+        if (Object.keys(accounts).length > 1) {
+          const user = pushMeta[account] || '';
+          lines.push(`👤 ${account}${user ? ` · ${user}` : ''}`);
+        }
         for (const [platform, pd] of Object.entries(platforms)) {
           const emoji = platformEmoji[platform] || '📡';
           const name = platformNames[platform] || platform;

@@ -147,7 +147,7 @@ export async function collectAll(filterAccounts = null) {
         saveStats(db, acc.name, acc.platform, date, stats);
         fs.writeFileSync(DB_PATH, db.export());
         db.close();
-        allResults.push({ account: acc.name, platform: acc.platform, stats });
+        allResults.push({ account: acc.name, platform: acc.platform, stats, username: username || '' });
         console.log(`  ✅ ${acc.name}: ${JSON.stringify(stats)}${username ? ' (@' + username + ')' : ''}`);
       } else {
         console.log(`  ⚠️ ${acc.name}: 无数据`);
@@ -160,6 +160,18 @@ export async function collectAll(filterAccounts = null) {
       await closeBitProfile(acc.bitEnvId);
     }
   }
+
+  // 保存采集时间戳
+  try {
+    const collectMeta = {
+      date,
+      collectedAt: new Date().toISOString(),
+      collectedAtLocal: new Date().toLocaleString('zh-CN', { hour12: false }),
+    };
+    const metaDir = path.resolve('data');
+    fs.ensureDirSync(metaDir);
+    fs.writeJsonSync(path.join(metaDir, 'collect-meta.json'), collectMeta, { spaces: 2 });
+  } catch (_) {}
 
   // 生成日报
   if (allResults.length > 0) {
