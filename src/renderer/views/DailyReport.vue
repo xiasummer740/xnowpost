@@ -218,7 +218,7 @@ onMounted(() => load())
 .ac-meta{margin-left:auto;font-size:11px;color:#64748b}
 
 /* 摘要 */
-.report-summary{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:12px 16px;margin-bottom:12px;font-family:monospace;font-size:12px;line-height:1.7;color:#94a3b8;white-space:pre-wrap;word-break:break-all}
+.report-summary{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:12px 16px;margin-bottom:12px;font-family:monospace;font-size:13px;line-height:1.7;color:#94a3b8;white-space:pre-wrap;word-break:break-all}
 .sl-divider{color:#334155}
 
 /* 平台卡片 - 简洁 */
@@ -229,7 +229,7 @@ onMounted(() => load())
 .pc-nm{font-size:13px;font-weight:700;color:#e2e8f0}
 
 /* 数据表 */
-.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .tbl th{color:#64748b;font-weight:600;text-align:left;padding:3px 8px;border-bottom:1px solid #0f172a}
 .tbl th.r,.tbl td.r{text-align:right}
 .tbl td{padding:4px 8px;color:#94a3b8;border-bottom:1px solid #0f172a22}

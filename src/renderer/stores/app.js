@@ -62,6 +62,7 @@ export const useAppStore = defineStore('app', {
 
     addLog(type, message) {
       this.logs.push({ time: new Date().toLocaleString('zh-CN'), type, message });
+      if (this.logs.length > 500) this.logs.splice(0, this.logs.length - 500);
     },
 
     async loadLogs() {

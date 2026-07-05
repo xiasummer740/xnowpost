@@ -320,6 +320,8 @@ onMounted(async () => {
   store.loadCost();
   await refreshCollectData();
   refreshTimer = setInterval(() => {
+    // 页面不可见时跳过轮询省资源
+    if (document.hidden) return;
     refreshToday();
     refreshStatus();
     refreshCollectData();
@@ -443,7 +445,7 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .thumb-placeholder { font-size: 24px; opacity: 0.5; }
 .item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
 .item-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-meta { font-size: 12px; color: #64748b; margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+.item-meta { font-size: 13px; color: #64748b; margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
 .item-time { color: #94a3b8; font-weight: 500; }
 
 /* 骨架屏 */
@@ -506,7 +508,7 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 }
 .empty-log { padding: 20px; text-align: center; color: #64748b; font-size: 13px; }
 .log-line {
-  display: flex; gap: 12px; padding: 3px 0; font-size: 12px; font-family: monospace;
+  display: flex; gap: 12px; padding: 3px 0; font-size: 13px; font-family: monospace;
   border-bottom: 1px solid #1e293b22;
 }
 .log-time { color: #64748b; min-width: 140px; flex-shrink: 0; }

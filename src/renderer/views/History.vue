@@ -167,7 +167,7 @@ h4 { font-size: 13px; color: #94a3b8; margin: 0 0 8px; }
 .thumb-placeholder { font-size: 22px; opacity: 0.5; }
 .item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
 .item-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-meta { font-size: 12px; color: #64748b; margin-top: 3px; }
+.item-meta { font-size: 13px; color: #64748b; margin-top: 3px; }
 
 /* 骨架屏 */
 .skeleton-list { display: flex; flex-direction: column; gap: 16px; }
@@ -193,7 +193,7 @@ h4 { font-size: 13px; color: #94a3b8; margin: 0 0 8px; }
 .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .detail-section { margin-bottom: 20px; }
 .detail-text {
-  font-size: 12px; line-height: 1.6; color: #cbd5e1;
+  font-size: 13px; line-height: 1.6; color: #cbd5e1;
   background: #0f172a; border-radius: 8px; padding: 12px;
   white-space: pre-wrap; max-height: 300px; overflow-y: auto;
 }
