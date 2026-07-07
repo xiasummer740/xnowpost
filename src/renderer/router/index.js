@@ -1,4 +1,4 @@
-import { createRouter, createMemoryHistory } from 'vue-router';
+import { createRouter, createWebHashHistory } from 'vue-router';
 
 const routes = [
   { path: '/', name: 'Dashboard', component: () => import('../views/Dashboard.vue') },
@@ -10,6 +10,6 @@ const routes = [
 ];
 
 export default createRouter({
-  history: createMemoryHistory(),
+  history: createWebHashHistory(),
   routes,
 });

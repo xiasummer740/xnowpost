@@ -52,6 +52,9 @@
       </div>
     </template>
 
+    <!-- 详情遮罩 -->
+    <div v-if="detail" class="detail-overlay" @click.self="closeDetail"></div>
+
     <!-- 详情面板 -->
     <div v-if="detail" class="detail-panel">
       <div class="detail-header">
@@ -147,9 +150,7 @@ h4 { font-size: 13px; color: #94a3b8; margin: 0 0 8px; }
 .btn-small { padding: 4px 12px; background: #334155; color: #e2e8f0; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
 .btn-small:hover { background: #475569; }
 
-/* 空状态 */
-.empty-box { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 80px 20px; color: #64748b; }
-.empty-icon { font-size: 40px; }
+/* empty-box in global style.css */
 
 /* 卡片 + 缩略图 */
 .item-card {
@@ -169,27 +170,26 @@ h4 { font-size: 13px; color: #94a3b8; margin: 0 0 8px; }
 .item-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-meta { font-size: 13px; color: #64748b; margin-top: 3px; }
 
-/* 骨架屏 */
-.skeleton-list { display: flex; flex-direction: column; gap: 16px; }
-.skeleton-section { display: flex; flex-direction: column; gap: 6px; }
-.skeleton-date { height: 14px; width: 100px; border-radius: 4px; background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; margin-bottom: 4px; }
-.skeleton-card { display: flex; gap: 14px; padding: 12px; background: #1e293b; border-radius: 10px; }
-.skeleton-thumb { width: 56px; height: 56px; border-radius: 8px; background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; flex-shrink: 0; }
-.skeleton-lines { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
-.skeleton-line { height: 12px; border-radius: 4px; background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
-.skeleton-line.w-60 { width: 60%; }
-.skeleton-line.w-50 { width: 50%; }
-.skeleton-line.w-30 { width: 30%; }
-.skeleton-line.w-25 { width: 25%; }
-@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+/* skeleton in global style.css */
+
+/* 详情遮罩 */
+.detail-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  z-index: 9; animation: fadeIn 0.2s ease;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* 详情面板 */
 .detail-panel {
-  position: fixed; right: 0; top: 0; width: 420px; height: 100vh;
+  position: fixed; right: 0; top: 0; width: 420px; max-width: 90vw; height: 100vh;
   background: #1e293b; border-left: 1px solid #334155;
   padding: 24px; overflow-y: auto; z-index: 10; animation: slideIn 0.2s ease;
 }
 @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
+@media (max-width: 640px) {
+  .detail-panel { width: 100vw; max-width: 100vw; }
+}
 .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .detail-section { margin-bottom: 20px; }
 .detail-text {

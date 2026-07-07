@@ -1,5 +1,18 @@
 <template>
-  <div class="app-container">
+  <!-- 非桌面环境遮罩 -->
+  <div v-if="!isElectron" class="electron-required">
+    <div class="er-card">
+      <div class="er-icon">🖥️</div>
+      <h1>需要桌面版</h1>
+      <p>XNOWPost 是桌面应用程序，请使用桌面版运行。</p>
+      <div class="er-hint">
+        如已在桌面版打开，请检查是否被安全软件拦截。
+      </div>
+      <button class="er-retry" @click="retryCheck">🔄 重试检测</button>
+    </div>
+  </div>
+
+  <div v-else class="app-container">
     <aside class="sidebar">
       <div class="logo">
         <h1>XNOWPost</h1>
@@ -42,6 +55,44 @@
       <router-view />
     </main>
 
+    <!-- 新手指引 -->
+    <div v-if="showGuide" class="modal-overlay" @click.self="closeGuide">
+      <div class="guide-card">
+        <h3>🚀 快速开始</h3>
+        <div class="guide-steps">
+          <div class="guide-step" :class="{ done: guideStep > 0 }">
+            <div class="gs-num">1</div>
+            <div class="gs-body">
+              <strong>配置 API Key</strong>
+              <p>填写 DeepSeek 和硅基流动的 API Key，让 AI 帮您写文案、生图片</p>
+              <router-link to="/config" class="guide-link" @click="closeGuide">去配置 →</router-link>
+            </div>
+          </div>
+          <div class="guide-step" :class="{ done: guideStep > 1 }">
+            <div class="gs-num">2</div>
+            <div class="gs-body">
+              <strong>添加采集账号</strong>
+              <p>在配置页添加需要监控的社交媒体账号，绑定比特浏览器环境</p>
+            </div>
+          </div>
+          <div class="guide-step" :class="{ done: guideStep > 2 }">
+            <div class="gs-num">3</div>
+            <div class="gs-body">
+              <strong>设置定时闹钟</strong>
+              <p>在闹钟页设置每天自动产出内容的时间，到点自动运行</p>
+              <router-link to="/schedule" class="guide-link" @click="closeGuide">去设置 →</router-link>
+            </div>
+          </div>
+        </div>
+        <div class="guide-footer">
+          <button class="btn btn-primary" @click="nextGuideStep">
+            {{ guideStep < 2 ? '下一步' : '开始使用' }}
+          </button>
+          <button class="btn-guide-skip" @click="closeGuide">跳过引导</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 关于/更新弹窗 -->
     <div v-if="showAbout" class="modal-overlay" @click.self="showAbout = false">
       <div class="modal-dialog">
@@ -79,7 +130,23 @@ import { onMounted, ref } from 'vue';
 import { version } from '../../package.json';
 
 const store = useAppStore();
+const isElectron = ref(!!window.xnowpost);
 const isDev = ref(window.xnowpost?.isDev ?? false);
+function retryCheck() {
+  isElectron.value = !!window.xnowpost;
+}
+
+// 新手引导
+const showGuide = ref(false);
+const guideStep = ref(0);
+function nextGuideStep() {
+  if (guideStep.value < 2) { guideStep.value++; return }
+  closeGuide();
+}
+function closeGuide() {
+  showGuide.value = false;
+  try { localStorage.setItem('xnowpost_guided', '1') } catch (_) {}
+}
 
 // 更新状态
 const showAbout = ref(false);
@@ -103,9 +170,16 @@ function doInstall() {
 }
 
 onMounted(async () => {
+  if (!window.xnowpost) return; // skip IPC in browser mode
   await store.loadConfig();
 
-  // 监听更新事件
+  // first-visit guide
+  if (!store.status.configured) {
+    const guided = (() => { try { return localStorage.getItem('xnowpost_guided') } catch(_) { return null } })()
+    if (!guided) { showGuide.value = true }
+  }
+
+  // listen for update events
   window.xnowpost.onUpdateAvailable((info) => {
     updateAvailable.value = true;
     updateInfo.value = info;
@@ -277,4 +351,49 @@ onMounted(async () => {
   background: transparent; color: #94a3b8; font-size: 13px; cursor: pointer; transition: 0.2s;
 }
 .btn-close:hover { background: #334155; color: #e2e8f0; }
+
+/* 新手引导 */
+.guide-card {
+  background: #1e293b; border: 1px solid #334155; border-radius: 16px;
+  padding: 28px; width: 480px; max-width: 90vw; max-height: 80vh; overflow-y: auto;
+}
+.guide-card h3 { font-size: 20px; margin: 0 0 20px; color: #f59e0b; text-align: center; }
+.guide-steps { display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px; }
+.guide-step { display: flex; gap: 14px; padding: 14px; border-radius: 10px; background: #0f172a; border: 1px solid #334155; transition: all 0.3s; }
+.guide-step.done { border-color: #22c55e44; background: #065f4622; }
+.gs-num {
+  width: 28px; height: 28px; border-radius: 50%; background: #334155;
+  color: #94a3b8; font-size: 14px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.guide-step.done .gs-num { background: #22c55e; color: #0f172a; }
+.gs-body { flex: 1; }
+.gs-body strong { display: block; font-size: 14px; color: #e2e8f0; margin-bottom: 4px; }
+.gs-body p { font-size: 12px; color: #64748b; margin: 0; line-height: 1.5; }
+.guide-link { font-size: 12px; color: #f59e0b; font-weight: 600; text-decoration: none; display: inline-block; margin-top: 6px; }
+.guide-link:hover { text-decoration: underline; }
+.guide-footer { display: flex; gap: 10px; justify-content: center; align-items: center; }
+.btn { padding: 10px 24px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.btn-primary { background: linear-gradient(135deg, #f59e0b, #d97706); color: #0f172a; }
+.btn-guide-skip { background: none; border: none; color: #64748b; font-size: 13px; cursor: pointer; padding: 8px 16px; }
+.btn-guide-skip:hover { color: #94a3b8; }
+
+/* 非桌面环境遮罩 */
+.electron-required {
+  display: flex; align-items: center; justify-content: center;
+  height: 100vh; background: #0f172a; color: #e2e8f0;
+}
+.er-card {
+  text-align: center; padding: 48px; max-width: 420px;
+  background: #1e293b; border-radius: 16px; border: 1px solid #334155;
+}
+.er-icon { font-size: 64px; margin-bottom: 16px; }
+.er-card h1 { font-size: 24px; margin: 0 0 12px; }
+.er-card p { font-size: 14px; color: #94a3b8; margin: 0 0 8px; line-height: 1.6; }
+.er-hint { font-size: 12px; color: #64748b; margin-bottom: 20px; }
+.er-retry {
+  padding: 10px 24px; border: none; border-radius: 8px;
+  background: #334155; color: #e2e8f0; font-size: 14px; cursor: pointer; transition: background 0.2s;
+}
+.er-retry:hover { background: #475569; }
 </style>

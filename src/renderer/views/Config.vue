@@ -12,10 +12,11 @@
             :type="showKeys.deepseek ? 'text' : 'password'"
             placeholder="sk-..."
           />
-          <button class="btn-eye" @click="showKeys.deepseek = !showKeys.deepseek" type="button">
+          <button class="btn-eye" @click="showKeys.deepseek = !showKeys.deepseek" type="button" aria-label="切换显示 DeepSeek Key">
             {{ showKeys.deepseek ? '👁️' : '👁️‍🗨️' }}
           </button>
         </div>
+        <div v-if="validationErrors.deepseekApiKey" class="field-error">{{ validationErrors.deepseekApiKey }}</div>
       </div>
       <button class="btn btn-test" @click="test('deepseek')" :disabled="testing.deepseek">
         {{ testing.deepseek ? '⏳' : '🔌' }}
@@ -46,10 +47,12 @@
             class="btn-eye"
             @click="showKeys.siliconflow = !showKeys.siliconflow"
             type="button"
+            aria-label="切换显示硅基流动 Key"
           >
             {{ showKeys.siliconflow ? '👁️' : '👁️‍🗨️' }}
           </button>
         </div>
+        <div v-if="validationErrors.siliconflowApiKey" class="field-error">{{ validationErrors.siliconflowApiKey }}</div>
       </div>
       <button class="btn btn-test" @click="test('siliconflow')" :disabled="testing.siliconflow">
         {{ testing.siliconflow ? '⏳' : '🔌' }}
@@ -77,10 +80,11 @@
             :type="showKeys.pexels ? 'text' : 'password'"
             placeholder="免费注册获取..."
           />
-          <button class="btn-eye" @click="showKeys.pexels = !showKeys.pexels" type="button">
+          <button class="btn-eye" @click="showKeys.pexels = !showKeys.pexels" type="button" aria-label="切换显示 Pexels Key">
             {{ showKeys.pexels ? '👁️' : '👁️‍🗨️' }}
           </button>
         </div>
+        <div v-if="validationErrors.pexelsApiKey" class="field-error">{{ validationErrors.pexelsApiKey }}</div>
       </div>
       <button class="btn btn-test" @click="test('pexels')" :disabled="testing.pexels">
         {{ testing.pexels ? '⏳' : '🔌' }}
@@ -102,10 +106,11 @@
             :type="showKeys.tg ? 'text' : 'password'"
             placeholder="123456:ABC-DEF..."
           />
-          <button class="btn-eye" @click="showKeys.tg = !showKeys.tg" type="button">
+          <button class="btn-eye" @click="showKeys.tg = !showKeys.tg" type="button" aria-label="切换显示 TG Token">
             {{ showKeys.tg ? '👁️' : '👁️‍🗨️' }}
           </button>
         </div>
+        <div v-if="validationErrors.tgBotToken" class="field-error">{{ validationErrors.tgBotToken }}</div>
       </div>
       <button class="btn btn-test" @click="test('tg')" :disabled="testing.tg">
         {{ testing.tg ? '⏳' : '🔌' }}
@@ -137,7 +142,7 @@
             :type="showKeys.bitKey ? 'text' : 'password'"
             placeholder="32位UUID，如 fee00b3d51cb41bfbe517ff2c25f0ec4"
           />
-          <button class="btn-eye" @click="showKeys.bitKey = !showKeys.bitKey" type="button">
+          <button class="btn-eye" @click="showKeys.bitKey = !showKeys.bitKey" type="button" aria-label="切换显示比特 API Key">
             {{ showKeys.bitKey ? '👁️' : '👁️‍🗨️' }}
           </button>
         </div>
@@ -216,6 +221,33 @@ const results = reactive({ deepseek: null, siliconflow: null, pexels: null, tg: 
 const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false, bitKey: false })
 const saving = ref(false)
 const errorMsg = ref('')
+const validationErrors = reactive({})
+
+const FIELD_LABELS = {
+  deepseekApiKey: 'DeepSeek API Key',
+  siliconflowApiKey: '硅基流动 API Key',
+  pexelsApiKey: 'Pexels API Key',
+  tgBotToken: 'Telegram Bot Token',
+  tgChannelId: 'Telegram 频道 ID',
+  cdpEndpoint: 'CDP 端口',
+}
+
+function validate() {
+  for (const k of Object.keys(validationErrors)) delete validationErrors[k]
+  if (form.deepseekApiKey && !form.deepseekApiKey.startsWith('sk-')) {
+    validationErrors.deepseekApiKey = 'DeepSeek Key 通常以 sk- 开头'
+  }
+  if (form.siliconflowApiKey && form.siliconflowApiKey.length < 8) {
+    validationErrors.siliconflowApiKey = 'API Key 长度不足，请检查'
+  }
+  if (form.tgBotToken && !/^\d+:[\w-]+$/.test(form.tgBotToken)) {
+    validationErrors.tgBotToken = 'Token 格式应为 123456:ABC-DEF...'
+  }
+  if (form.pexelsApiKey && form.pexelsApiKey.length < 10) {
+    validationErrors.pexelsApiKey = 'Key 长度不足，请检查'
+  }
+  return Object.keys(validationErrors).length === 0
+}
 
 onMounted(async () => {
   const config = await window.xnowpost.getConfig()
@@ -233,15 +265,20 @@ function removeAccount(i) {
 }
 
 async function save() {
+  if (!validate()) {
+    errorMsg.value = '请修正标红的字段后再保存'
+    return
+  }
   saving.value = true
   errorMsg.value = ''
   saveMsg.value = ''
   try {
-    await store.saveConfig(JSON.parse(JSON.stringify(form)))
+    await store.saveConfig(structuredClone(form))
     saveMsg.value = '✅ 配置已保存'
     setTimeout(() => (saveMsg.value = ''), 3000)
   } catch (e) {
     errorMsg.value = '保存失败: ' + (e.message || e)
+    setTimeout(() => (errorMsg.value = ''), 5000)
   }
   saving.value = false
 }
@@ -517,5 +554,11 @@ h2 {
   font-size: 13px;
   border: 1px solid #064e3b;
   max-width: 600px;
+}
+.field-error {
+  font-size: 11px;
+  color: #ef4444;
+  margin-top: 4px;
+  padding-left: 2px;
 }
 </style>
