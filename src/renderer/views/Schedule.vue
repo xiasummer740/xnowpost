@@ -166,6 +166,7 @@
 import { ref, computed, onMounted } from 'vue'
 
 import TimePicker from '../components/TimePicker.vue'
+import { MODE_OPTIONS as modeOptions, MODE_LABEL_MAP as modeLabelMap } from '../constants.js'
 
 const jobs = ref([])
 const accounts = ref([])
@@ -260,11 +261,7 @@ onMounted(async () => {
   }
 })
 
-const modeOptions = [
-  { value: 'auto', label: '视频+图文' },
-  { value: 'video', label: '仅视频' },
-  { value: 'post', label: '仅图文' },
-]
+// modeOptions imported from constants.js
 
 // 账号按名称排序
 const sortedAccounts = computed(() =>
@@ -373,8 +370,7 @@ function addJob() {
   })
 }
 
-// 模式名称映射
-const modeLabelMap = { auto: '视频+图文', video: '仅视频', post: '仅图文' }
+// modeLabelMap imported from constants.js
 
 // 设置模式 + 自动更新标签
 function setMode(i, val) {
@@ -387,7 +383,7 @@ function setMode(i, val) {
 function cloneJob(i) {
   const orig = jobs.value[i]
   jobs.value.splice(i + 1, 0, {
-    ...JSON.parse(JSON.stringify(orig)),
+    ...structuredClone(orig),
     id: nextId++,
     label: orig.label + ' (复制)',
   })
@@ -395,6 +391,8 @@ function cloneJob(i) {
 
 function removeJob(i) {
   jobs.value.splice(i, 1)
+  // 清理已删除闹钟的搜索文本缓存
+  delete searchTexts.value[i]
 }
 
 function toggleAll(enabled) {
@@ -424,10 +422,10 @@ function globalIndex(group, jIdx) {
 async function save() {
   saving.value = true
   try {
-    const raw = JSON.parse(JSON.stringify(jobs.value.map(j => {
+    const raw = structuredClone(jobs.value.map(j => {
       const { _showDropdown, _highlightIdx, ...rest } = j
       return rest
-    })))
+    }))
     const result = await window.xnowpost.saveSchedules(raw)
     if (!result || !result.ok) {
       saveError.value = result?.message || '保存失败'

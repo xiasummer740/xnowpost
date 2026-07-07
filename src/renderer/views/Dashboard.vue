@@ -26,17 +26,34 @@
 
     <!-- 快捷生成（仅空闲时显示，引擎/调度器运行时隐藏） -->
     <div v-if="store.status.configured && !store.status.running && !store.status.schedulerActive" class="quick-bar">
-      <input v-model="quickTopic" placeholder="输入主题（留空让 AI 自由发挥）..."
-             class="quick-input" @keyup.enter="quickGenerate" :disabled="store.status.running" />
-      <button class="btn btn-primary quick-btn" @click="quickGenerate" :disabled="store.status.running">
-        ⚡ 生成
-      </button>
+      <div class="qb-main">
+        <input v-model="quickTopic" placeholder="输入主题（留空让 AI 自由发挥）..."
+               class="quick-input" @keyup.enter="quickGenerate" :disabled="batchMode" />
+        <button class="btn btn-primary quick-btn" @click="quickGenerate" :disabled="batchMode">
+          ⚡ 生成
+        </button>
+      </div>
+      <div class="qb-mode">
+        <span class="qb-toggle" :class="{ on: batchMode }" @click="batchMode = !batchMode">
+          📋 批量
+        </span>
+      </div>
+    </div>
+
+    <!-- 批量生成面板 -->
+    <div v-if="batchMode && !store.status.running" class="batch-panel">
+      <div class="bp-hint">每行一个主题，按顺序依次生成</div>
+      <textarea v-model="batchTopics" class="bp-textarea" rows="4" placeholder="AI 视频创作技巧&#10;今日科技新闻&#10;产品使用教程"></textarea>
+      <div class="bp-actions">
+        <button class="btn btn-primary btn-sm" @click="runBatch" :disabled="!batchTopics.trim()">🚀 批量生成 ({{ topicCount }})</button>
+        <button class="btn btn-secondary btn-sm" @click="batchMode = false">取消</button>
+      </div>
     </div>
 
     <!-- 进度面板（引擎运行时显示） -->
     <div v-if="store.status.running" class="progress-panel">
       <div class="progress-header">
-        <span>⏳ 正在生成...</span>
+        <span>{{ batchTotal > 0 ? `📋 批量生成 ${batchDone}/${batchTotal}` : '⏳ 正在生成...' }}</span>
         <button class="btn btn-cancel" @click="handleCancel" :disabled="cancelling">
           {{ cancelling ? '取消中...' : '✕ 取消' }}
         </button>
@@ -68,6 +85,77 @@
       </button>
       <button class="btn btn-publish" @click="handlePublish" :disabled="publishing">
         {{ publishing ? '⏳ 发布中...' : '📤 发布' }}
+      </button>
+    </div>
+
+    <!-- 完成通知横幅 -->
+    <div v-if="showCompletionBanner" class="completion-banner">
+      <span class="cb-icon">✅</span>
+      <span class="cb-text">内容已生成完成！</span>
+      <button class="btn btn-publish btn-sm" @click="handlePublish" :disabled="publishing">
+        {{ publishing ? '⏳ 发布中...' : '📤 立即发布' }}
+      </button>
+      <button class="cb-close" @click="showCompletionBanner = false">✕</button>
+    </div>
+
+    <!-- 内容预览 -->
+    <div v-if="previewData" class="preview-card">
+      <div class="pc-hd">
+        <span>📄 最新生成内容</span>
+        <button class="cb-close" @click="previewData = null">✕</button>
+      </div>
+      <div v-if="previewData.text" class="preview-text">{{ previewData.text.slice(0, 300) }}{{ previewData.text.length > 300 ? '...' : '' }}</div>
+      <div v-if="previewData.images?.length" class="preview-imgs">
+        <img v-for="(img, ii) in previewData.images.slice(0, 3)" :key="ii" :src="img.data" class="preview-img" />
+      </div>
+    </div>
+
+    <!-- 系统状态卡 -->
+    <div class="health-card">
+      <div class="hc-title">🖥️ 系统状态</div>
+      <div class="hc-grid">
+        <div class="hc-item">
+          <span class="hc-dot" :class="store.status.running ? 'hc-on' : 'hc-off'"></span>
+          <span class="hc-label">引擎</span>
+          <span class="hc-val">{{ store.status.running ? '运行中' : '空闲' }}</span>
+        </div>
+        <div class="hc-item">
+          <span class="hc-dot" :class="store.status.schedulerRunning ? 'hc-on' : 'hc-off'"></span>
+          <span class="hc-label">调度器</span>
+          <span class="hc-val">{{ store.status.schedulerRunning ? '运行中' : '已停止' }}</span>
+        </div>
+        <div class="hc-item">
+          <span class="hc-dot" :class="store.status.recentErrors > 0 ? 'hc-err' : 'hc-on'"></span>
+          <span class="hc-label">错误</span>
+          <span class="hc-val">{{ store.status.recentErrors || 0 }} 条</span>
+        </div>
+        <div class="hc-item">
+          <span class="hc-dot" :class="store.status.configured ? 'hc-on' : 'hc-off'"></span>
+          <span class="hc-label">配置</span>
+          <span class="hc-val">{{ store.status.configured ? '已配置' : '未配置' }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 引擎连续失败警告 -->
+    <div v-if="consecutiveFailures >= 2" class="fail-warning">
+      <span>⚠️ 引擎已连续 {{ consecutiveFailures }} 次执行失败</span>
+      <button class="btn btn-secondary btn-sm" @click="dismissWarning">知道了</button>
+    </div>
+
+    <!-- 待发布卡片 -->
+    <div v-if="pendingItems.length > 0" class="publish-card">
+      <div class="pc-header">
+        <span>📤 待发布内容</span>
+        <span class="pc-count">{{ pendingItems.length }} 项</span>
+      </div>
+      <div v-for="(item, i) in pendingItems" :key="i" class="pc-row">
+        <span class="pc-type">{{ item.type === 'video' ? '🎬' : '🟢' }}</span>
+        <span class="pc-title">{{ item.title }}</span>
+        <span class="pc-date">{{ item.date }} {{ item.time }}</span>
+      </div>
+      <button class="btn btn-publish btn-sm pc-btn" @click="handlePublish" :disabled="publishing">
+        {{ publishing ? '⏳ 发布中...' : '📤 发布全部' }}
       </button>
     </div>
 
@@ -181,25 +269,25 @@ const cancelling = ref(false);
 const publishing = ref(false);
 const collecting = ref(false);
 const quickTopic = ref('');
+const batchMode = ref(false);
+const batchTopics = ref('');
+const batchTotal = ref(0);
+const batchDone = ref(0);
 const logExpanded = ref(false);
 const collectData = ref(null);
-let refreshTimer = null;
+const showCompletionBanner = ref(false);
+const previewData = ref(null);
+const pendingItems = ref([]);
+const consecutiveFailures = ref(0);
 
-const platformNames = {
-  tiktok: 'TikTok', xiaohongshu: '小红书', facebook: 'Facebook',
-  instagram: 'Instagram', youtube: 'YouTube', x: 'X',
-};
-const metricLabels = {
-  followers: '粉丝', views: '播放', likes: '点赞',
-  comments: '评论', shares: '转发', saves: '收藏',
-  reach: '触达', engagement: '互动', profile_views: '主页访问',
-  following: '关注', new_followers: '新增粉丝',
-};
-function formatNum(n) {
-  if (n >= 10000) return (n / 10000).toFixed(1) + '万';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return String(n);
-}
+function dismissWarning() { consecutiveFailures.value = 0; }
+let refreshTimer = null;
+import { PLATFORM_NAMES as platformNames, METRIC_LABELS as metricLabels, formatNum } from '../constants.js';
+
+// 轮询状态跟踪
+let prevRunning = false
+let tickCount = 0
+// metricLabels, formatNum imported from constants.js
 
 const statusText = computed(() => {
   if (!store.status.configured) return '🔑 还需要配置 API Key 才能开始工作';
@@ -208,17 +296,8 @@ const statusText = computed(() => {
   return '🟢 一切就绪';
 });
 
-const currentStep = computed(() => {
-  const logs = store.logs;
-  if (!logs.length) return { label: '准备中...', percent: 0 };
-  const recent = logs.slice(-20).map(l => l.message).join(' ');
-  if (recent.includes('文案') || recent.includes('DeepSeek') || recent.includes('标题') || recent.includes('分镜')) return { label: '🤖 AI 生成文案', percent: 15 };
-  if (recent.includes('封面') || recent.includes('底图') || recent.includes('Kolors') || recent.includes('回退')) return { label: '🎨 生成图片素材', percent: 40 };
-  if (recent.includes('配音') || recent.includes('edge-tts') || recent.includes('voice')) return { label: '🔊 合成配音', percent: 60 };
-  if (recent.includes('合成') || recent.includes('ffmpeg') || recent.includes('video_')) return { label: '🎬 合成视频', percent: 80 };
-  if (recent.includes('推送') || recent.includes('TG')) return { label: '📤 推送到频道', percent: 95 };
-  return { label: '处理中...', percent: 10 };
-});
+const currentStep = ref({ label: '准备中...', percent: 0 });
+let cleanupProgress = null;
 
 const recentLogs = computed(() => store.logs.slice(-5));
 const displayLogs = computed(() => store.logs.slice(-20).reverse());
@@ -272,6 +351,28 @@ async function runAuto() { await store.runEngine('auto'); await refreshToday(); 
 async function runVideo() { await store.runEngine('video'); await refreshToday(); }
 async function runPost() { await store.runEngine('post'); await refreshToday(); }
 
+const topicCount = computed(() => batchTopics.value.trim() ? batchTopics.value.trim().split('\n').filter(Boolean).length : 0)
+
+async function runBatch() {
+  const topics = batchTopics.value.trim().split('\n').filter(Boolean)
+  if (topics.length === 0) return
+  batchTotal.value = topics.length
+  batchDone.value = 0
+  batchMode.value = false
+
+  for (let i = 0; i < topics.length; i++) {
+    const topic = topics[i].trim()
+    store.addLog('info', `📋 [${i+1}/${topics.length}] ${topic}`)
+    await store.runEngine('auto', topic)
+    batchDone.value = i + 1
+    await refreshToday()
+    // 检查是否被取消
+    if (!store.status.running && i < topics.length - 1) break
+  }
+  batchTotal.value = 0
+  batchDone.value = 0
+}
+
 async function handleCollect() {
   collecting.value = true
   store.addLog('info', '📊 手动触发数据采集...')
@@ -310,6 +411,26 @@ async function handlePublish() {
 }
 async function openDir() { await window.xnowpost.openOutputDir(); }
 
+async function loadPendingItems() {
+  try {
+    pendingItems.value = await window.xnowpost.getPendingPublish()
+  } catch (_) {}
+}
+
+async function loadLatestPreview() {
+  try {
+    const history = await window.xnowpost.getHistory()
+    const today = history.find(h => h.date === store.status.todayDir)
+    if (today?.items?.length) {
+      const latest = today.items[0]
+      if (latest.dir) {
+        const session = await window.xnowpost.readSession(latest.dir)
+        if (session) previewData.value = session
+      }
+    }
+  } catch (_) {}
+}
+
 async function refreshStatus() {
   const status = await window.xnowpost.getEngineStatus();
   Object.assign(store.status, status);
@@ -319,17 +440,46 @@ onMounted(async () => {
   await refreshToday();
   store.loadCost();
   await refreshCollectData();
-  refreshTimer = setInterval(() => {
-    // 页面不可见时跳过轮询省资源
+  loadPendingItems();
+  prevRunning = store.status.running;
+  refreshTimer = setInterval(async () => {
     if (document.hidden) return;
-    refreshToday();
-    refreshStatus();
-    refreshCollectData();
+    tickCount++;
+
+    // light status check each tick
+    const status = await window.xnowpost.getEngineStatus().catch(() => null);
+    if (!status) return;
+    const wasRunning = prevRunning;
+    prevRunning = status.running;
+    Object.assign(store.status, status);
+    // load consecutive failure count
+    window.xnowpost.getFailureCount().then(c => { consecutiveFailures.value = c }).catch(() => {})
+
+    // engine just finished -> refresh output + cost + show banner
+    if (wasRunning && !status.running) {
+      refreshToday();
+      store.loadCost();
+      showCompletionBanner.value = true;
+      loadPendingItems();
+      loadLatestPreview();
+    }
+
+    // refresh output/collect every 60s (4th tick)
+    if (tickCount % 4 === 0) {
+      if (!status.running) refreshToday();
+      refreshCollectData();
+    }
   }, 15000);
+
+  // 监听引擎结构化进度
+  cleanupProgress = window.xnowpost.onProgress((p) => {
+    currentStep.value = { label: p.label, percent: p.percent };
+  });
 });
 
 onUnmounted(() => {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (cleanupProgress) { cleanupProgress(); cleanupProgress = null; }
 });
 </script>
 
@@ -367,6 +517,8 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .btn-secondary:hover:not(:disabled) { background: #475569; }
 .btn-publish { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
 .btn-publish:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
+.btn-publish { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; display: inline-flex; align-items: center; gap: 6px; }
+.btn-publish:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
 .btn-collect { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
 .btn-collect:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
 
@@ -377,9 +529,12 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 .progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #f59e0b; }
-.btn-cancel { padding: 6px 16px; background: #ef4444; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.btn-cancel { padding: 6px 16px; background: #ef4444; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; display: flex; align-items: center; gap: 6px; }
 .btn-cancel:hover:not(:disabled) { background: #dc2626; }
-.btn-cancel:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-cancel:disabled { opacity: 0.7; cursor: not-allowed; }
+.btn-cancel:disabled::before { content: ''; width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: cancel-spin 0.6s linear infinite; display: inline-block; }
+@keyframes cancel-spin { to { transform: rotate(360deg); } }
+
 .progress-step-label { font-size: 13px; color: #94a3b8; margin-bottom: 8px; }
 .progress-bar { height: 6px; background: #334155; border-radius: 3px; margin-bottom: 12px; overflow: hidden; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, #f59e0b, #ef4444); border-radius: 3px; transition: width 0.5s ease; min-width: 2%; }
@@ -417,6 +572,32 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .quick-input:disabled { opacity: 0.4; }
 .quick-btn { padding: 12px 28px; white-space: nowrap; }
 
+/* 快捷栏 + 批量切换 */
+.qb-main { display: flex; gap: 10px; flex: 1; }
+.qb-mode { display: flex; align-items: center; }
+.qb-toggle {
+  padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  background: #334155; color: #64748b; cursor: pointer; transition: all 0.15s;
+  white-space: nowrap; user-select: none;
+}
+.qb-toggle:hover { color: #94a3b8; }
+.qb-toggle.on { background: #2563eb44; color: #60a5fa; border: 1px solid #2563eb44; }
+
+/* 批量生成面板 */
+.batch-panel {
+  padding: 16px; background: #1e293b; border: 1px solid #3b82f644; border-radius: 12px;
+  margin-bottom: 20px; animation: fadeIn 0.2s ease;
+}
+.bp-hint { font-size: 12px; color: #64748b; margin-bottom: 10px; }
+.bp-textarea {
+  width: 100%; padding: 12px; border: 1px solid #334155; border-radius: 8px;
+  background: #0f172a; color: #e2e8f0; font-size: 14px; font-family: inherit;
+  outline: none; resize: vertical; box-sizing: border-box;
+}
+.bp-textarea:focus { border-color: #3b82f6; }
+.bp-actions { display: flex; gap: 10px; margin-top: 10px; }
+.btn-sm { padding: 8px 16px; font-size: 12px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+
 /* 费用卡片 */
 .cost-card {
   background: linear-gradient(135deg, #065f4622, #05966922);
@@ -448,23 +629,65 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .item-meta { font-size: 13px; color: #64748b; margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
 .item-time { color: #94a3b8; font-weight: 500; }
 
-/* 骨架屏 */
-.skeleton-list { display: flex; flex-direction: column; gap: 8px; }
-.skeleton-card {
-  display: flex; gap: 14px; padding: 12px; background: #1e293b; border-radius: 10px;
+/* skeleton + shimmer in global style.css */
+
+/* 完成通知横幅 */
+.completion-banner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; background: #065f4622; border: 1px solid #22c55e44;
+  border-radius: 10px; margin-bottom: 16px; animation: fadeIn 0.3s ease;
 }
-.skeleton-thumb {
-  width: 64px; height: 64px; border-radius: 8px; background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
-  background-size: 200% 100%; animation: shimmer 1.5s infinite; flex-shrink: 0;
+.cb-icon { font-size: 20px; }
+.cb-text { flex: 1; font-size: 14px; font-weight: 600; color: #22c55e; }
+.cb-close {
+  background: none; border: none; color: #64748b; cursor: pointer;
+  font-size: 16px; padding: 2px 6px; border-radius: 4px;
 }
-.skeleton-lines { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
-.skeleton-line {
-  height: 12px; border-radius: 4px; background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
-  background-size: 200% 100%; animation: shimmer 1.5s infinite;
+.cb-close:hover { background: #334155; color: #e2e8f0; }
+
+/* 内容预览卡片 */
+.preview-card {
+  background: #1e293b; border: 1px solid #f59e0b44; border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 16px; animation: fadeIn 0.3s ease;
 }
-.skeleton-line.w-60 { width: 60%; }
-.skeleton-line.w-30 { width: 30%; }
-@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.pc-hd { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; font-weight: 700; color: #f59e0b; }
+.preview-text { font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 8px; max-height: 120px; overflow-y: auto; }
+.preview-imgs { display: flex; gap: 8px; flex-wrap: wrap; }
+.preview-img { width: 80px; height: 80px; object-fit: cover; border-radius: 6px; border: 1px solid #334155; }
+
+/* 系统状态卡 */
+.health-card {
+  background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 16px;
+}
+.hc-title { font-size: 13px; font-weight: 700; color: #94a3b8; margin-bottom: 10px; }
+.hc-grid { display: flex; gap: 16px; flex-wrap: wrap; }
+.hc-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.fail-warning {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+  background: #7f1d1d33; border: 1px solid #ef444444; border-radius: 10px;
+  margin-bottom: 16px; font-size: 13px; color: #fca5a5; animation: fadeIn 0.3s ease;
+}
+.hc-dot { width: 8px; height: 8px; border-radius: 50%; }
+.hc-on { background: #22c55e; }
+.hc-off { background: #64748b; }
+.hc-err { background: #ef4444; animation: pulse 1.5s infinite; }
+.hc-label { color: #64748b; }
+.hc-val { color: #e2e8f0; font-weight: 600; }
+
+/* 待发布卡片 */
+.publish-card {
+  background: #1e3a5f22; border: 1px solid #2563eb44; border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 16px;
+}
+.pc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; font-weight: 700; color: #60a5fa; }
+.pc-count { font-size: 11px; color: #64748b; font-weight: 400; background: #0f172a; padding: 2px 8px; border-radius: 10px; }
+.pc-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #33415533; font-size: 13px; }
+.pc-row:last-of-type { border-bottom: none; }
+.pc-type { flex-shrink: 0; }
+.pc-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; }
+.pc-date { font-size: 11px; color: #64748b; flex-shrink: 0; }
+.pc-btn { margin-top: 8px; width: 100%; justify-content: center; }
 
 /* 采集数据概览 */
 .collect-card {
@@ -488,12 +711,7 @@ h3 { font-size: 16px; color: #94a3b8; margin: 0; }
 .stat-label { color: #64748b; }
 .stat-value { color: #e2e8f0; font-weight: 600; }
 
-/* 空状态 */
-.empty-box {
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  padding: 40px; color: #64748b; font-size: 14px;
-}
-.empty-icon { font-size: 32px; }
+/* empty-box in global style.css */
 
 /* 日志区域（可折叠） */
 .logs-section { margin-top: 24px; }

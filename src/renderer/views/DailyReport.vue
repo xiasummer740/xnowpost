@@ -10,6 +10,7 @@
         <span class="nav-divider"></span>
         <button class="date-btn" @click="handleRefresh" title="刷新">🔄</button>
         <button class="date-btn" @click="handlePush" :disabled="pushing" title="推送到 Telegram">{{ pushing ? '⏳' : '📤' }}</button>
+        <button class="date-btn" @click="handleExport" title="导出 CSV">📥</button>
       </div>
     </div>
 
@@ -74,6 +75,35 @@
         </div>
       </div>
     </template>
+
+    <!-- 趋势图表 -->
+    <div v-if="trendData && trendKeys.length > 0" class="trend-section">
+      <h3 class="trend-title">📈 趋势（近 {{ trendDays }} 天）</h3>
+      <div class="trend-tabs">
+        <span v-for="k in trendKeys" :key="k" class="trend-chip"
+              :class="{ active: activeTrend === k }" @click="activeTrend = k">
+          {{ k.split('|')[1] }} · {{ metricLabel(k.split('|')[2]) }}
+        </span>
+      </div>
+      <div class="trend-chart" v-if="activeTrend && trendData[activeTrend]">
+        <svg :viewBox="`0 0 ${chartW} ${chartH}`" class="trend-svg">
+          <line v-for="gi in 4" :key="'g'+gi" :x1="padL" :y1="padT + (chartH-padT-padB)/4*gi"
+                :x2="chartW-padR" :y2="padT + (chartH-padT-padB)/4*gi"
+                stroke="#334155" stroke-width="1" />
+          <polyline :points="trendPoints" fill="none" stroke="#f59e0b" stroke-width="2"
+                    stroke-linejoin="round" stroke-linecap="round" />
+          <circle v-for="(pt, pi) in trendPointCoords" :key="'p'+pi"
+                  :cx="pt.x" :cy="pt.y" r="3" fill="#f59e0b" />
+          <text v-for="(pt, pi) in trendPointCoords" :key="'x'+pi"
+                :x="pt.x" :y="chartH-4" text-anchor="middle"
+                font-size="9" fill="#64748b">{{ pt.label.slice(-5) }}</text>
+          <text v-if="trendPointCoords.length" :x="trendPointCoords[trendPointCoords.length-1].x"
+                :y="trendPointCoords[trendPointCoords.length-1].y - 8"
+                text-anchor="middle" font-size="11" font-weight="700" fill="#f59e0b"
+          >{{ trendLastVal }}</text>
+        </svg>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -85,10 +115,63 @@ const data = ref(null)
 const curIdx = ref(0)
 const pushing = ref(false)
 
-const platformEmoji = { tiktok:'🎵', xiaohongshu:'📕', facebook:'📘', instagram:'📸', youtube:'▶️', x:'𝕏' }
-const platformNames = { tiktok:'TikTok', xiaohongshu:'小红书', facebook:'Facebook', instagram:'Instagram', youtube:'YouTube', x:'X (Twitter)' }
-const metricLabels = { followers:'粉丝', views:'播放', likes:'点赞', comments:'评论', shares:'转发', saves:'收藏', reach:'触达', engagement:'互动率', profile_views:'主页访问', following:'关注', new_followers:'新增粉丝' }
-const metricsOrder = ['followers','new_followers','following','views','profile_views','likes','comments','shares','saves','reach','engagement']
+import { PLATFORM_EMOJI as platformEmoji, PLATFORM_NAMES as platformNames, METRIC_LABELS as metricLabels, METRICS_ORDER as metricsOrder, formatNum as fmt, diffArrow as dArr, diffFmt as dFmt } from '../constants.js'
+
+// 趋势图
+const trendData = ref(null)
+const activeTrend = ref('')
+const trendDays = ref(7)
+const chartW = 600, chartH = 200, padL = 40, padR = 20, padT = 30, padB = 30
+
+const trendKeys = computed(() => trendData.value ? Object.keys(trendData.value) : [])
+
+function metricLabel(m) { return metricLabels[m] || m }
+
+const trendPoints = computed(() => {
+  const s = trendData.value?.[activeTrend.value]
+  if (!s) return ''
+  const vals = s.values
+  const max = Math.max(...vals.filter(v => v !== null), 1)
+  const min = Math.min(...vals.filter(v => v !== null), 0)
+  const range = max - min || 1
+  const stepX = (chartW - padL - padR) / Math.max(vals.length - 1, 1)
+  return vals.map((v, i) => {
+    if (v === null) return ''
+    const x = padL + i * stepX
+    const y = padT + (chartH - padT - padB) * (1 - (v - min) / range)
+    return `${x},${y}`
+  }).filter(Boolean).join(' ')
+})
+
+const trendPointCoords = computed(() => {
+  const s = trendData.value?.[activeTrend.value]
+  if (!s) return []
+  const vals = s.values
+  const max = Math.max(...vals.filter(v => v !== null), 1)
+  const min = Math.min(...vals.filter(v => v !== null), 0)
+  const range = max - min || 1
+  const stepX = (chartW - padL - padR) / Math.max(vals.length - 1, 1)
+  return vals.map((v, i) => {
+    if (v === null) return null
+    const x = padL + i * stepX
+    const y = padT + (chartH - padT - padB) * (1 - (v - min) / range)
+    return { x, y, label: s.dates[i], value: v }
+  }).filter(Boolean)
+})
+
+const trendLastVal = computed(() => {
+  const pts = trendPointCoords.value
+  if (!pts.length) return ''
+  const v = pts[pts.length - 1].value
+  return v >= 10000 ? (v/10000).toFixed(1)+'万' : v >= 1000 ? (v/1000).toFixed(1)+'K' : String(v)
+})
+
+async function loadTrend(days) {
+  try {
+    trendData.value = await window.xnowpost.getTrend(days || 7)
+    if (trendKeys.value.length) activeTrend.value = trendKeys.value[0]
+  } catch (_) {}
+}
 
 const accountNames = computed(() => data.value?.accounts ? Object.keys(data.value.accounts) : [])
 
@@ -138,26 +221,30 @@ function summaryFor(acc) {
   return lines
 }
 
-function fmt(n) {
-  if (n >= 10000) return (n/10000).toFixed(1)+'万'
-  if (n >= 1000) return (n/1000).toFixed(1)+'K'
-  return String(n)
-}
-function dArr(c,p) { return c>=p ? '↑' : '↓' }
+// fmt, dArr, dFmt imported from constants.js
 function dCls(c,p) { return c>=p ? 'up' : 'dn' }
-function dFmt(c,p) {
-  const d = Math.abs(c-p)
-  if (d >= 10000) return (d/10000).toFixed(1)+'万'
-  if (d >= 1000) return (d/1000).toFixed(1)+'K'
-  return String(d)
-}
+
+const reportCache = new Map()
 
 async function load(date) {
   loading.value = true
   try {
+    const cacheKey = date || '__latest'
+    if (reportCache.has(cacheKey)) {
+      data.value = reportCache.get(cacheKey)
+      if (data.value) {
+        curIdx.value = data.value.availableDates.indexOf(data.value.date)
+        if (curIdx.value < 0) curIdx.value = 0
+      }
+      loading.value = false
+      return
+    }
     const r = await window.xnowpost.getDailyReport(date)
     data.value = r
     if (r) {
+      reportCache.set(cacheKey, r)
+      // also cache by its actual date
+      if (cacheKey !== r.date) reportCache.set(r.date, r)
       curIdx.value = r.availableDates.indexOf(r.date)
       if (curIdx.value < 0) curIdx.value = 0
     }
@@ -183,6 +270,22 @@ async function handlePush() {
     if (!r.ok && r.message) console.error('推送失败:', r.message)
   } catch (e) { console.error('推送调用失败:', e)
   } finally { pushing.value = false }
+}
+
+async function handleExport() {
+  if (!data.value) return
+  const rows = [['date','account','platform','metric','value']]
+  for (const [acc, platforms] of Object.entries(data.value.accounts)) {
+    for (const [plat, pd] of Object.entries(platforms)) {
+      for (const [metric, value] of Object.entries(pd.stats)) {
+        rows.push([data.value.date, acc, plat, metric, value])
+      }
+    }
+  }
+  const csv = rows.map(r => r.join(',')).join('\n')
+  try {
+    await window.xnowpost.exportCsv(csv, `report-${data.value.date}.csv`)
+  } catch (e) { console.error('导出失败:', e) }
 }
 onMounted(() => load())
 </script>
@@ -240,4 +343,15 @@ onMounted(() => load())
 .up{color:#22c55e}
 .dn{color:#ef4444}
 .na{color:#475569}
+
+/* 趋势图表 */
+.trend-section{margin-top:24px;padding-top:16px;border-top:1px solid #334155}
+.trend-title{font-size:15px;color:#e2e8f0;margin:0 0 10px}
+.trend-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.trend-chip{padding:4px 10px;border-radius:5px;font-size:11px;font-weight:600;background:#1e293b;color:#64748b;border:1px solid #334155;cursor:pointer;transition:all .15s}
+.trend-chip:hover{color:#94a3b8;border-color:#475569}
+.trend-chip.active{background:#334155;color:#f59e0b;border-color:#f59e0b44}
+.trend-chart{background:#0f172a;border-radius:10px;padding:12px;border:1px solid #1e293b}
+.trend-svg{width:100%;height:auto;display:block}
 </style>
+

@@ -69,6 +69,7 @@ let engineProcess = null;
 let logBuffer = [];
 let schedulerRunning = false;  // 调度器是否正在执行引擎任务
 let schedulerLastRun = '';     // 最近一次调度执行时间
+let consecutiveFailures = 0;   // 引擎连续失败次数
 
 // === 配置读写（带写锁防并发覆盖） ===
 let configWriteLock = Promise.resolve();
@@ -389,6 +390,25 @@ function setupIPC() {
     return { ok: false, message: '没有运行中的引擎' };
   });
 
+  // 获取历史日志（按日期）
+  ipcMain.handle('logs:history', async (_event, date) => {
+    try {
+      const logDir = path.join(DATA_DIR, 'logs');
+      const dateStr = date || new Date().toISOString().split('T')[0];
+      const logFile = path.join(logDir, `app-${dateStr}.log`);
+      if (!fs.existsSync(logFile)) return [];
+      const text = fs.readFileSync(logFile, 'utf-8');
+      return text.split('\n').filter(Boolean).map(line => {
+        const m = line.match(/^\[(.+?)\]\s*\[(\w+)\]\s*(.+)$/);
+        if (m) return { time: m[1], type: m[2].toLowerCase(), message: m[3] };
+        return { time: '', type: 'info', message: line };
+      }).slice(-500);
+    } catch (e) {
+      console.error('读取历史日志失败:', e.message);
+      return [];
+    }
+  });
+
   // 获取日志
   ipcMain.handle('logs:get', () => {
     return logBuffer.slice(-200);
@@ -550,6 +570,24 @@ function setupIPC() {
     return { ok: true };
   });
 
+  // 导出 CSV
+  ipcMain.handle('export:csv', async (_event, csvContent, defaultName) => {
+    try {
+      const { dialog } = _require('electron');
+      const result = await dialog.showSaveDialog({
+        defaultPath: path.join(DATA_DIR, defaultName || 'export.csv'),
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+      });
+      if (!result.canceled && result.filePath) {
+        fs.writeFileSync(result.filePath, csvContent, 'utf-8');
+        return { ok: true, filePath: result.filePath };
+      }
+      return { ok: false, message: 'canceled' };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+
   // 打开外部链接（浏览器跳转）
   ipcMain.handle('shell:openExternal', async (_event, url) => {
     if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
@@ -567,10 +605,14 @@ function setupIPC() {
       running: !!engineProcess,
       todayDir: getTodayDir(),
       schedulerRunning: !!schedulerProcess,
-      schedulerActive: schedulerRunning, // 调度器正在执行任务
-      schedulerLastRun, // 最近一次调度执行时间
+      schedulerActive: schedulerRunning,
+      schedulerLastRun,
+      recentErrors: logBuffer.filter(l => l.type === 'error').length,
     };
   });
+
+  // 获取引擎连续失败次数
+  ipcMain.handle('engine:failureCount', () => consecutiveFailures);
 
   // 定时任务管理
   const SCHEDULE_FILE = path.join(DATA_DIR, 'config', 'schedule.json');
@@ -742,6 +784,43 @@ function setupIPC() {
     }
   });
 }
+
+  // 获取待发布内容列表
+  ipcMain.handle('publish:pending', () => {
+    const outDir = path.join(DATA_DIR, 'output');
+    if (!fs.existsSync(outDir)) return [];
+
+    const dateDirs = fs.readdirSync(outDir)
+      .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort().reverse();
+
+    const pending = [];
+    for (const dd of dateDirs) {
+      const dp = path.join(outDir, dd);
+      const sessions = fs.readdirSync(dp).filter(s => fs.statSync(path.join(dp, s)).isDirectory());
+      for (const s of sessions) {
+        const sp = path.join(dp, s);
+        if (fs.existsSync(path.join(sp, '.published'))) continue;
+        const files = fs.readdirSync(sp);
+        const hasVideo = files.some(f => f.endsWith('.mp4'));
+        const hasTxt = files.includes('文案.txt');
+        if (!hasVideo && !files.some(f => f.endsWith('.png'))) continue;
+        let title = s;
+        if (hasTxt) {
+          try {
+            const txt = fs.readFileSync(path.join(sp, '文案.txt'), 'utf-8');
+            title = txt.split('\n')[0].substring(0, 40) || s;
+          } catch (_) {}
+        }
+        pending.push({
+          date: dd, session: s, path: sp, type: hasVideo ? 'video' : 'post',
+          title,
+          time: s.match(/(\d{2})(\d{2})$/)?.[1] + ':' + s.match(/(\d{2})(\d{2})$/)?.[2] || '',
+        });
+      }
+    }
+    return pending;
+  });
 
   // 手动触发发布
   ipcMain.handle('publish:run', async () => {
@@ -1012,6 +1091,53 @@ function setupIPC() {
       return { date, yesterday, availableDates, accounts, accountMeta, collectedAt };
     } catch (e) {
       console.error('读取日报数据失败:', e.message);
+      return null;
+    }
+  });
+
+  // 获取趋势数据（最近 N 天）
+  ipcMain.handle('report:trend', async (_event, days) => {
+    try {
+      const { openDB } = await import('../src/db.js');
+      const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
+      if (!fs.existsSync(dbPath)) return null;
+
+      const db = await openDB(dbPath, { readonly: true });
+      const limit = Math.min(days || 7, 30);
+
+      // 获取最近 N 天的所有数据
+      const rows = db.all(
+        'SELECT date, account, platform, metric, value FROM daily_stats ORDER BY date ASC'
+      );
+
+      db.close();
+
+      // 按账号+平台+日期分组
+      const series = {};
+      for (const r of rows) {
+        const key = r.account + '|' + r.platform;
+        if (!series[key]) series[key] = { account: r.account, platform: r.platform, dates: {}, metrics: {} };
+        if (!series[key].dates[r.date]) series[key].dates[r.date] = {};
+        series[key].dates[r.date][r.metric] = r.value;
+      }
+
+      // 取最近 N 天的日期列表
+      const allDates = [...new Set(rows.map(r => r.date))].sort().slice(-limit);
+
+      // 格式化输出
+      const result = {};
+      for (const [key, s] of Object.entries(series)) {
+        for (const metric of ['followers', 'views', 'likes']) {
+          const data = allDates.map(d => s.dates[d]?.[metric] ?? null);
+          if (data.some(v => v !== null)) {
+            const sk = key + '|' + metric;
+            result[sk] = { account: s.account, platform: s.platform, metric, dates: allDates, values: data };
+          }
+        }
+      }
+      return result;
+    } catch (e) {
+      console.error('读取趋势数据失败:', e.message);
       return null;
     }
   });
@@ -1288,3 +1414,9 @@ app.on('before-quit', () => {
     schedulerProcess.kill('SIGTERM');
   }
 });
+
+
+
+
+
+

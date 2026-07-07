@@ -16,9 +16,11 @@ contextBridge.exposeInMainWorld('xnowpost', {
   runEngine: (mode, topic) => ipcRenderer.invoke('engine:run', mode, topic),
   cancelEngine: () => ipcRenderer.invoke('engine:cancel'),
   getEngineStatus: () => ipcRenderer.invoke('engine:status'),
+  getFailureCount: () => ipcRenderer.invoke('engine:failureCount'),
 
   // 日志
   getLogs: () => ipcRenderer.invoke('logs:get'),
+  getLogsByDate: (date) => ipcRenderer.invoke('logs:history', date),
   clearLogs: () => ipcRenderer.invoke('logs:clear'),
   onLog: (callback) => {
     const listener = (_event, entry) => callback(entry);
@@ -32,6 +34,7 @@ contextBridge.exposeInMainWorld('xnowpost', {
   getThumbnail: (dir) => ipcRenderer.invoke('session:thumbnail', dir),
   openOutputDir: () => ipcRenderer.invoke('shell:openOutput'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  exportCsv: (content, name) => ipcRenderer.invoke('export:csv', content, name),
 
   // 费用
   getLatestCost: () => ipcRenderer.invoke('cost:latest'),
@@ -40,6 +43,7 @@ contextBridge.exposeInMainWorld('xnowpost', {
   runCollect: (accounts) => ipcRenderer.invoke('collect:run', accounts),
   getLatestCollect: () => ipcRenderer.invoke('collect:latest'),
   getDailyReport: (date) => ipcRenderer.invoke('report:daily', date),
+  getTrend: (days) => ipcRenderer.invoke('report:trend', days),
   pushReport: (date) => ipcRenderer.invoke('report:push', date),
 
   // 自动更新
@@ -67,10 +71,18 @@ contextBridge.exposeInMainWorld('xnowpost', {
     return () => ipcRenderer.removeListener('update:downloaded', listener);
   },
 
+  // 引擎进度
+  onProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('engine:progress', listener);
+    return () => ipcRenderer.removeListener('engine:progress', listener);
+  },
+
   // 定时任务
   getSchedules: () => ipcRenderer.invoke('schedule:list'),
   saveSchedules: (jobs) => ipcRenderer.invoke('schedule:save', jobs),
 
   // 发布
   runPublish: () => ipcRenderer.invoke('publish:run'),
+  getPendingPublish: () => ipcRenderer.invoke('publish:pending'),
 });
