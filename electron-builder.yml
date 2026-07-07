@@ -30,6 +30,7 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  artifactName: XNOWPost-Setup-${version}.${ext}
 publish:
   - provider: github
     owner: xiasummer740
