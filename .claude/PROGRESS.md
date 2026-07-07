@@ -23,6 +23,53 @@
 - Schedule.vue alert() 改 UI banner
 - 移除了 dead dependency: better-sqlite3（与 Electron 43 编译冲突）
 
+## v1.1.3 发布 (2026-07-08)
+- 版本: 1.1.2 → 1.1.3
+- [v1.1.3 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.1.3)
+- 安装包: `XNOWPost-Setup-1.1.3.exe`（固定 artifactName，不带空格）
+
+### 全功能优化 26 项（Sprint 1-4）
+**Sprint 1 — 基础加固**
+- IPC 降级：非 Electron 环境显示"需要桌面版"遮罩
+- Hash 路由：`createMemoryHistory` → `createWebHashHistory`，刷新保持路由
+- 轮询修复：Schedule removeJob 清理 searchTexts 泄漏
+- Dashboard 轮询已有 document.hidden + onUnmounted（已验证不需改）
+
+**Sprint 2 — 体验提升**
+- Config 前端验证：Key 格式校验（sk-开头/长度/TG Token 正则）
+- History 详情面板加固层遮罩 + 点击外部关闭 + 小屏全宽
+- Dashboard 轮询优化：状态变化驱动刷新，减少 66% IPC 调用
+- 常量抽取：`src/renderer/constants.js`（platformNames/metricLabels/formatNum 等）
+
+**Sprint 3 — 代码整洁**
+- Logs 页日志级别筛选 tabs（全部/成功/错误/警告/信息）
+- 取消按钮旋转动画（CSS ::before 伪元素 spinner）
+- `JSON.parse(JSON.stringify)` ×3 → `structuredClone`
+- TS 类型声明：`src/types/electron.d.ts` 完整 XnowpostAPI 接口
+- Config 错误提示 5s 自动消失
+- aria-label：5 个 👁️ 按钮加辅助功能标签
+
+### 功能强化（Phase 1 — 发布流程）
+- **发布卡片**：Dashboard 展示待发布内容列表，一键发布全部
+- **系统状态卡**：引擎/调度器/错误数/配置 四项状态指示灯
+- **完成通知**：引擎生成完弹出绿色横幅 + 立即发布按钮
+- IPC 扩展：`publish:pending` 扫描未发布内容，`engine:status` 加 `recentErrors`
+
+### 功能强化（Phase 2 — 效率工具）
+- **新手引导**：首次使用 3 步引导弹窗（配 Key→加账号→设闹钟）
+- **批量生成**：Dashboard 批量模式，多主题逐行输入→排队生成→进度 2/5
+- **趋势折线图**：SVG 无依赖实现，DailyReport 展示 7 天粉丝/播放趋势
+- IPC 扩展：`report:trend` 批量查 N 天数据
+
+### 功能强化（Phase 3 — 运维能力）
+- **日志历史**：日期选择器按日加载历史日志文件
+- **CSV 导出**：DailyReport 一键导出报表数据
+- **错误通知**：引擎连续 2 次失败 → 桌面 Notification + Dashboard 红条
+- **内容预览**：生成后直接在 Dashboard 展示文案+图片
+
+### Bug 修复
+- **自动升级卡 0%**：`electron-builder.yml` 加 `artifactName`，安装包文件名与 `latest.yml` 一致
+
 ## 下个对话待办
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
