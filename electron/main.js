@@ -194,14 +194,12 @@ function createWindow() {
 
   if (saved?.maximized) mainWindow.maximize();
 
-  // 开发模式：优先连 Vite 开发服务器（热更新）
+  // 始终加载打包文件
   const distIndex = path.join(ROOT, 'dist', 'index.html');
-  if (!app.isPackaged && true) {
-    mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools();
-  } else if (fs.existsSync(distIndex)) {
+  if (fs.existsSync(distIndex)) {
     mainWindow.loadFile(distIndex);
   } else {
+    // fallback: 开发模式连 Vite 服务器
     mainWindow.loadURL('http://localhost:5173');
   }
 
