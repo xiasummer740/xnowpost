@@ -194,12 +194,14 @@ function createWindow() {
 
   if (saved?.maximized) mainWindow.maximize();
 
-  // 始终加载打包文件
+  // 开发模式：优先连 Vite 开发服务器（热更新）
   const distIndex = path.join(ROOT, 'dist', 'index.html');
-  if (fs.existsSync(distIndex)) {
+  if (!app.isPackaged && true) {
+    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.webContents.openDevTools();
+  } else if (fs.existsSync(distIndex)) {
     mainWindow.loadFile(distIndex);
   } else {
-    // fallback: 开发模式连 Vite 服务器
     mainWindow.loadURL('http://localhost:5173');
   }
 
@@ -1356,12 +1358,12 @@ function startScheduler() {
     const lines = chunk.toString().split('\n').filter(Boolean);
     for (const line of lines) {
       addLog('info', `⏰ ${line}`);
-      // 检测调度器任务运行状态（匹配英文关键词）
+      // 检测调度器任务运行状态（中英文关键词）
       const l = line.toLowerCase();
-      if (l.includes('start') || l.includes('run') || l.includes('begin')) {
+      if (l.includes('start') || l.includes('run') || l.includes('begin') || l.includes('开始')) {
         schedulerRunning = true;
         schedulerLastRun = new Date().toISOString().slice(0,19);
-      } else if (l.includes('done') || l.includes('fail') || l.includes('complete') || l.includes('cancel')) {
+      } else if (l.includes('done') || l.includes('fail') || l.includes('complete') || l.includes('cancel') || l.includes('完成') || l.includes('失败')) {
         schedulerRunning = false;
       }
     }
