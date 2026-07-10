@@ -70,6 +70,27 @@
 ### Bug 修复
 - **自动升级卡 0%**：`electron-builder.yml` 加 `artifactName`，安装包文件名与 `latest.yml` 一致
 
+## v1.1.4 发布 (2026-07-10)
+- 版本: 1.1.3 → 1.1.4（patch）
+- [v1.1.4 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.1.4)
+- 安装包: `XNOWPost-Setup-1.1.4.exe`
+
+### 🐛 修复
+1. **日报无数据（打包版）** — collector 硬编码 `path.resolve('data/analytics.db')`，打包后 CWD 指向 `app.asar.unpacked`，而主进程从 `%APPDATA%/xnowpost/data/` 读取 → 路径不一致 → 日报永远"暂无日报数据"
+   - 修复：collector 改用 `process.env.XNOWPOST_DATA_DIR` 环境变量，与 organizer.js 保持一致
+   - 连带修复 `CONFIG_PATH`、`ACCOUNT_META_PATH`、`collect-meta.json` 保存路径
+2. **调度器状态卡死** — `schedulerRunning` 标志位只匹配英文关键词（done/complete），调度器输出中文「✅ 完成」→ 永远不重置
+   - 修复：检测关键词增加中文「完成」「失败」「开始」
+3. **定时采集不传账号** — 采集面板保存了 `collectAccounts` 但 scheduler 的 `runJob('collect')` 没传 `--accounts` 参数
+   - 修复：scheduler.js 加入 `accFlag`
+
+### 🆕 改进
+4. **日报仪表盘可视化** — KPI 汇总行（总播放/主页访问/总点赞/总评论/总粉丝）+ 每个账号柱状对比条（蓝色今日/灰色昨日）
+
+### 数据迁移（已完成）
+- 项目根目录 `data/analytics.db` → `%APPDATA%/xnowpost/data/analytics.db`
+- 包含 6/27-7/1 共 219 条历史记录
+
 ## 下个对话待办
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
