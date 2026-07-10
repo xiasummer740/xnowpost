@@ -114,7 +114,9 @@ function parseCron(timeStr) {
 
 function runJob(job) {
   if (job.mode === 'collect') {
-    runWithRetry('src/collector/index.js', job.label);
+    // 如果保存了勾选的账号，只采集这些账号
+    const accFlag = job.collectAccounts ? `--accounts ${job.collectAccounts}` : '';
+    runWithRetry(`src/collector/index.js ${accFlag}`.trim(), job.label);
     // daily.js 已被 collector/index.js 内部调用，无需单独执行
   } else if (job.mode === 'publish') {
     runWithRetry('src/publisher/index.js --all', job.label);

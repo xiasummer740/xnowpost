@@ -11,9 +11,11 @@ import { scrapeX } from './scrapers/x.js';
 import { generateDailyReport } from '../analyzer/daily.js';
 import { openDB, ensureDB } from '../db.js';
 
-const DB_PATH = path.resolve('data/analytics.db');
-const CONFIG_PATH = path.resolve('config/user.json');
-const ACCOUNT_META_PATH = path.resolve('data/account-meta.json');
+// 数据目录：优先使用 Electron 传入的环境变量（打包版指向 %APPDATA%/xnowpost）
+const DATA_ROOT = process.env.XNOWPOST_DATA_DIR || '.';
+const DB_PATH = path.resolve(DATA_ROOT, 'data', 'analytics.db');
+const CONFIG_PATH = path.resolve(DATA_ROOT, 'config', 'user.json');
+const ACCOUNT_META_PATH = path.resolve(DATA_ROOT, 'data', 'account-meta.json');
 
 // 保存/更新账号元数据（用户名、主页链接等）
 function saveAccountMeta(account, platform, username) {
@@ -168,7 +170,7 @@ export async function collectAll(filterAccounts = null) {
       collectedAt: new Date().toISOString(),
       collectedAtLocal: new Date().toLocaleString('zh-CN', { hour12: false }),
     };
-    const metaDir = path.resolve('data');
+    const metaDir = path.resolve(DATA_ROOT, 'data');
     fs.ensureDirSync(metaDir);
     fs.writeJsonSync(path.join(metaDir, 'collect-meta.json'), collectMeta, { spaces: 2 });
   } catch (_) {}
