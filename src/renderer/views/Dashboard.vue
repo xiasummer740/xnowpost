@@ -282,6 +282,7 @@ const consecutiveFailures = ref(0);
 
 function dismissWarning() { consecutiveFailures.value = 0; }
 let refreshTimer = null;
+let cleanupStatusPush = null;
 import { PLATFORM_NAMES as platformNames, METRIC_LABELS as metricLabels, formatNum } from '../constants.js';
 
 // 轮询状态跟踪
@@ -475,11 +476,24 @@ onMounted(async () => {
   cleanupProgress = window.xnowpost.onProgress((p) => {
     currentStep.value = { label: p.label, percent: p.percent };
   });
+
+  // 监听调度器状态即时推送（不依赖 15s 轮询）
+  cleanupStatusPush = window.xnowpost.onEngineStatusPush((status) => {
+    const wasRunning = prevRunning;
+    prevRunning = status.running;
+    Object.assign(store.status, status);
+    if (wasRunning && !status.running) {
+      refreshToday();
+      store.loadCost();
+      loadPendingItems();
+    }
+  });
 });
 
 onUnmounted(() => {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (cleanupProgress) { cleanupProgress(); cleanupProgress = null; }
+  if (cleanupStatusPush) { cleanupStatusPush(); cleanupStatusPush = null; }
 });
 </script>
 

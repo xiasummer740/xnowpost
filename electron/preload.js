@@ -86,6 +86,13 @@ contextBridge.exposeInMainWorld('xnowpost', {
     return () => ipcRenderer.removeListener('engine:progress', listener);
   },
 
+  // 调度器状态实时推送
+  onEngineStatusPush: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('engine:status-push', listener);
+    return () => ipcRenderer.removeListener('engine:status-push', listener);
+  },
+
   // 定时任务
   getSchedules: () => ipcRenderer.invoke('schedule:list'),
   saveSchedules: (jobs) => ipcRenderer.invoke('schedule:save', jobs),
