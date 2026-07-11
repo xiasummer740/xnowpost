@@ -305,7 +305,7 @@ async function save() {
   errorMsg.value = ''
   saveMsg.value = ''
   try {
-    await store.saveConfig({ ...form })
+    await store.saveConfig(JSON.parse(JSON.stringify(form)))
     saveMsg.value = '✅ 配置已保存'
     setTimeout(() => (saveMsg.value = ''), 3000)
   } catch (e) {
