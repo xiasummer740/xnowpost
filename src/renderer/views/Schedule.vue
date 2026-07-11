@@ -383,7 +383,7 @@ function setMode(i, val) {
 function cloneJob(i) {
   const orig = jobs.value[i]
   jobs.value.splice(i + 1, 0, {
-    ...structuredClone(orig),
+    ...JSON.parse(JSON.stringify(orig)),
     id: nextId++,
     label: orig.label + ' (复制)',
   })
