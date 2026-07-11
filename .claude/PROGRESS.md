@@ -103,43 +103,20 @@
   - 新增 profileUrlFor() 各平台主页链接生成
   - 回退手动输入框，全自动无需填写
 
-## v1.2.0 → v1.2.1 发布 (2026-07-11)
-- 版本: 1.1.4 → 1.2.1（patch 修复 v1.2.0 bug）
-- [v1.2.1 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.1)
-- **v1.2.0 已删除**（保存配置 bug）
-- 安装包: `XNOWPost-Setup-1.2.1.exe`
-
-### ✨ 新增 (v1.2.0)
-- **可配置数据存储目录** — 配置页新增「数据存储位置」选项，支持选择任意目录存储产出视频/配置/数据库
-- **一键迁移** — 选择新目录后自动复制所有数据→更新配置→重启生效
-- **自动升级安全** — 数据目录独立于安装目录，升级时不受影响
-
-### 🐛 修复 (v1.2.1)
-- **保存配置报错** — `structuredClone` 在 Vue reactive proxy 上失败
-  - form 初始化加 `dataDir` 字段，防动态属性克隆失败
-  - `save()` 改用 `{...form}` 代替 `structuredClone(form)`
-
-## v1.2.2 发布 (2026-07-11)
-- 版本: 1.2.1 → 1.2.2（patch，v1.2.0/v1.2.1 已删除）
-- [v1.2.2 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.2)
-- 安装包: `XNOWPost-Setup-1.2.2.exe`
-
-### 🐛 关键修复
-- **dataDir 自动回退** — 启动时检查自定义数据目录是否有 config/user.json，无效则自动清除 dataDir 并回退默认目录
-- **禁止迁到安装目录** — 迁移接口拦截 dataDir 指向安装目录或子目录
-- 之前误迁导致配置全丢的，升级 v1.2.3 后自动恢复
-
-## v1.2.3 发布 (2026-07-11)
-- 版本: 1.2.2 → 1.2.3（patch）
-- [v1.2.3 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.3)
-- v1.2.0/v1.2.1/v1.2.2 已全部删除
-
-### 🐛 修复
-- **保存配置报错**（彻底修复）— `{...form}` 的 accounts 仍是 Vue Proxy，IPC 无法克隆
-  - 改用 `JSON.parse(JSON.stringify(form))` 深拷贝
+## v1.2.4 发布 (2026-07-11)
+- 版本: 1.1.4 → 1.2.4（patch，v1.2.0~1.2.3 已全部删除）
+- [v1.2.4 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.4)
+- 安装包: `XNOWPost-Setup-1.2.4.exe`
 
 ### ✨ 新增
-- **一键重启** — 迁移成功后显示「立即重启」按钮
+- **可配置数据存储目录** — 配置页选择任意目录，一键迁移
+- **一键重启** — 迁移后显示「立即重启」按钮
+
+### 🐛 修复
+- **保存配置报错** — JSON 深拷贝剥离 Vue Proxy
+- **数据目录自动回退** — 被更新覆盖时自动恢复
+- **禁止迁到安装目录** — 防止升级清数据
+- **复制闹钟无反应** — structuredClone 遇 Vue Proxy 不报错也不执行，改用 JSON 深拷贝
 
 ## 本轮完成
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
