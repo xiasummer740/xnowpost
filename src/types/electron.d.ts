@@ -154,6 +154,7 @@ interface XnowpostAPI {
     date: string; session: string; path: string;
     type: string; title: string; time: string
   }>>
+  restartApp(): void
 }
 
 export {}

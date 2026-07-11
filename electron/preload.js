@@ -88,4 +88,7 @@ contextBridge.exposeInMainWorld('xnowpost', {
   // 发布
   runPublish: () => ipcRenderer.invoke('publish:run'),
   getPendingPublish: () => ipcRenderer.invoke('publish:pending'),
+
+  // 应用
+  restartApp: () => ipcRenderer.invoke('app:restart'),
 });

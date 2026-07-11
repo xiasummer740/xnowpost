@@ -212,7 +212,10 @@
       >
         {{ migrating ? '⏳ 迁移中...' : '📦 迁移数据到新目录' }}
       </button>
-      <p v-if="migrateDone" class="migrate-hint">✅ 迁移完成，请重启应用生效</p>
+      <div v-if="migrateDone" class="migrate-actions">
+        <p class="migrate-hint">✅ 迁移完成，请重启应用生效</p>
+        <button class="btn btn-primary" @click="restartApp">🔄 立即重启</button>
+      </div>
     </div>
 
     <div class="error-banner" v-if="errorMsg">{{ errorMsg }}</div>
@@ -367,6 +370,10 @@ async function startMigrate() {
     errorMsg.value = '迁移失败: ' + (e.message || e)
   }
   migrating.value = false
+}
+
+function restartApp() {
+  window.xnowpost.restartApp()
 }
 </script>
 
@@ -663,8 +670,11 @@ h2 {
   word-break: break-all;
 }
 .migrate-hint {
-  margin-top: 8px;
+  margin: 0 0 10px;
   font-size: 13px;
   color: #22c55e;
+}
+.migrate-actions {
+  margin-top: 8px;
 }
 </style>
