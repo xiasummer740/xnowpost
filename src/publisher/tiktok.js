@@ -433,26 +433,23 @@ export async function publishToTikTok(options) {
       await page.waitForTimeout(2000);
     }
 
-    // ⏳ 等待 Content check + 音乐版权检查 完成
-    // TikTok 的检查分为两个阶段：
-    //   ① 音乐版权检查 → 显示 "未发现问题"（几秒内过）
-    //   ② 内容快速检查 → 显示 "正在检查，此过程大约需要10分钟"
-    //
-    // 当前策略：不等文字，直接等 Post 按钮从禁用变成可点。
-    // 按钮的 data-disabled / aria-disabled 会在全部检查通过后变为 false，
-    // 这是 TikTok 自己的信号，最可靠。
-    console.log('  ⏳ 等待检查完成（Post 按钮可点=全部通过）...');
+    // ⏳ 等待全部检查完成
+    // TikTok 有两项检查，必须都显示"未发现问题"才允许发布：
+    //   ① 音乐版权检查 → 显示 "音乐版权检查 未发现问题"
+    //   ② 内容快速检查 → 显示 "内容快速检查 未发现问题"
+    // 两项文字都出现才算全部通过，缺一项继续等。
+    console.log('  ⏳ 等待检查完成（两项"未发现问题"都出现才算过）...');
     let checksPassed = false;
     for (let i = 0; i < 180; i++) {  // 最长等 15 分钟
       await page.waitForTimeout(5000);
 
-      // 信号：Post 按钮变为可点（data-disabled ≠ "true" 且 aria-disabled ≠ "true"）
+      // 信号：页面文字同时包含两项检查的"未发现问题"
       try {
-        const postBtn = page.locator('[data-e2e="post_video_button"]').first();
-        const dd = await postBtn.getAttribute('data-disabled').catch(() => 'true');
-        const ad = await postBtn.getAttribute('aria-disabled').catch(() => 'true');
-        if (dd !== 'true' && ad !== 'true') {
-          console.log(`  ✅ 所有检查通过，Post 按钮已可点 (约${(i+1)*5}秒)`);
+        const text = await page.evaluate(() => document.body.innerText);
+        const musicOk = text.includes('音乐版权检查') && text.includes('未发现问题');
+        const contentOk = text.includes('内容快速检查') && text.includes('未发现问题');
+        if (musicOk && contentOk) {
+          console.log(`  ✅ 两项检查都已通过 (约${(i+1)*5}秒)`);
           checksPassed = true;
           break;
         }
@@ -464,9 +461,8 @@ export async function publishToTikTok(options) {
       }
     }
     if (!checksPassed) {
-      // Post 按钮一直没启用 → 可能 TikTok 卡检查或违规了
-      // 不强制发了，等用户手动处理
-      throw new Error('检查超时（15分钟），Post 按钮始终禁用，请手动检查 TikTok 页面');
+      // 等了 15 分钟还没过 → 可能卡检查或违规了
+      throw new Error('检查超时（15分钟），两项"未发现问题"未全部出现，请手动检查 TikTok 页面');
     }
     await page.waitForTimeout(1000);
 
