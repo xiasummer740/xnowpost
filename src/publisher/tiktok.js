@@ -464,7 +464,10 @@ export async function publishToTikTok(options) {
       // 等了 15 分钟还没过 → 可能卡检查或违规了
       throw new Error('检查超时（15分钟），两项"未发现问题"未全部出现，请手动检查 TikTok 页面');
     }
-    await page.waitForTimeout(1000);
+    // 两项检查通过后等 10s 再发，给 TikTok 留一点缓冲时间
+    console.log('  ⏳ 两项检查已通过，等 10s 后发布...');
+    await page.waitForTimeout(10000);
+    console.log('  📤 开始发布...');
 
     // 查找并点击发布按钮 — 用 trace 记录全过程
 
