@@ -41,6 +41,7 @@ interface ConfigData {
   tgChannelId: string
   cdpEndpoint: string
   bitApiKey?: string
+  dataDir?: string  // 自定义数据存储目录
   accounts?: Array<{
     name: string
     platform: string
@@ -108,6 +109,9 @@ interface XnowpostAPI {
   saveConfig(config: ConfigData): Promise<ApiResult>
   testApi(type: string, key: string): Promise<ApiResult>
   testBit(apiKey?: string): Promise<ApiResult>
+  getDataDir(): Promise<{ path: string }>
+  selectDataDir(): Promise<ApiResult & { path?: string }>
+  migrateData(newDir: string): Promise<ApiResult & { needsRestart?: boolean }>
 
   runEngine(mode: string, topic?: string): Promise<ApiResult>
   cancelEngine(): Promise<ApiResult>

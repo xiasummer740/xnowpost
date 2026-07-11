@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('xnowpost', {
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   testApi: (type, key) => ipcRenderer.invoke('config:test', type, key),
   testBit: (apiKey) => ipcRenderer.invoke('config:testBit', apiKey),
+  getDataDir: () => ipcRenderer.invoke('config:getDataDir'),
+  selectDataDir: () => ipcRenderer.invoke('config:selectDir'),
+  migrateData: (newDir) => ipcRenderer.invoke('config:migrateData', newDir),
 
   // 引擎
   runEngine: (mode, topic) => ipcRenderer.invoke('engine:run', mode, topic),

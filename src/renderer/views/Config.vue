@@ -190,6 +190,31 @@
 
     <hr class="section-divider" />
 
+    <!-- 数据存储位置 -->
+    <h3 class="section-title">📁 数据存储位置</h3>
+    <p class="section-desc">产出视频、配置、数据库等所有数据的存储目录（迁移后需重启生效）</p>
+
+    <div class="data-dir-row">
+      <div class="form-group flex-1">
+        <label>当前数据目录</label>
+        <input :value="currentDataDir" disabled class="dir-path-input" />
+      </div>
+      <button class="btn btn-test" @click="selectDir" title="选择新目录">📂</button>
+    </div>
+
+    <div v-if="selectedDir" class="new-dir-box">
+      <p class="new-dir-label">新目录：</p>
+      <p class="new-dir-path">{{ selectedDir }}</p>
+      <button
+        class="btn btn-primary"
+        @click="startMigrate"
+        :disabled="migrating"
+      >
+        {{ migrating ? '⏳ 迁移中...' : '📦 迁移数据到新目录' }}
+      </button>
+      <p v-if="migrateDone" class="migrate-hint">✅ 迁移完成，请重启应用生效</p>
+    </div>
+
     <div class="error-banner" v-if="errorMsg">{{ errorMsg }}</div>
     <div class="success-banner" v-if="saveMsg">{{ saveMsg }}</div>
 
@@ -222,6 +247,10 @@ const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, 
 const saving = ref(false)
 const errorMsg = ref('')
 const validationErrors = reactive({})
+const currentDataDir = ref('')
+const selectedDir = ref('')
+const migrating = ref(false)
+const migrateDone = ref(false)
 
 const FIELD_LABELS = {
   deepseekApiKey: 'DeepSeek API Key',
@@ -252,6 +281,8 @@ function validate() {
 onMounted(async () => {
   const config = await window.xnowpost.getConfig()
   Object.assign(form, config)
+  const dirResult = await window.xnowpost.getDataDir()
+  currentDataDir.value = dirResult.path
 })
 
 const saveMsg = ref('')
@@ -306,6 +337,35 @@ async function testBit() {
     results.bit = { ok: false, message: '调用失败: ' + (e.message || e) }
   }
   testing.bit = false
+}
+
+// === 数据目录 ===
+async function selectDir() {
+  errorMsg.value = ''
+  const result = await window.xnowpost.selectDataDir()
+  if (result.ok && result.path) {
+    selectedDir.value = result.path
+    migrateDone.value = false
+  }
+}
+
+async function startMigrate() {
+  if (!selectedDir.value) return
+  migrating.value = true
+  errorMsg.value = ''
+  migrateDone.value = false
+  try {
+    const result = await window.xnowpost.migrateData(selectedDir.value)
+    if (result.ok) {
+      migrateDone.value = true
+      currentDataDir.value = selectedDir.value  // 显示迁移后的目录（重启后生效）
+    } else {
+      errorMsg.value = result.message || '迁移失败'
+    }
+  } catch (e) {
+    errorMsg.value = '迁移失败: ' + (e.message || e)
+  }
+  migrating.value = false
 }
 </script>
 
@@ -560,5 +620,50 @@ h2 {
   color: #ef4444;
   margin-top: 4px;
   padding-left: 2px;
+}
+
+/* 数据目录 */
+.data-dir-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 4px;
+}
+.dir-path-input {
+  width: 100%;
+  max-width: 500px;
+  padding: 10px 14px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #94a3b8;
+  font-size: 13px;
+  outline: none;
+  font-family: monospace;
+}
+.new-dir-box {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  max-width: 500px;
+}
+.new-dir-label {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0 0 4px;
+}
+.new-dir-path {
+  font-size: 13px;
+  color: #e2e8f0;
+  font-family: monospace;
+  margin: 0 0 12px;
+  word-break: break-all;
+}
+.migrate-hint {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #22c55e;
 }
 </style>

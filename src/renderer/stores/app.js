@@ -9,6 +9,7 @@ export const useAppStore = defineStore('app', {
       tgBotToken: '',
       tgChannelId: '@your_channel',
       cdpEndpoint: 'http://localhost:9222',
+      dataDir: '',
     },
     status: {
       configured: false,
