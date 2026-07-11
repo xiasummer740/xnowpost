@@ -435,30 +435,40 @@ export async function publishToTikTok(options) {
       await page.waitForTimeout(2000);
     }
 
-    // ⏳ 等待 Content check 完成
-    // 页面会先后出现两段文字（Post/Discard 按钮上方）：
-    //   ① "Checking in progress. This will take about 10 minutes..."
-    //   ② "No issues found. However, your video could still be removed later..."
-    // 等到 ② 出现才点 Post
-    // 注意：不用负面关键词检测（"违规""版权"等会误杀正常页面的展示文案），
-    // 只做正向等待。超时则警告但继续发，避免假失败导致重试浪费钱。
-    console.log('  ⏳ 等待 Content check 完成...');
-    let contentCheckPassed = false;
-    for (let i = 0; i < 120; i++) {  // 最长等 10 分钟
+    // ⏳ 等待 Content check + 音乐版权检查 完成
+    // TikTok 的检查分为两个阶段：
+    //   ① 音乐版权检查 → 显示 "未发现问题"（几秒内过）
+    //   ② 内容快速检查 → 显示 "正在检查，此过程大约需要10分钟"
+    //
+    // 当前策略：不等文字，直接等 Post 按钮从禁用变成可点。
+    // 按钮的 data-disabled / aria-disabled 会在全部检查通过后变为 false，
+    // 这是 TikTok 自己的信号，最可靠。
+    console.log('  ⏳ 等待检查完成（Post 按钮可点=全部通过）...');
+    let checksPassed = false;
+    for (let i = 0; i < 180; i++) {  // 最长等 15 分钟
       await page.waitForTimeout(5000);
-      const text = await page.evaluate(() => document.body.innerText);
-      const lower = text.toLowerCase();
 
-      // ✅ 检测通过 → 跳出循环，继续点 Post
-      if (lower.includes('no issues found') || lower.includes('未发现问题')) {
-        console.log(`  ✅ Content check 通过 (约${(i+1)*5}秒)`);
-        contentCheckPassed = true;
-        break;
+      // 信号：Post 按钮变为可点（data-disabled ≠ "true" 且 aria-disabled ≠ "true"）
+      try {
+        const postBtn = page.locator('[data-e2e="post_video_button"]').first();
+        const dd = await postBtn.getAttribute('data-disabled').catch(() => 'true');
+        const ad = await postBtn.getAttribute('aria-disabled').catch(() => 'true');
+        if (dd !== 'true' && ad !== 'true') {
+          console.log(`  ✅ 所有检查通过，Post 按钮已可点 (约${(i+1)*5}秒)`);
+          checksPassed = true;
+          break;
+        }
+      } catch (_) {}
+
+      // 每 30 秒打个进度，方便看是不是卡住了
+      if ((i + 1) % 6 === 0) {
+        console.log(`  ⏳ 检查中...已等 ${(i+1)*5} 秒`);
       }
-      // ⏳ 还在检测中，继续等
     }
-    if (!contentCheckPassed) {
-      console.log('  ⚠️ Content check 超时未检测到通过信号，仍继续尝试发布');
+    if (!checksPassed) {
+      // Post 按钮一直没启用 → 可能 TikTok 卡检查或违规了
+      // 不强制发了，等用户手动处理
+      throw new Error('检查超时（15分钟），Post 按钮始终禁用，请手动检查 TikTok 页面');
     }
     await page.waitForTimeout(1000);
 
