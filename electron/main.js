@@ -61,6 +61,7 @@ const DEFAULT_CONFIG = {
   tgChannelId: '@your_channel',
   cdpEndpoint: 'http://localhost:9222',
   bitApiKey: '',
+  dataDir: '',  // 自定义数据存储目录（空=默认 %APPDATA%/xnowpost）
 };
 
 // 窗口引用
@@ -254,6 +255,63 @@ function setupIPC() {
       return { ok: true };
     } catch (e) {
       addLog('error', '保存配置失败: ' + e.message);
+      return { ok: false, message: e.message };
+    }
+  });
+
+  // 获取当前数据目录路径
+  ipcMain.handle('config:getDataDir', () => {
+    return { path: DATA_DIR };
+  });
+
+  // 选择新数据目录（打开文件夹选择器）
+  ipcMain.handle('config:selectDir', async () => {
+    try {
+      const { dialog } = _require('electron');
+      const result = await dialog.showOpenDialog({
+        properties: ['openDirectory', 'createDirectory'],
+        title: '选择数据存储目录',
+      });
+      if (result.canceled || !result.filePaths.length) return { ok: false };
+      return { ok: true, path: result.filePaths[0] };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+
+  // 迁移数据到新目录（复制所有数据 → 更新配置 → 需重启生效）
+  ipcMain.handle('config:migrateData', async (_event, newDir) => {
+    try {
+      const oldDir = DATA_DIR;
+      if (!newDir || !path.isAbsolute(newDir)) return { ok: false, message: '无效的目录路径' };
+      if (oldDir === newDir) return { ok: false, message: '新目录与当前目录相同' };
+
+      addLog('info', `📦 开始迁移数据: ${oldDir} → ${newDir}`);
+
+      // 1. 复制所有数据到新目录（排除无关目录）
+      fs.ensureDirSync(newDir);
+      const excludeDirs = new Set(['node_modules', '.git', '__pycache__', 'node']);
+      fs.copySync(oldDir, newDir, {
+        filter: src => !excludeDirs.has(path.basename(src)),
+      });
+
+      // 2. 读取旧配置，记录 dataDir 指向新位置
+      const cfg = loadConfig(); // 从旧 DATA_DIR 读取
+      cfg.dataDir = newDir;
+      await saveConfig(cfg); // 写回旧位置（引导用）
+
+      // 3. 也更新新目录下的配置
+      const prevDataDir = DATA_DIR;
+      DATA_DIR = newDir;
+      const newCfg = loadConfig();
+      newCfg.dataDir = newDir;
+      await saveConfig(newCfg);
+      DATA_DIR = prevDataDir;
+
+      addLog('success', `✅ 数据已迁移到: ${newDir}，请重启应用`);
+      return { ok: true, needsRestart: true };
+    } catch (e) {
+      addLog('error', '数据迁移失败: ' + e.message);
       return { ok: false, message: e.message };
     }
   });
@@ -1390,8 +1448,17 @@ app.whenReady().then(async () => {
     DATA_DIR = app.getPath('userData');
   }
 
+  // 加载配置
+  let cfg = loadConfig();
+
+  // 自定义数据目录：如果配置了 dataDir 且路径存在，切换到该目录
+  if (cfg.dataDir && cfg.dataDir !== DATA_DIR && fs.existsSync(cfg.dataDir)) {
+    DATA_DIR = cfg.dataDir;
+    cfg = loadConfig(); // 重新加载新目录下的配置
+  }
+
   // 初始化配置文件
-  { const cfg = loadConfig(); try { await saveConfig(cfg); } catch {} }
+  try { await saveConfig(cfg); } catch {}
 
   setupIPC();
   createWindow();
