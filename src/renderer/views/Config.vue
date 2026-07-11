@@ -225,6 +225,7 @@
       <button class="btn btn-primary" @click="save" :disabled="saving">
         {{ saving ? '⏳ 保存中...' : '💾 保存配置' }}
       </button>
+      <button class="btn btn-restart" @click="restartApp">🔄 重启应用</button>
     </div>
   </div>
 </template>
