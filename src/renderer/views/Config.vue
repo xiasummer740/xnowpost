@@ -239,6 +239,7 @@ const form = reactive({
   tgChannelId: '@your_channel',
   cdpEndpoint: 'http://localhost:9222',
   bitApiKey: '',
+  dataDir: '',
   accounts: [],
 })
 const testing = reactive({ deepseek: false, siliconflow: false, pexels: false, tg: false, bit: false })
@@ -304,7 +305,7 @@ async function save() {
   errorMsg.value = ''
   saveMsg.value = ''
   try {
-    await store.saveConfig(structuredClone(form))
+    await store.saveConfig({ ...form })
     saveMsg.value = '✅ 配置已保存'
     setTimeout(() => (saveMsg.value = ''), 3000)
   } catch (e) {
