@@ -74,12 +74,10 @@ export async function publishToTikTok(options) {
         return;
       }
       // "检查尚未完成，仍要发布?" → Content check 还没跑完
-      // 等 10s 再点"立即发布"，给 TikTok 多一点检测时间
+      // 取消返回编辑，让主循环继续等 Post 按钮可点
       if (msg.includes('尚未完成') || msg.includes('still checking') || msg.includes('继续发布') || msg.includes('still want to')) {
-        console.log(`  💬 弹窗(检查未完成) → 等 10s 后立即发布...`);
-        await page.waitForTimeout(10000);
-        console.log(`  💬 弹窗(检查未完成) → 接受: "${dialog.message().substring(0, 60)}"`);
-        await dialog.accept();
+        console.log(`  💬 弹窗(检查未完成) → 取消，继续等待检查完成...`);
+        await dialog.dismiss();
         return;
       }
       const isCancel = msg.includes('exit') || msg.includes('离开') || msg.includes('退出')
