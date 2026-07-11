@@ -73,6 +73,11 @@ contextBridge.exposeInMainWorld('xnowpost', {
     ipcRenderer.on('update:downloaded', listener);
     return () => ipcRenderer.removeListener('update:downloaded', listener);
   },
+  onUpdateError: (callback) => {
+    const listener = (_event, message) => callback(message);
+    ipcRenderer.on('update:error', listener);
+    return () => ipcRenderer.removeListener('update:error', listener);
+  },
 
   // 引擎进度
   onProgress: (callback) => {
