@@ -666,7 +666,7 @@ function setupIPC() {
   });
 
   // 获取引擎状态
-  ipcMain.handle('engine:status', () => {
+  function getEngineStatus() {
     const config = loadConfig();
     return {
       configured: !!(config.deepseekApiKey || config.siliconflowApiKey),
@@ -677,7 +677,11 @@ function setupIPC() {
       schedulerLastRun,
       recentErrors: logBuffer.filter(l => l.type === 'error').length,
     };
-  });
+  }
+  function pushEngineStatus() {
+    mainWindow?.webContents.send('engine:status-push', getEngineStatus());
+  }
+  ipcMain.handle('engine:status', () => getEngineStatus());
 
   // 获取引擎连续失败次数
   ipcMain.handle('engine:failureCount', () => consecutiveFailures);
@@ -1429,8 +1433,10 @@ function startScheduler() {
       if (l.includes('start') || l.includes('run') || l.includes('begin') || l.includes('开始')) {
         schedulerRunning = true;
         schedulerLastRun = new Date().toISOString().slice(0,19);
+        pushEngineStatus(); // 实时推送到前端
       } else if (l.includes('done') || l.includes('fail') || l.includes('complete') || l.includes('cancel') || l.includes('完成') || l.includes('失败')) {
         schedulerRunning = false;
+        pushEngineStatus(); // 实时推送到前端
       }
     }
   });

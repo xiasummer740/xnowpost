@@ -145,6 +145,7 @@ interface XnowpostAPI {
   onUpdateDownloaded(callback: () => void): () => void
   onUpdateError(callback: (message: string) => void): () => void
   onProgress(callback: (progress: { step: string; label: string; percent: number }) => void): () => void
+  onEngineStatusPush(callback: (status: EngineStatus) => void): () => void
 
   getSchedules(): Promise<Array<Record<string, unknown>>>
   saveSchedules(jobs: Array<Record<string, unknown>>): Promise<ApiResult>
