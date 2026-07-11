@@ -285,6 +285,10 @@ function setupIPC() {
       const oldDir = DATA_DIR;
       if (!newDir || !path.isAbsolute(newDir)) return { ok: false, message: '无效的目录路径' };
       if (oldDir === newDir) return { ok: false, message: '新目录与当前目录相同' };
+      // 禁止迁到安装目录（自动升级会覆盖数据）
+      if (newDir === ROOT || newDir.startsWith(ROOT + path.sep)) {
+        return { ok: false, message: '禁止迁到安装目录！自动升级会清空数据。请新建独立文件夹，如 E:\\xnowpost-data' };
+      }
 
       addLog('info', `📦 开始迁移数据: ${oldDir} → ${newDir}`);
 
@@ -1451,10 +1455,19 @@ app.whenReady().then(async () => {
   // 加载配置
   let cfg = loadConfig();
 
-  // 自定义数据目录：如果配置了 dataDir 且路径存在，切换到该目录
-  if (cfg.dataDir && cfg.dataDir !== DATA_DIR && fs.existsSync(cfg.dataDir)) {
-    DATA_DIR = cfg.dataDir;
-    cfg = loadConfig(); // 重新加载新目录下的配置
+  // 自定义数据目录：如果配置了 dataDir，检查目标目录是否有效
+  if (cfg.dataDir && cfg.dataDir !== DATA_DIR) {
+    const targetConfigPath = path.join(cfg.dataDir, 'config', 'user.json');
+    if (fs.existsSync(targetConfigPath)) {
+      // 有效：切换到目标目录
+      DATA_DIR = cfg.dataDir;
+      cfg = loadConfig();
+    } else {
+      // 无效（被更新覆盖/手动删除等）：清除 dataDir，回退默认目录
+      console.warn(`⚠️ 自定义数据目录 ${cfg.dataDir} 无配置文件，回退到默认目录`);
+      cfg.dataDir = '';
+      try { fs.writeJsonSync(USER_CONFIG_PATH(), cfg, { spaces: 2 }); } catch {}
+    }
   }
 
   // 初始化配置文件
