@@ -118,6 +118,15 @@
 - **禁止迁到安装目录** — 防止升级清数据
 - **复制闹钟无反应** — structuredClone 遇 Vue Proxy 不报错也不执行，改用 JSON 深拷贝
 
+## v1.2.5 发布 (2026-07-11)
+- 版本: 1.2.4 → 1.2.5（patch）
+- [v1.2.5 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.5)
+
+### 🐛 修复
+- **TikTok Content check 提前发布** — 旧策略等「音乐版权检查」文字就点发布，没等「内容快速检查」
+  - 新策略等 Post 按钮 data-disabled 变为 false 才点，这是 TikTok 自己的"全部检查通过"信号
+  - "检查尚未完成"弹窗改取消不强制发，避免重复浪费
+
 ## 本轮完成
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
   - 根因1：`scrollToCenter` 公式`(1+index)*36-90+18` 多减了36px → 选中偏移1格
