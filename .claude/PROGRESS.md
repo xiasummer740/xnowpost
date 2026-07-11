@@ -119,6 +119,16 @@
   - form 初始化加 `dataDir` 字段，防动态属性克隆失败
   - `save()` 改用 `{...form}` 代替 `structuredClone(form)`
 
+## v1.2.2 发布 (2026-07-11)
+- 版本: 1.2.1 → 1.2.2（patch，v1.2.0/v1.2.1 已删除）
+- [v1.2.2 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.2)
+- 安装包: `XNOWPost-Setup-1.2.2.exe`
+
+### 🐛 关键修复
+- **dataDir 自动回退** — 启动时检查自定义数据目录是否有 config/user.json，无效则自动清除 dataDir 并回退默认目录
+- **禁止迁到安装目录** — 迁移接口拦截 dataDir 指向安装目录或子目录
+- 之前误迁导致配置全丢的，升级 v1.2.2 后自动恢复
+
 ## 本轮完成
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
   - 根因1：`scrollToCenter` 公式`(1+index)*36-90+18` 多减了36px → 选中偏移1格
