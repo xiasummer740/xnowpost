@@ -103,15 +103,21 @@
   - 新增 profileUrlFor() 各平台主页链接生成
   - 回退手动输入框，全自动无需填写
 
-## v1.2.0 发布 (2026-07-11)
-- 版本: 1.1.4 → 1.2.0（minor）
-- [v1.2.0 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.0)
-- 安装包: `XNOWPost-Setup-1.2.0.exe`
+## v1.2.0 → v1.2.1 发布 (2026-07-11)
+- 版本: 1.1.4 → 1.2.1（patch 修复 v1.2.0 bug）
+- [v1.2.1 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.1)
+- **v1.2.0 已删除**（保存配置 bug）
+- 安装包: `XNOWPost-Setup-1.2.1.exe`
 
-### ✨ 新增
+### ✨ 新增 (v1.2.0)
 - **可配置数据存储目录** — 配置页新增「数据存储位置」选项，支持选择任意目录存储产出视频/配置/数据库
 - **一键迁移** — 选择新目录后自动复制所有数据→更新配置→重启生效
 - **自动升级安全** — 数据目录独立于安装目录，升级时不受影响
+
+### 🐛 修复 (v1.2.1)
+- **保存配置报错** — `structuredClone` 在 Vue reactive proxy 上失败
+  - form 初始化加 `dataDir` 字段，防动态属性克隆失败
+  - `save()` 改用 `{...form}` 代替 `structuredClone(form)`
 
 ## 本轮完成
 - [时间选择器 bug 修复+体验优化] 三个问题一起修
