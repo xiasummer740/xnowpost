@@ -143,6 +143,7 @@ interface XnowpostAPI {
   onUpdateNotAvailable(callback: () => void): () => void
   onUpdateProgress(callback: (progress: UpdateProgress) => void): () => void
   onUpdateDownloaded(callback: () => void): () => void
+  onUpdateError(callback: (message: string) => void): () => void
   onProgress(callback: (progress: { step: string; label: string; percent: number }) => void): () => void
 
   getSchedules(): Promise<Array<Record<string, unknown>>>

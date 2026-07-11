@@ -156,9 +156,11 @@ const updateChecked = ref(false);
 const downloading = ref(false);
 const downloaded = ref(false);
 const downloadProgress = ref(0);
+const updateError = ref('');
 
 function doCheck() {
   updateChecked.value = false;
+  updateError.value = '';
   window.xnowpost.checkUpdate();
 }
 function doDownload() {
@@ -196,6 +198,10 @@ onMounted(async () => {
     downloaded.value = true;
     downloading.value = false;
     downloadProgress.value = 100;
+  });
+  window.xnowpost.onUpdateError((message) => {
+    updateError.value = message;
+    updateChecked.value = true;
   });
 
   // 监听引擎日志（上限 500 条防 OOM）
@@ -335,6 +341,7 @@ onMounted(async () => {
 .update-panel { margin-top: 12px; padding: 12px; background: #0f172a; border-radius: 8px; }
 .update-msg { font-size: 14px; color: #60a5fa; margin: 0 0 8px; font-weight: 600; }
 .update-latest p { margin: 0; font-size: 13px; color: #22c55e; }
+.update-error p { margin: 0; font-size: 12px; color: #ef4444; line-height: 1.4; }
 .update-actions { display: flex; gap: 8px; align-items: center; }
 .btn-update {
   padding: 6px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600;

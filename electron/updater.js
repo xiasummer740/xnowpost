@@ -15,8 +15,6 @@ export function initUpdater(window) {
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
 
-    autoUpdater.checkForUpdates().catch(() => {});
-
     autoUpdater.on('update-available', (info) => {
       mainWindow?.webContents.send('update:available', {
         version: info.version,
@@ -43,20 +41,40 @@ export function initUpdater(window) {
 
     autoUpdater.on('error', (err) => {
       console.error('自动更新错误:', err.message);
+      // 错误也传回前端，替代沉默的"已是最新版本"
+      mainWindow?.webContents.send('update:error', err.message || '检查更新失败');
     });
+
+    // 首次检查
+    checkForUpdates();
   }).catch(err => {
     console.error('electron-updater 加载失败:', err.message);
   });
 }
 
 export function downloadUpdate() {
-  if (autoUpdater) autoUpdater.downloadUpdate();
+  if (!autoUpdater) {
+    console.warn('downloadUpdate: autoUpdater 未就绪');
+    return;
+  }
+  autoUpdater.downloadUpdate();
 }
 
 export function quitAndInstall() {
-  if (autoUpdater) autoUpdater.quitAndInstall();
+  if (!autoUpdater) {
+    console.warn('quitAndInstall: autoUpdater 未就绪');
+    return;
+  }
+  autoUpdater.quitAndInstall();
 }
 
 export function checkForUpdates() {
-  if (autoUpdater) autoUpdater.checkForUpdates().catch(() => {});
+  if (!autoUpdater) {
+    console.warn('checkForUpdates: autoUpdater 未就绪，稍后重试');
+    return;
+  }
+  autoUpdater.checkForUpdates().catch(err => {
+    console.error('检查更新失败:', err.message);
+    mainWindow?.webContents.send('update:error', err.message || '检查更新失败');
+  });
 }
