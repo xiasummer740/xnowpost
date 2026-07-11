@@ -320,6 +320,12 @@ function setupIPC() {
     }
   });
 
+  // 重启应用
+  ipcMain.handle('app:restart', () => {
+    app.relaunch();
+    app.exit(0);
+  });
+
   // 引擎执行队列
   const engineQueue = [];
   let engineRunning = false;
