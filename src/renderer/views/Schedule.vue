@@ -238,6 +238,8 @@ async function saveCollectSchedule() {
     if (result && result.ok) {
       collectSchedSaved.value = true
       collectSchedActive.value = true
+      // 同步本地数组，防止后面点"保存全部"用旧数据覆盖新数据
+      jobs.value = filtered
       setTimeout(() => { collectSchedSaved.value = false }, 3000)
     }
   } catch (e) {
@@ -399,10 +401,12 @@ function toggleAll(enabled) {
   jobs.value.forEach(j => (j.enabled = enabled))
 }
 
-// 按账号分组（同账号闹钟排一起，无账号的放最后）
+// 按账号分组（同账号闹钟排一起，无账号的放最后，过滤掉采集任务）
 const groupedJobs = computed(() => {
   const groups = {}
   for (const job of jobs.value) {
+    // 采集任务已有独立面板，不在闹钟卡片区域重复展示
+    if (job.mode === 'collect') continue
     const key = job.account || ''
     if (!groups[key]) groups[key] = { account: job.account || '', jobs: [] }
     groups[key].jobs.push(job)
