@@ -28,8 +28,7 @@ asarUnpack:
 win:
   target: nsis
 nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
+  oneClick: true
   artifactName: XNOWPost-Setup-${version}.${ext}
 publish:
   - provider: github
