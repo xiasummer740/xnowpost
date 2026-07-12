@@ -72,6 +72,7 @@ async function runWithRetry(script, label, retryOnFail = true) {
   const maxAttempts = retryOnFail ? MAX_RETRIES + 1 : 1;
   for (let i = 0; i < maxAttempts; i++) {
     try {
+      log(`🚀 ${label} 开始`);
       const result = execSync(`"${NODE_EXE}" ${script}`, { cwd: ROOT, stdio: 'pipe', timeout: 15 * 60 * 1000, windowsHide: true });
       // 转发子进程输出到调度器日志
       const output = result.toString().trim();
