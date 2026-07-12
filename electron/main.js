@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 // 用 createRequire 加载 electron（ESM 的 import 在 Electron 中不可靠）
 const electron = _require('electron');
-const { app, BrowserWindow, ipcMain, shell, screen } = electron;
+const { app, BrowserWindow, ipcMain, shell, screen, Tray, Menu, nativeImage } = electron;
 const ROOT = path.resolve(__dirname, '..');
 
 // 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
@@ -67,6 +67,8 @@ const DEFAULT_CONFIG = {
 // 窗口引用
 let mainWindow = null;
 let engineProcess = null;
+let tray = null;
+let isQuitting = false;
 let logBuffer = [];
 let schedulerRunning = false;  // 调度器是否正在执行引擎任务
 let schedulerLastRun = '';     // 最近一次调度执行时间
@@ -222,19 +224,141 @@ function createWindow() {
     mainWindow = null;
   });
 
-  // 窗口关闭时保存状态 + 杀死运行中的引擎子进程
-  mainWindow.on('close', () => {
+  // 关闭时：有托盘则隐藏到系统栏，无托盘（真正退出）则正常关闭
+  mainWindow.on('close', (event) => {
     saveWinState(mainWindow);
+    // 杀死运行中的引擎子进程
     if (engineProcess && !engineProcess.killed) {
       try {
         engineProcess.kill('SIGTERM');
         try { process.kill(-engineProcess.pid, 'SIGTERM'); } catch (e) {}
       } catch (e) {}
     }
+    if (tray && !isQuitting) {
+      // 最小化到系统托盘，不真正关闭
+      event.preventDefault();
+      mainWindow.hide();
+      addLog('info', '📌 XNOWPost 已最小化到系统托盘，右键托盘图标选择"退出"可完全关闭');
+    }
+    // isQuitting=true 时让默认关闭行为继续
   });
 
   // DevTools: 需要时按 F12 打开，不自动弹出
   // 如需自动打开，设环境变量 DEBUG=true
+}
+
+// === 系统托盘 ===
+// 简单 CRC32（PNG 校验用）
+function pngCRC32(buf) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) {
+    crc ^= buf[i];
+    for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function makePNGChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const typeB = Buffer.from(type);
+  const crcData = Buffer.concat([typeB, data]);
+  const crc = pngCRC32(crcData);
+  const crcB = Buffer.alloc(4);
+  crcB.writeUInt32BE(crc);
+  return Buffer.concat([len, typeB, data, crcB]);
+}
+
+// 程序化生成一个 32×32 绿色圆形托盘图标 PNG
+function generateTrayIconPNG() {
+  const { deflateSync } = _require('zlib');
+  const W = 32, H = 32;
+  const raw = Buffer.alloc((1 + W * 4) * H);
+  for (let y = 0; y < H; y++) {
+    raw[y * (1 + W * 4)] = 0; // filter: none
+    for (let x = 0; x < W; x++) {
+      const dx = x - W / 2 + 0.5, dy = y - H / 2 + 0.5;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const offset = y * (1 + W * 4) + 1 + x * 4;
+      if (dist <= 13) {
+        // 绿色渐变圆
+        const bright = 1 - dist / 16;
+        raw[offset] = Math.round(0x22 * bright);     // R
+        raw[offset + 1] = Math.round(0xCC * bright); // G
+        raw[offset + 2] = Math.round(0x55 * bright); // B
+        raw[offset + 3] = 0xFF;                       // A
+      } else if (dist <= 14.5) {
+        // 抗锯齿边缘
+        const alpha = Math.round(255 * (1 - (dist - 13)));
+        raw[offset] = 0x22; raw[offset + 1] = 0xCC; raw[offset + 2] = 0x55; raw[offset + 3] = alpha;
+      } else {
+        raw[offset + 3] = 0; // 完全透明
+      }
+    }
+  }
+  const deflated = deflateSync(raw);
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
+  ihdr[8] = 8; ihdr[9] = 6; // RGBA
+  const chunks = [sig, makePNGChunk('IHDR', ihdr), makePNGChunk('IDAT', deflated), makePNGChunk('IEND', Buffer.alloc(0))];
+  return Buffer.concat(chunks);
+}
+
+function createTray() {
+  // 生成或加载托盘图标
+  const iconDir = path.join(DATA_DIR, 'config');
+  const iconPath = path.join(iconDir, 'tray-icon.png');
+  let trayIcon;
+  try {
+    if (fs.existsSync(iconPath)) {
+      trayIcon = nativeImage.createFromPath(iconPath);
+    } else {
+      fs.ensureDirSync(iconDir);
+      const pngBuf = generateTrayIconPNG();
+      fs.writeFileSync(iconPath, pngBuf);
+      trayIcon = nativeImage.createFromPath(iconPath);
+    }
+  } catch (_) {
+    // 极端 fallback：用 1×1 透明像素
+    trayIcon = nativeImage.createEmpty();
+  }
+  // Windows 托盘图标需要 16×16 或 32×32
+  trayIcon = trayIcon.resize({ width: 32, height: 32 });
+
+  tray = new Tray(trayIcon);
+  tray.setToolTip('XNOWPost');
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '显示主窗口',
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        if (tray) { tray.destroy(); tray = null; }
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+
+  // 单击托盘图标：显示/聚焦窗口
+  tray.on('click', () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
 }
 
 // === IPC 处理器 ===
@@ -1488,6 +1612,7 @@ app.whenReady().then(async () => {
 
   setupIPC();
   createWindow();
+  createTray();
   initUpdater(mainWindow);
   autoBackup();
   healthCheck();
@@ -1499,10 +1624,14 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  // 有系统托盘时，窗口关闭不退出应用（隐藏到托盘）
+  if (tray) return;
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  if (tray) { tray.destroy(); tray = null; }
   if (schedulerProcess && !schedulerProcess.killed) {
     schedulerProcess.kill('SIGTERM');
   }
