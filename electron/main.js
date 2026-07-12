@@ -1432,7 +1432,8 @@ function startScheduler() {
       const l = line.toLowerCase();
       if (l.includes('start') || l.includes('run') || l.includes('begin') || l.includes('开始')) {
         schedulerRunning = true;
-        schedulerLastRun = new Date().toISOString().slice(0,19);
+        // 北京时间（UTC+8），不用 toISOString（那是 UTC）
+        schedulerLastRun = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
         pushEngineStatus(); // 实时推送到前端
       } else if (l.includes('done') || l.includes('fail') || l.includes('complete') || l.includes('cancel') || l.includes('完成') || l.includes('失败')) {
         schedulerRunning = false;
