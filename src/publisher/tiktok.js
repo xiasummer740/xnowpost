@@ -443,11 +443,15 @@ export async function publishToTikTok(options) {
     for (let i = 0; i < 180; i++) {  // 最长等 15 分钟
       await page.waitForTimeout(5000);
 
-      // 信号：页面文字同时包含两项检查的"未发现问题"
+      // 信号：每项检查自己的文字后紧跟"未发现问题"
+      // 不能只搜全文"未发现问题"——音乐版权过了但内容检查还在"正在检查"时也会误判
       try {
         const text = await page.evaluate(() => document.body.innerText);
         const musicOk = text.includes('音乐版权检查') && text.includes('未发现问题');
-        const contentOk = text.includes('内容快速检查') && text.includes('未发现问题');
+        // 内容检查必须自己的「未发现问题」出现在「内容快速检查」之后
+        const contentIdx = text.indexOf('内容快速检查');
+        const lastOkIdx = text.lastIndexOf('未发现问题');
+        const contentOk = contentIdx >= 0 && lastOkIdx > contentIdx;
         if (musicOk && contentOk) {
           console.log(`  ✅ 两项检查都已通过 (约${(i+1)*5}秒)`);
           checksPassed = true;
