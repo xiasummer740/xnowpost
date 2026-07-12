@@ -112,6 +112,14 @@
 - **采集面板保存后数据被覆盖** — `saveCollectSchedule()` 不更新本地 `jobs.value`，再点"保存全部"时旧数据覆盖新数据
   - 修复：`saveCollectSchedule()` 同步 `jobs.value = filtered`
 
+## 本轮完成 (2026-07-12)
+- **[系统托盘] v1.2.15** — 点击 X 最小化到右下角系统栏，右键退出才真正关闭
+  - 程序化生成 32×32 绿色圆形托盘图标
+  - 右键菜单 + 单击恢复窗口，调度器后台正常执行
+- **[采集卡片修复] v1.2.16** — 采集面板的定时任务不再在闹钟卡片区重复展示
+  - `groupedJobs` 过滤 `mode: collect`
+  - 采集面板保存后同步 `jobs.value` 防覆盖
+
 ## 下个对话待办
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
