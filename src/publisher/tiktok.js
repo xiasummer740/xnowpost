@@ -8,9 +8,65 @@ import fs from 'fs-extra';
 import { BrowserTracer } from './debug-trace.js';
 
 /**
- * 发布视频到 TikTok
+ * 判断错误是否为可重试类型（网络/环境/超时等临时故障）
+ */
+function isRetryableError(err) {
+  const msg = (err?.message || '').toLowerCase();
+  // 明确不可重试的
+  if (msg.includes('没有视频可发布')) return false;
+  if (msg.includes('未登录')) return false;
+  if (msg.includes('already posted') || msg.includes('.published')) return false;
+  // 以下可重试
+  if (msg.includes('无法打开比特浏览器环境')) return true;
+  if (msg.includes('filechooser 超时')) return true;
+  if (msg.includes('无法上传')) return true;
+  if (msg.includes('上传处理超时')) return true;
+  if (msg.includes('检查超时')) return true;
+  if (msg.includes('找不到 file input')) return true;
+  if (msg.includes('找不到 ai switch')) return true;
+  if (msg.includes('发布按钮不可见')) return true;
+  if (msg.includes('发布按钮被禁用')) return true;
+  if (msg.includes('timeout') || msg.includes('超时')) return true;
+  if (msg.includes('econnrefused') || msg.includes('econnreset') || msg.includes('etimedout')) return true;
+  if (msg.includes('net::')) return true;  // Chrome 网络错误
+  if (msg.includes('target closed')) return true;  // 浏览器意外关闭
+  if (msg.includes('protocol error')) return true;  // CDP 协议错误
+  return false;  // 其他未知错误不重试
+}
+
+/**
+ * 带重试的发布包装
+ */
+async function publishWithRetry(options, attempt = 1, maxRetries = 3) {
+  try {
+    return await publishToTikTokCore(options);
+  } catch (err) {
+    const isRetryable = isRetryableError(err);
+    if (attempt <= maxRetries && isRetryable) {
+      const delay = Math.min(10 * Math.pow(2, attempt - 1), 60) * 1000; // 10s, 20s, 40s
+      console.log(`  🔄 第 ${attempt}/${maxRetries} 次重试 (${delay/1000}s 后)...`);
+      console.log(`    原因: ${err.message}`);
+      await new Promise(r => setTimeout(r, delay));
+      return publishWithRetry(options, attempt + 1, maxRetries);
+    }
+    if (attempt > 1 && isRetryable) {
+      console.log(`  ❌ 重试 ${maxRetries} 次后仍失败`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * 发布视频到 TikTok（对导出函数使用重试包装）
  */
 export async function publishToTikTok(options) {
+  return publishWithRetry(options);
+}
+
+/**
+ * 发布核心逻辑（不包含重试）
+ */
+async function publishToTikTokCore(options) {
   const { sessionPath, videoFile, titleFile, envId, apiKey } = options;
 
   if (!videoFile) {
