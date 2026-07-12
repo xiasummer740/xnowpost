@@ -112,6 +112,14 @@
 - **采集面板保存后数据被覆盖** — `saveCollectSchedule()` 不更新本地 `jobs.value`，再点"保存全部"时旧数据覆盖新数据
   - 修复：`saveCollectSchedule()` 同步 `jobs.value = filtered`
 
+## v1.2.18 发布 (2026-07-12)
+- 版本: 1.2.17 → 1.2.18（patch）
+- [v1.2.18 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.18)
+
+### 🐛 修复
+- **更新小红点不自动出现** — 更新检查只在启动时查一次，之后不发新版也看不到红点
+  - 修复：`initUpdater` 加 `setInterval` 每 30 分钟自动检查
+
 ## v1.2.17 发布 (2026-07-12)
 - 版本: 1.2.16 → 1.2.17（patch）
 - [v1.2.17 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.17)
