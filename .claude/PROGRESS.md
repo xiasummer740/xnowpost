@@ -91,6 +91,17 @@
 - 项目根目录 `data/analytics.db` → `%APPDATA%/xnowpost/data/analytics.db`
 - 包含 6/27-7/1 共 219 条历史记录
 
+## v1.2.15 发布 (2026-07-12)
+- 版本: 1.2.14 → 1.2.15（minor）
+- [v1.2.15 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.15)
+
+### ✨ 新增
+- **系统托盘** — 点击右上角 X 关闭时，窗口最小化到右下角系统栏，后台运行
+  - 托盘图标：程序化生成 32×32 绿色渐变圆形 PNG
+  - 右键菜单：「显示主窗口」/「退出」（仅选退出才真正关闭）
+  - 单击托盘图标恢复窗口显示
+  - 调度器定时任务不受影响，窗口隐藏后继续正常运行
+
 ## 下个对话待办
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
