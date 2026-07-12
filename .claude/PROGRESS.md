@@ -112,6 +112,17 @@
 - **采集面板保存后数据被覆盖** — `saveCollectSchedule()` 不更新本地 `jobs.value`，再点"保存全部"时旧数据覆盖新数据
   - 修复：`saveCollectSchedule()` 同步 `jobs.value = filtered`
 
+## v1.2.17 发布 (2026-07-12)
+- 版本: 1.2.16 → 1.2.17（patch）
+- [v1.2.17 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.17)
+
+### ✨ 新增
+- **TikTok 发布器自动重试** — 网络断开/环境关闭/超时时自动重试，不再立刻失败
+  - `publishWithRetry` 包装函数，最多重试 3 次
+  - `isRetryableError` 分类：临时故障可重试，未登录/未配视频不重试
+  - 指数退避延迟：10s → 20s → 40s
+  - 每次重试打印原因，方便排查
+
 ## 本轮完成 (2026-07-12)
 - **[系统托盘] v1.2.15** — 点击 X 最小化到右下角系统栏，右键退出才真正关闭
   - 程序化生成 32×32 绿色圆形托盘图标
@@ -124,9 +135,7 @@
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
 2. **TikTok 发布器重构** — 当前 663 行，超规则 300 行上限 2 倍，需拆文件
-3. **TikTok 发布器错误重试** — 网络断开/环境关闭时无重试机制
-4. **多账号多闹钟生产配置** — 创建 10 个账号 + 10 个闹钟
-5. **多平台 scraper URL 补全** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
+4. **多平台 scraper URL 补全** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
   - scraper 多源探测：body/title/URL 三路找 @username
   - 采集后自动写回 user.json 配置，日报从配置读取
   - 新增 profileUrlFor() 各平台主页链接生成
