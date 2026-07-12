@@ -102,6 +102,16 @@
   - 单击托盘图标恢复窗口显示
   - 调度器定时任务不受影响，窗口隐藏后继续正常运行
 
+## v1.2.16 发布 (2026-07-12)
+- 版本: 1.2.15 → 1.2.16（patch）
+- [v1.2.16 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.2.16)
+
+### 🐛 修复
+- **采集任务卡片混在闹钟列表** — 采集面板保存定时采集后，`mode: collect` 的条目出现在闹钟卡片区显示为"📋 未指定账号 → 数据采集 + 日报"
+  - 修复：`groupedJobs` 过滤 `mode: collect`，采集任务只在采集面板展示
+- **采集面板保存后数据被覆盖** — `saveCollectSchedule()` 不更新本地 `jobs.value`，再点"保存全部"时旧数据覆盖新数据
+  - 修复：`saveCollectSchedule()` 同步 `jobs.value = filtered`
+
 ## 下个对话待办
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
