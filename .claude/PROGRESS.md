@@ -138,12 +138,15 @@
 - **[采集卡片修复] v1.2.16** — 采集面板的定时任务不再在闹钟卡片区重复展示
   - `groupedJobs` 过滤 `mode: collect`
   - 采集面板保存后同步 `jobs.value` 防覆盖
+- **[TikTok 发布器重试] v1.2.17** — 发布失败自动重试 3 次，指数退避 10s→20s→40s
+  - `isRetryableError` 分类：网络/环境/超时可重试，未登录/没视频不重试
+- **[更新小红点] v1.2.18** — 更新检查改为每 30 分钟自动查，不用重启才看到红点
 
 ## 下个对话待办
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
 2. **TikTok 发布器重构** — 当前 663 行，超规则 300 行上限 2 倍，需拆文件
-4. **多平台 scraper URL 补全** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
+3. **多平台 scraper URL 补全** — 小红书/Facebook/Instagram/YouTube/X 的 URL 仍是 `#待祥哥提供URL`
   - scraper 多源探测：body/title/URL 三路找 @username
   - 采集后自动写回 user.json 配置，日报从配置读取
   - 新增 profileUrlFor() 各平台主页链接生成
