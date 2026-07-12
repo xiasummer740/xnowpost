@@ -47,6 +47,9 @@ export function initUpdater(window) {
 
     // 首次检查
     checkForUpdates();
+
+    // 每 30 分钟自动检查一次，不用关掉重开才能看到红点
+    setInterval(() => checkForUpdates(), 30 * 60 * 1000);
   }).catch(err => {
     console.error('electron-updater 加载失败:', err.message);
   });
