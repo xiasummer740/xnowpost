@@ -489,6 +489,7 @@ export async function publishToTikTok(options) {
         throw new Error(`发布按钮被禁用 (data-disabled=${dataDisabled}, aria-disabled=${ariaDisabled})`);
       }
 
+      console.log('  ✅ 发布按钮已找到，准备点击...');
       await btn.click();
 
       // 再加 JS dispatchEvent 兜底：Playwright click 可能被透明浮层拦截
@@ -558,7 +559,8 @@ export async function publishToTikTok(options) {
 
     // 等待发布完成
     if (posted) {
-      console.log('  ⏳ 等待 TikTok 处理发布...');
+      console.log('  ✅ 发布按钮已点击，等待 TikTok 处理...');
+      console.log('  ⏳ 等待页面跳转到内容管理页...');
 
       // 等待页面跳转到 /content（内容管理页）
       // 如果一直没跳转（发布没触发），15s 后视为失败，保留窗口
