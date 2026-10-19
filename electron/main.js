@@ -645,9 +645,6 @@ function pushEngineStatus() {
 
 // === IPC 处理器 ===
 function setupIPC() {
-  // 诊断
-  ipcMain.handle('ping', () => ({ ok: true, time: Date.now() }));
-
   // 获取配置
   ipcMain.handle('config:get', () => {
     const cfg = loadConfig();
@@ -1158,6 +1155,26 @@ function setupIPC() {
             const h = timeMatch[1], m = timeMatch[2];
             time = `${h}:${m}`;
           }
+          /*
+           * 发布状态一并带出去（2026-10-19 加）：
+           * 历史页原来只有「标题 + 视频/图文」，想知道"这条到底发出去没"必须回首页看，
+           * 而首页那张「今日产出」卡片已经下放到这里 —— 所以状态必须在这里给全。
+           * 判据只有文件：.published（含 confirmed:false = 未确认）、FAILED。
+           */
+          let published = false;
+          let confirmOk = false;
+          let publishEnv = '';
+          let publishedAt = '';
+          if (files.includes('.published')) {
+            published = true;
+            confirmOk = true;   // 老标记没有 confirmed 字段，按已确认算
+            try {
+              const meta = JSON.parse(fs.readFileSync(path.join(sp, '.published'), 'utf-8'));
+              confirmOk = meta.confirmed !== false;
+              publishEnv = meta.env || '';
+              publishedAt = meta.publishedAt || '';
+            } catch (e) { /* 坏标记按已发布处理，别当成没发 */ }
+          }
           items.push({
             id: session,
             title_zh: title.substring(0, 40),
@@ -1167,6 +1184,11 @@ function setupIPC() {
             dir: sp,
             date: dateDir,
             session,
+            published,
+            confirmOk,
+            publishEnv,
+            publishedAt,
+            failed: !published && files.includes('FAILED'),
           });
         }
         if (items.length) history.push({ date: dateDir, items });

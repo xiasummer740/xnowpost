@@ -6,7 +6,7 @@
         <input type="date" v-model="historyDate" class="date-input" @change="loadHistory" />
         <button class="btn btn-secondary" @click="switchToLive">🔄 实时</button>
         <button class="btn btn-secondary" @click="openFolder" title="在资源管理器里打开 %APPDATA%\xnowpost\logs">📂 打开文件夹</button>
-        <button class="btn btn-secondary" @click="clear">🗑️ 清空</button>
+        <button class="btn btn-secondary" @click="clearScreen" title="只清当前屏幕，日志文件不动（保留 30 天）">🧹 清屏</button>
       </div>
     </div>
 
@@ -14,8 +14,11 @@
       <span v-if="isHistory" class="history-badge">📂 历史日志：{{ historyDate }}</span>
       <span v-else class="history-badge live">🟢 实时：今天（读日志文件，重启也不会丢）</span>
       <span class="stat-text">
-        共 {{ logs.length }} 行
+        共 {{ baseLogs.length }} 行
         <template v-if="activeFilter !== 'all' || activeSource !== 'all'"> ｜筛选后 {{ filteredLogs.length }} 行</template>
+      </span>
+      <span v-if="hiddenByClear > 0" class="cleared-chip" @click="clearedUntil = ''">
+        🧹 已清屏 {{ hiddenByClear }} 行 · 点这里恢复
       </span>
     </div>
 
@@ -132,7 +135,7 @@ const viewMode = ref('runs');
 const expanded = reactive({});
 
 /** 全部轮次（在完整日志上分组，不受"最近 2000 行"限制，避免把某一轮切成半截） */
-const allRuns = computed(() => groupLogRuns(logs.value));
+const allRuns = computed(() => groupLogRuns(baseLogs.value));
 const visibleRuns = computed(() => filterRuns(allRuns.value, {
   type: activeFilter.value,
   source: activeSource.value,
@@ -153,7 +156,7 @@ function resultText(run) {
 }
 
 const filteredLogs = computed(() => {
-  let list = logs.value
+  let list = baseLogs.value
   if (activeFilter.value !== 'all') list = list.filter(l => l.type === activeFilter.value)
   if (activeSource.value !== 'all') list = list.filter(l => (l.source || 'app') === activeSource.value)
   // 默认只渲染最近 2000 行（一天能写 6000+ 行，全塞进 DOM 会明显卡）；
@@ -162,9 +165,9 @@ const filteredLogs = computed(() => {
 })
 
 const hiddenCount = computed(() => {
-  let total = logs.value.length
-  if (activeFilter.value !== 'all') total = logs.value.filter(l => l.type === activeFilter.value).length
-  if (activeSource.value !== 'all') total = logs.value.filter(l => (l.source || 'app') === activeSource.value).length
+  let total = baseLogs.value.length
+  if (activeFilter.value !== 'all') total = baseLogs.value.filter(l => l.type === activeFilter.value).length
+  if (activeSource.value !== 'all') total = baseLogs.value.filter(l => (l.source || 'app') === activeSource.value).length
   return Math.max(0, total - visibleCount.value)
 })
 
@@ -180,16 +183,41 @@ onMounted(() => {
   } catch (_) {}
 });
 
-function clear() {
+/*
+ * 「清屏」（2026-10-19 修）：以前的按钮叫「清空」，实际只清了内存里那 500 行缓冲，
+ * 而实时视图是每 5 秒重读日志文件的 —— 点完 5 秒原样回来，等于一个假按钮。
+ * 现在按"清屏水位线"来：记住当前最新一行的时间，只显示比它更新的行，
+ * 日志文件一个字都不删（30 天保留策略照旧），点统计条上的「恢复」就能看回来。
+ */
+const clearedUntil = ref('');
+
+function normLogTime(t) {
+  return String(t || '').trim().replace(/\//g, '-');
+}
+
+function clearScreen() {
+  const last = logs.value[logs.value.length - 1];
+  if (!last) return;
+  clearedUntil.value = normLogTime(last.time);
+  // 顺手清掉内存缓冲（重启应用后也不会再冒出来）
   store.clearLogs();
 }
+
+/** 清屏之后的日志（水位线之前的一律不显示） */
+const baseLogs = computed(() => {
+  if (!clearedUntil.value) return logs.value;
+  return logs.value.filter((l) => normLogTime(l.time) > clearedUntil.value);
+});
+
+/** 被清屏藏起来的行数（用于「恢复」提示） */
+const hiddenByClear = computed(() => logs.value.length - baseLogs.value.length);
 
 async function openFolder() {
   try {
     const r = await window.xnowpost.openLogFolder()
-    if (r && r.ok === false) alert('打开失败：' + r.message)
+    if (r && r.ok === false) store.addLog('error', '打开日志文件夹失败：' + r.message)
   } catch (e) {
-    alert('打开失败：' + e.message)
+    store.addLog('error', '打开日志文件夹失败：' + (e.message || e))
   }
 }
 
@@ -253,7 +281,16 @@ h2 { font-size: 24px; }
 }
 .history-badge.live { color: #22c55e; background: #052e1633; border-color: #22c55e33; }
 .stat-bar { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
-.stat-text { font-size: 12px; color: #64748b; }
+.cleared-chip {
+  margin-left: 10px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--brand);
+  background: var(--brand-soft);
+  cursor: pointer;
+}
+.cleared-chip:hover { filter: brightness(1.1); }.stat-text { font-size: 12px; color: #64748b; }
 
 .filter-bar { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
 .filter-sep { color: #334155; margin: 0 2px; }

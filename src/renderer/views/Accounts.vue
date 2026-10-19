@@ -61,13 +61,15 @@
         <span class="live-hint" :title="`每 ${POLL_MS / 1000} 秒自动刷新`">
           <i class="x-dot ok"></i>自动同步
         </span>
-        <button class="x-mini" :disabled="busy" @click="refresh()">
+        <!-- 「刷新状态」只重读本地状态（环境在不在跑 / 登录态 / 最后发布），不开浏览器；
+             「抓全部资料」要逐个开环境爬页面（10 个号 5~6 分钟）。两个动作差别极大，名字必须分开。 -->
+        <button class="x-mini" :disabled="busy" @click="refresh()" title="重读本地状态：环境在不在跑、登录态、最后发布时间">
           <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6" /><path d="M20 4v4h-4" /></svg>
-          刷新
+          刷新状态
         </button>
-        <button class="x-mini" :disabled="!hasIpc || busyAll" @click="syncProfiles()">
+        <button class="x-mini" :disabled="!hasIpc || busyAll" @click="syncProfiles()" title="逐个开环境抓头像/昵称/粉丝/关注/获赞，10 个号约 5~6 分钟">
           <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /><path d="M3 21v-5h5" /></svg>
-          拉取资料
+          抓全部资料
         </button>
         <button class="x-mini" :class="{ hl: selected.length }" :disabled="!hasIpc || busyAll || !selected.length" @click="openBatch()">
           <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M14 6l4 4" /></svg>
@@ -173,11 +175,14 @@
                   <svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z" /></svg>启动
                 </button>
                 <button v-else class="x-mini" :disabled="busy" @click="launch(row, 'stop')">停止</button>
-                <button class="x-mini" :disabled="busy || busyAll" title="只拉这个号的资料" @click="syncProfiles(row.env)">
+                <!-- 行内两个纯图标按钮以前只能靠 tooltip 分辨（🔄 抓资料 / ✏️ 改资料），现在都带文字 -->
+                <button class="x-mini" :disabled="busy || busyAll" title="只拉这个号的资料（头像 / 粉丝 / 关注 / 获赞）" @click="syncProfiles(row.env)">
                   <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /><path d="M3 21v-5h5" /></svg>
+                  抓资料
                 </button>
                 <button class="x-mini" :disabled="busy || busyAll" title="改这个号的资料（头像 / 名字 / 用户名 / 简介）" @click="openEdit(row)">
                   <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M14 6l4 4" /></svg>
+                  改资料
                 </button>
                 <button class="x-mini hi" :disabled="busy || busyAll" @click="startLogin(row.env)">登录</button>
               </div>

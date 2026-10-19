@@ -3,8 +3,6 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('xnowpost', {
   // 是否为开发版（通过 main process 传入的可靠标记）
   isDev: process.argv.find(a => a.startsWith('--xnowpost-dev='))?.split('=')[1] === 'true',
-  // 诊断
-  ping: () => ipcRenderer.invoke('ping'),
 
   // 配置
   getConfig: () => ipcRenderer.invoke('config:get'),

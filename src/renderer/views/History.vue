@@ -46,7 +46,21 @@
           </div>
           <div class="item-body">
             <div class="item-title">{{ item.title_zh }}</div>
-            <div class="item-meta">{{ item.type === 'video' ? '视频' : '图文' }}</div>
+            <div class="item-meta">
+              <span class="meta-session">{{ item.session }}</span>
+              <span v-if="item.time">· {{ item.time }}</span>
+              <span>· {{ item.type === 'video' ? '视频' : '图文' }}</span>
+            </div>
+          </div>
+          <!--
+            发布状态放在卡片右侧（2026-10-19 加）：这一列原来是空的，
+            想确认"这条发出去没"要回首页看「今日产出」—— 现在首页只管待发布，状态归这里。
+          -->
+          <div class="item-state">
+            <span v-if="item.published && item.confirmOk" class="st ok">✅ 已发{{ item.publishEnv ? ' ' + item.publishEnv : '' }}</span>
+            <span v-else-if="item.published" class="st warn" title="点过 Post 但没确认公开，按未确认处理，不会重发">⚠️ 未确认</span>
+            <span v-else-if="item.failed" class="st bad" title="这一轮标记了 FAILED">❌ 失败</span>
+            <span v-else class="st mute">待发</span>
           </div>
         </div>
       </div>
@@ -167,11 +181,12 @@ h4 { font-size: 13px; color: #94a3b8; margin: 0 0 8px; }
 
 /* 卡片 + 缩略图 */
 .item-card {
-  display: flex; gap: 14px; padding: 12px; background: #1e293b; border-radius: 10px;
-  margin-bottom: 6px; cursor: pointer; transition: all 0.15s;
+  display: flex; align-items: center; gap: 14px; padding: 12px;
+  background: var(--bg1); border: 1px solid var(--stroke); border-radius: var(--r-md);
+  margin-bottom: 6px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
 }
-.item-card:hover { background: #334155; }
-.item-card.selected { background: #334155; border: 1px solid #f59e0b44; }
+.item-card:hover { background: var(--bg2); border-color: var(--stroke-2); }
+.item-card.selected { background: var(--bg2); border-color: var(--brand); }
 
 .item-thumb {
   width: 56px; height: 56px; border-radius: 8px; overflow: hidden;
@@ -181,7 +196,22 @@ h4 { font-size: 13px; color: #94a3b8; margin: 0 0 8px; }
 .thumb-placeholder { font-size: 22px; opacity: 0.5; }
 .item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
 .item-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-meta { font-size: 13px; color: #64748b; margin-top: 3px; }
+.item-meta {
+  font-size: 12px; color: var(--text-3); margin-top: 4px;
+  display: flex; gap: 5px; align-items: center;
+}
+.meta-session { font-family: var(--font-mono); }
+/* 发布状态徽标（右侧） */
+.item-state { flex: 0 0 auto; }
+.st {
+  font-size: 11.5px; font-weight: 600; padding: 3px 9px;
+  border-radius: 999px; white-space: nowrap;
+  background: var(--bg2); border: 1px solid var(--stroke);
+}
+.st.ok { color: var(--ok); border-color: transparent; }
+.st.warn { color: var(--warn); border-color: transparent; }
+.st.bad { color: var(--danger); border-color: transparent; }
+.st.mute { color: var(--text-3); }
 
 /* skeleton in global style.css */
 

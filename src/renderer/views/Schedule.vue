@@ -71,16 +71,20 @@
             <svg viewBox="0 0 24 24"><path d="M7 5l10 7-10 7z" /></svg>
             {{ collectRunning ? '采集中…' : '开始采集' }}
           </button>
+          <button v-if="collectRunning" class="x-btn sm danger" @click="stopCollect">取消采集</button>
           <span v-if="collectDone" class="x-tag ok">采集完成</span>
         </div>
 
+        <!-- 采集定时：和闹钟共用顶部「保存全部」（这里以前有个独立「保存」，会用磁盘旧数据盖掉未保存的闹钟改动） -->
         <div class="crow top-line">
           <span class="lbl">每日定时采集</span>
           <TimePicker v-model="collectTime" />
-          <button class="x-btn sm" :disabled="!collectTime" @click="saveCollectSchedule">保存</button>
-          <span v-if="collectSchedSaved" class="x-tag ok">已保存</span>
+          <label class="auto-toggle">
+            <input type="checkbox" v-model="collectAuto" />
+            <span>启用</span>
+          </label>
           <span v-if="collectSchedActive" class="x-tag brand">每天 {{ collectTime }} 执行</span>
-          <span v-else class="x-hint">设了时间才会每天自动采集 + 出日报</span>
+          <span v-else class="x-hint">改了这里也要点右上角「保存全部」</span>
         </div>
       </div>
     </div>
@@ -98,28 +102,24 @@
       </div>
 
       <div class="x-card-body grid">
+        <!--
+          一个闹钟 = 一行（2026-10-19 收口）。
+          以前每张卡 3 排 9 个控件（开关/时间/复制/删除/模式×3/账号/自动发布/名称），
+          20 个闹钟就是 180 个控件、整页要滚十几屏。
+          名称那排删了：它的默认值就是模式名，而 setMode() 本来就会覆盖它 ——
+          可编辑却会被切模式改掉，属于"看着能改、改了不算"。
+        -->
         <div
           v-for="(job, jIdx) in group.jobs"
           :key="`${job.id}::${gIdx}-${jIdx}`"
           class="alarm"
           :class="{ off: !job.enabled }"
         >
-          <!-- 开关 + 时间 + 操作 -->
-          <div class="arow">
-            <button class="x-switch" :class="{ on: job.enabled }" :title="job.enabled ? '点击暂停' : '点击启用'" @click="job.enabled = !job.enabled">
-              <i></i>
-            </button>
-            <TimePicker v-model="job.time" />
-            <span class="x-spacer"></span>
-            <button class="x-mini" title="复制这个闹钟" @click="cloneJob(globalIndex(group, jIdx))">
-              <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></svg>
-            </button>
-            <button class="x-mini danger" title="删除这个闹钟" @click="removeJob(globalIndex(group, jIdx))">
-              <svg viewBox="0 0 24 24"><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M6 7l1 13h10l1-13" /></svg>
-            </button>
-          </div>
+          <button class="x-switch" :class="{ on: job.enabled }" :title="job.enabled ? '点击暂停' : '点击启用'" @click="job.enabled = !job.enabled">
+            <i></i>
+          </button>
+          <TimePicker v-model="job.time" />
 
-          <!-- 模式 -->
           <div class="seg">
             <button
               v-for="opt in modeOptions"
@@ -132,43 +132,47 @@
             </button>
           </div>
 
-          <!-- 账号（选 = 生成后自动发布） -->
-          <div class="arow">
-            <div class="acc-picker">
-              <input
-                class="x-input"
-                :value="displayAccountName(job.account)"
-                @input="onAccSearch($event, globalIndex(group, jIdx))"
-                @focus="onAccFocus(globalIndex(group, jIdx), $event.target)"
-                @click="onAccClick(globalIndex(group, jIdx), $event.target)"
-                @blur="onAccBlur(globalIndex(group, jIdx))"
-                @keydown.down.prevent="onAccArrow(globalIndex(group, jIdx), 1)"
-                @keydown.up.prevent="onAccArrow(globalIndex(group, jIdx), -1)"
-                @keydown.enter.prevent="onAccEnter(globalIndex(group, jIdx))"
-                placeholder="输入账号名搜索（留空 = 仅生成）"
-              />
-              <!-- 下拉挂到 body 上（卡片 overflow 会把它裁掉），fixed 定位跟着输入框 -->
-              <Teleport to="body">
-                <div v-if="job._showDropdown" class="acc-drop" :style="job._dropStyle || {}">
-                  <div
-                    v-for="(acc, ai) in filteredAccs(globalIndex(group, jIdx))"
-                    :key="acc.name"
-                    class="acc-opt"
-                    :class="{ hi: ai === job._highlightIdx }"
-                    @mousedown.prevent="selectAcc(globalIndex(group, jIdx), acc.name)"
-                  >
-                    <span class="an">{{ acc.name }}</span>
-                    <span class="env" :class="{ bad: !acc.bitEnvId }">{{ acc.bitEnvId || '未配置环境' }}</span>
-                  </div>
-                  <div v-if="filteredAccs(globalIndex(group, jIdx)).length === 0" class="acc-opt empty">无匹配账号</div>
+          <div class="acc-picker">
+            <input
+              class="x-input"
+              :value="displayAccountName(job.account)"
+              @input="onAccSearch($event, globalIndex(group, jIdx))"
+              @focus="onAccFocus(globalIndex(group, jIdx), $event.target)"
+              @click="onAccClick(globalIndex(group, jIdx), $event.target)"
+              @blur="onAccBlur(globalIndex(group, jIdx))"
+              @keydown.down.prevent="onAccArrow(globalIndex(group, jIdx), 1)"
+              @keydown.up.prevent="onAccArrow(globalIndex(group, jIdx), -1)"
+              @keydown.enter.prevent="onAccEnter(globalIndex(group, jIdx))"
+              placeholder="留空 = 仅生成不发布"
+            />
+            <!-- 下拉挂到 body 上（卡片 overflow 会把它裁掉），fixed 定位跟着输入框 -->
+            <Teleport to="body">
+              <div v-if="job._showDropdown" class="acc-drop" :style="job._dropStyle || {}">
+                <div
+                  v-for="(acc, ai) in filteredAccs(globalIndex(group, jIdx))"
+                  :key="acc.name"
+                  class="acc-opt"
+                  :class="{ hi: ai === job._highlightIdx }"
+                  @mousedown.prevent="selectAcc(globalIndex(group, jIdx), acc.name)"
+                >
+                  <span class="an">{{ acc.name }}</span>
+                  <span class="env" :class="{ bad: !acc.bitEnvId }">{{ acc.bitEnvId || '未配置环境' }}</span>
                 </div>
-              </Teleport>
-            </div>
-            <span v-if="job.account" class="x-tag brand">自动发布</span>
+                <div v-if="filteredAccs(globalIndex(group, jIdx)).length === 0" class="acc-opt empty">无匹配账号</div>
+              </div>
+            </Teleport>
           </div>
 
-          <!-- 名称 -->
-          <input v-model="job.label" class="x-input name" placeholder="闹钟名称（如：早间视频）" />
+          <span class="auto-tag" :class="{ on: !!job.account }" :title="job.account ? '生成完自动发到这个账号' : '没选账号 = 只生成不发布'">
+            {{ job.account ? '自动发布' : '仅生成' }}
+          </span>
+
+          <button class="x-mini" title="复制这个闹钟" @click="cloneJob(globalIndex(group, jIdx))">
+            <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></svg>
+          </button>
+          <button class="x-mini danger" title="删除这个闹钟" @click="removeJob(globalIndex(group, jIdx))">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M6 7l1 13h10l1-13" /></svg>
+          </button>
         </div>
       </div>
     </div>
@@ -216,13 +220,18 @@ function nextJobId() {
 }
 
 // 采集面板
+// 采集定时的唯一保存入口是顶部「保存全部」（save()），这里只放"想怎么采"的状态。
 const collectExpanded = ref(false)
 const collectSelection = ref([])
 const collectRunning = ref(false)
 const collectDone = ref(false)
 const collectTime = ref('21:00')
-const collectSchedSaved = ref(false)
-const collectSchedActive = ref(false)
+const collectAuto = ref(true)
+// 采集任务在 jobs 里是否存在，决定「每天自动采集」是否真的在跑
+const collectSchedActive = computed(() => {
+  const j = jobs.value.find((x) => x.mode === 'collect')
+  return !!j && j.enabled !== false
+})
 
 // 去重后的账号列表（按名称去重，保留第一个）
 const uniqueAccounts = computed(() => {
@@ -258,38 +267,14 @@ async function startCollect() {
     collectRunning.value = false
   }
 }
-async function saveCollectSchedule() {
-  if (!collectTime.value) return
-  collectSchedSaved.value = false
+// 采集能取消：主进程有 collect:cancel（killProcessTree），以前界面从来没调过 ——
+// 误点一次要等 10 个环境跑完（2~3 分钟）才能干别的。
+async function stopCollect() {
   try {
-    // 保存一个特殊的 schedule 条目，mode 为 collect
-    const schedules = await window.xnowpost.getSchedules()
-    // 移除旧的 collect 定时任务
-    const filtered = schedules.filter(j => j.mode !== 'collect')
-    // 内存里可能已有 collect 条目，复用它的 id，避免重复发号
-    const localCollect = jobs.value.find(j => j.mode === 'collect')
-    const collectJob = {
-      id: (localCollect && Number(localCollect.id)) || nextJobId(),
-      time: collectTime.value,
-      mode: 'collect',
-      label: '数据采集 + 日报',
-      enabled: true,
-      collectAccounts: collectSelection.value.join(','),
-    }
-    filtered.push(collectJob)
-    const result = await window.xnowpost.saveSchedules(filtered)
-    if (result && result.ok) {
-      collectSchedSaved.value = true
-      collectSchedActive.value = true
-      // ⚠️ 只更新本地的 collect 条目，绝不能再用磁盘数据整体替换 jobs.value：
-      // 那会丢弃用户所有未保存的闹钟编辑（P2-4）
-      const idx = jobs.value.findIndex(j => j.mode === 'collect')
-      if (idx >= 0) jobs.value.splice(idx, 1, collectJob)
-      else jobs.value.push(collectJob)
-      setTimeout(() => { collectSchedSaved.value = false }, 3000)
-    }
+    const r = await window.xnowpost.cancelCollect()
+    if (r && r.ok === false) console.warn('取消采集:', r.message)
   } catch (e) {
-    console.error('保存采集定时失败:', e)
+    console.error('取消采集失败:', e)
   }
 }
 
@@ -307,7 +292,7 @@ onMounted(async () => {
     const collectJob = (sched || []).find(j => j.mode === 'collect')
     if (collectJob) {
       collectTime.value = collectJob.time || '21:00'
-      collectSchedActive.value = collectJob.enabled !== false
+      collectAuto.value = collectJob.enabled !== false
       // 恢复上一次勾选的账号
       if (collectJob.collectAccounts) {
         collectSelection.value = collectJob.collectAccounts.split(',').filter(Boolean)
@@ -547,22 +532,53 @@ async function save() {
     //    按前缀过滤而不是白名单，避免以后新增的调度字段被悄悄丢掉。
     const raw = JSON.parse(
       JSON.stringify(
-        jobs.value.map((j) => {
-          const plain = {}
-          for (const [k, v] of Object.entries(j)) {
-            if (k.startsWith('_')) continue
-            plain[k] = v
-          }
-          return plain
-        }),
+        jobs.value
+          // 采集定时任务由下面的 collectJob 统一生成，内存里那份不作数（防止出现两条）
+          .filter((j) => j.mode !== 'collect')
+          .map((j) => {
+            const plain = {}
+            for (const [k, v] of Object.entries(j)) {
+              if (k.startsWith('_')) continue
+              plain[k] = v
+            }
+            return plain
+          }),
       ),
     )
+
+    /*
+     * 采集定时也走这一处保存（2026-10-19 收口）。
+     * 以前采集面板有独立的「保存」：它自己 getSchedules() 读**磁盘**再写回，
+     * 用户在闹钟卡片上的改动还在内存里没保存 → 被磁盘旧数据整体盖掉，改动静默丢失。
+     * 现在只有一个「保存全部」，两边一起写。
+     */
+    if (collectTime.value) {
+      const existing = jobs.value.find((j) => j.mode === 'collect')
+      raw.push({
+        id: (existing && Number(existing.id)) || nextJobId(),
+        time: collectTime.value,
+        mode: 'collect',
+        label: '数据采集 + 日报',
+        enabled: collectAuto.value !== false,
+        collectAccounts: collectSelection.value.join(','),
+      })
+    }
+
     const result = await window.xnowpost.saveSchedules(raw)
     if (!result || !result.ok) {
       saveError.value = result?.message || '保存失败'
     } else {
       saved.value = true
       saveError.value = ''
+      // 保存成功后把内存里的 collect 条目对齐磁盘，避免下次保存重复发号
+      const collectJob = raw.find((j) => j.mode === 'collect')
+      const idx = jobs.value.findIndex((j) => j.mode === 'collect')
+      if (collectJob) {
+        if (idx >= 0) jobs.value.splice(idx, 1, { ...collectJob })
+        else jobs.value.push({ ...collectJob })
+      } else if (idx >= 0) {
+        jobs.value.splice(idx, 1)
+      }
       setTimeout(() => (saved.value = false), 3000)
     }
   } catch (err) {
@@ -682,18 +698,18 @@ async function save() {
 }
 
 .grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(292px, 1fr));
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding-top: 12px;
 }
 
-/* 单个闹钟卡片 */
+/* 一个闹钟 = 一行：开关 / 时间 / 模式 / 账号 / 自动发布 / 复制 / 删除 */
 .alarm {
   display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 11px 12px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
   border-radius: var(--r-md);
   background: var(--bg1);
   border: 1px solid var(--stroke);
@@ -705,12 +721,48 @@ async function save() {
 .alarm.off {
   opacity: 0.55;
 }
+.alarm .seg {
+  flex: 0 0 auto;
+}
+.alarm .segbtn {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+}
+/* 自动发布/仅生成 状态：只说明这一行会发生什么，不可点 */
+.auto-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--text-3);
+  background: var(--bg2);
+  border: 1px solid var(--stroke);
+  white-space: nowrap;
+}
+.auto-tag.on {
+  color: var(--brand);
+  background: var(--brand-soft);
+  border-color: transparent;
+}
 
 .arow {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+/* 采集定时的启用开关（跟闹钟共用「保存全部」） */
+.auto-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.auto-toggle input {
+  accent-color: var(--brand);
 }
 
 /* 模式分段控件 */

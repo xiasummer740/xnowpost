@@ -6,11 +6,20 @@
         <button class="date-btn" @click="prevDate" :disabled="curIdx <= 0">◀</button>
         <span class="date-label">{{ data.date }}</span>
         <span v-if="data.collectedAt" class="date-time" title="采集时间">🕐 {{ data.collectedAt }}</span>
+        <!-- 首页原来的「最近费用」卡片已删：这个数字放在这里更合理（和"这天发了什么"一起看） -->
+        <span v-if="lastCost" class="date-cost" title="最近一次生成的总花费（DeepSeek 文案 + 生图）">💰 最近一次 ¥{{ lastCost }}</span>
         <button class="date-btn" @click="nextDate" :disabled="curIdx >= data.availableDates.length - 1">▶</button>
         <span class="nav-divider"></span>
-        <button class="date-btn" @click="handleRefresh" title="刷新">🔄</button>
-        <button class="date-btn" @click="handlePush" :disabled="pushing" title="推送到 Telegram">{{ pushing ? '⏳' : '📤' }}</button>
-        <button class="date-btn" @click="handleExport" title="导出 CSV">📥</button>
+        <!--
+          三个纯图标按钮以前只有 tooltip（🔄 / 📤 / 📥），而且「导出」被画成了红色 ——
+          红色在本项目里只表示「失败/危险」，导出是安全操作，颜色把意思说反了。
+          现在带文字、统一中性色，"推 TG"也直接写明。
+        -->
+        <button class="date-btn text" @click="handleRefresh" title="重读这一天的采集结果">🔄 刷新</button>
+        <button class="date-btn text" @click="handlePush" :disabled="pushing" title="把这一天推送到 Telegram（没配 token 会提示去配置）">
+          {{ pushing ? '⏳ 推送中' : '📤 推送 TG' }}
+        </button>
+        <button class="date-btn text" @click="handleExport" title="导出这一天的 CSV">📥 导出 CSV</button>
       </div>
     </div>
 
@@ -84,45 +93,48 @@
       </div>
       <p class="kpi-note">「—」= 这天没采到这项指标（不是 0）。粉丝/关注/获赞来自账号主页，播放/点赞/评论来自 TikTok 分析页。</p>
 
-      <!-- ===== 账号卡片 ===== -->
-      <!-- 账号列表 = 这天有数据的号 ∪ 配置里的全部号：没采到的也要显示出来，
-           否则用户只看到 1 个号，会以为「这软件只能看一个账号」 -->
-      <div v-for="accName in accountNames" :key="accName" class="ac-card">
-        <div class="ac-hd">
-          <span class="ac-avatar">👤</span>
-          <span class="ac-name">{{ displayName(accName) }}</span>
-          <span v-if="accountMeta(accName)?.username" class="ac-username" @click="openProfile(accName)">{{ accountMeta(accName).username }}</span>
-          <span v-if="hasData(accName)" class="ac-meta">{{ Object.keys(data.accounts[accName]).length }} 个平台</span>
-          <span v-else class="ac-meta ac-meta-empty">这天没采到数据</span>
-        </div>
-
-        <div v-if="!hasData(accName)" class="pl-empty">
-          {{ emptyReason(accName) }}
-        </div>
-
-        <div v-for="(pd, platform) in (data.accounts[accName] || {})" :key="platform" class="pl-card">
-          <div class="pl-hd">
-            <span class="pl-emoji">{{ platformEmoji[platform] || '📡' }}</span>
-            <span class="pl-name">{{ platformNames[platform] || platform }}</span>
-          </div>
-          <div class="pl-body">
-            <div v-for="metric in visibleMetrics(pd)" :key="metric" class="mr">
-              <div class="mr-top">
-                <span class="mr-label">{{ metricLabels[metric] || metric }}</span>
-                <span class="mr-val">{{ fmt(pd.stats[metric]) }}</span>
-                <span v-if="pd.yesterday[metric] !== undefined" class="mr-diff" :class="dCls(pd.stats[metric], pd.yesterday[metric])">
-                  {{ diffStr(pd.stats[metric], pd.yesterday[metric]) }}
-                </span>
-              </div>
-              <div class="mr-bar">
-                <div class="mr-track">
-                  <div class="mr-fill mr-fill-today" :style="{ width: barPct(pd.stats[metric], metricMax[pdKey(accName,platform)]) }"></div>
-                  <div v-if="pd.yesterday[metric] !== undefined" class="mr-fill mr-fill-yst" :style="{ width: barPct(pd.yesterday[metric], metricMax[pdKey(accName,platform)]) }"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+      <!-- ===== 账号明细表 ===== -->
+      <!--
+        2026-10-19 收口：原来是「每个账号一张卡、每个平台一段、每个指标一行 + 进度条」，
+        10 个号 × 3 个指标 = 30 行「0」+ 30 根空进度条，一屏几乎全是零和空条。
+        现在压成一张表：一行一个（账号 + 平台），指标横向排开，没采到的还是显示「—」。
+      -->
+      <div class="ac-table-wrap">
+        <table class="ac-table">
+          <thead>
+            <tr>
+              <th style="width: 78px">账号</th>
+              <th style="width: 92px">平台</th>
+              <th>用户名</th>
+              <th v-for="m in tableMetrics" :key="m" class="num">{{ metricLabels[m] || m }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in acRows" :key="row.accName + '|' + row.platform">
+              <td class="ac-name">{{ displayName(row.accName) }}</td>
+              <td>
+                <span class="pl-chip">{{ platformEmoji[row.platform] || '📡' }} {{ platformNames[row.platform] || row.platform }}</span>
+              </td>
+              <td class="ac-username">
+                <span v-if="accountMeta(row.accName)?.username" @click="openProfile(row.accName)">@{{ accountMeta(row.accName).username }}</span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td v-for="m in tableMetrics" :key="m" class="num">
+                <template v-if="row.pd && row.pd.stats[m] !== undefined">
+                  <span class="v">{{ fmt(row.pd.stats[m]) }}</span>
+                  <span v-if="row.pd.yesterday && row.pd.yesterday[m] !== undefined" class="d" :class="dCls(row.pd.stats[m], row.pd.yesterday[m])">
+                    {{ diffStr(row.pd.stats[m], row.pd.yesterday[m]) }}
+                  </span>
+                </template>
+                <span v-else class="muted" :title="row.pd ? '这天没采到这项' : emptyReason(row.accName)">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="kpi-note">
+          「—」= 这天没采到这项（不是 0）。粉丝/关注/获赞来自账号主页，播放/点赞/评论来自 TikTok 分析页；
+          没采到数据的账号也列在这里，并写明原因。
+        </p>
       </div>
 
       <!-- ===== 趋势图表 ===== -->
@@ -223,11 +235,6 @@ const accountNames = computed(() => {
   return [...set].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN', { numeric: true }))
 })
 
-function hasData(acc) {
-  const platforms = data.value?.accounts?.[acc]
-  return !!platforms && Object.keys(platforms).length > 0
-}
-
 function emptyReason(acc) {
   const e = data.value?.collect || data.value?.collectToday
   if (!e) return '这天没有这个账号的采集记录（可能那天没跑采集）。'
@@ -247,35 +254,35 @@ function openProfile(acc) {
 }
 
 // 每个账号+平台唯一 key 用于缓存最大值的引用
-function pdKey(acc, platform) { return acc + '|' + platform }
-
-// 当日可见指标（按 METRICS_ORDER 排序，只显示有值的）
-function visibleMetrics(pd) {
-  return metricsOrder.filter(m => pd.stats[m] !== undefined)
-}
-
-// 每个平台内最大指标值（用于柱状图 100% 基准）
-const metricMax = computed(() => {
-  const m = {}
-  if (!data.value?.accounts) return m
-  for (const [acc, platforms] of Object.entries(data.value.accounts)) {
-    for (const [pl, pd] of Object.entries(platforms)) {
-      const key = pdKey(acc, pl)
-      let max = 1
-      for (const metric of metricsOrder) {
-        if (pd.stats[metric] !== undefined) max = Math.max(max, pd.stats[metric])
-        if (pd.yesterday[metric] !== undefined) max = Math.max(max, pd.yesterday[metric])
-      }
-      m[key] = max
+// 表格里固定这几列（横着看比竖着一排 progress bar 好读得多）
+const tableMetrics = computed(() => {
+  const prefer = ['followers', 'following', 'total_likes', 'views', 'likes', 'comments']
+  const present = new Set()
+  for (const platforms of Object.values(data.value?.accounts || {})) {
+    for (const pd of Object.values(platforms)) {
+      for (const m of Object.keys(pd.stats || {})) present.add(m)
     }
   }
-  return m
+  const cols = prefer.filter((m) => present.has(m))
+  // 出了新指标也别丢：排在固定列后面
+  for (const m of metricsOrder) if (present.has(m) && !cols.includes(m)) cols.push(m)
+  return cols.length ? cols : prefer
 })
 
-function barPct(val, max) {
-  if (!val || !max) return '0%'
-  return Math.max(2, (val / max) * 100) + '%'
-}
+// 表格数据：账号 × 平台 一行；这天没采到数据的号也要出一行（否则用户以为"只能看一个号"）
+const acRows = computed(() => {
+  const rows = []
+  for (const acc of accountNames.value) {
+    const platforms = data.value?.accounts?.[acc] || {}
+    const names = Object.keys(platforms)
+    if (!names.length) {
+      rows.push({ accName: acc, platform: 'tiktok', pd: null })
+    } else {
+      for (const platform of names) rows.push({ accName: acc, platform, pd: platforms[platform] })
+    }
+  }
+  return rows
+})
 
 function dCls(c, p) { return c >= p ? 'up' : 'dn' }
 
@@ -455,6 +462,18 @@ async function loadPublishDay(date) {
   }
 }
 
+// 最近一次生成的花费（cost:latest）。只取一次，切日期不重取 —— 它不随日期变。
+const lastCost = ref('')
+let costLoaded = false
+async function loadCostOnce() {
+  if (costLoaded) return
+  costLoaded = true
+  try {
+    const c = await window.xnowpost.getLatestCost()
+    const total = Number(c?.total ?? c?.cost?.total ?? NaN)
+    lastCost.value = Number.isFinite(total) && total > 0 ? total.toFixed(2) : ''
+  } catch (_) { lastCost.value = '' }
+}
 async function load(date, force = false) {
   loading.value = true
   try {
@@ -466,6 +485,7 @@ async function load(date, force = false) {
       if (date) reportCache.delete(date)
     }
     loadPublishDay(date)
+    loadCostOnce()
     if (!force && reportCache.has(cacheKey)) {
       data.value = reportCache.get(cacheKey)
       if (data.value) {
@@ -548,13 +568,46 @@ onMounted(() => {
   display: flex; align-items: center; gap: 8px;
   background: #1e293b; border-radius: 8px; padding: 5px 10px; border: 1px solid #334155;
 }
+/* ── 账号明细表（替换原来的每号一卡 + 每指标一根进度条） ── */
+.ac-table-wrap {
+  background: var(--bg1); border: 1px solid var(--stroke);
+  border-radius: var(--r-md); padding: 4px 12px 10px; overflow-x: auto;
+}
+.ac-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ac-table th {
+  text-align: left; font-weight: 600; color: var(--text-3); font-size: 11.5px;
+  padding: 9px 8px; border-bottom: 1px solid var(--stroke); white-space: nowrap;
+}
+.ac-table th.num { text-align: right; }
+.ac-table td { padding: 8px; border-bottom: 1px solid var(--stroke); color: var(--text); }
+.ac-table tr:last-child td { border-bottom: 0; }
+.ac-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ac-table td.ac-name { font-family: var(--font-mono); font-weight: 600; }
+.ac-table .ac-username { color: var(--text-2); font-size: 12px; cursor: pointer; }
+.ac-table .ac-username:hover { color: var(--brand); }
+.ac-table .muted { color: var(--text-3); }
+.ac-table .v { font-weight: 600; }
+.ac-table .d { margin-left: 5px; font-size: 11px; }
+.pl-chip {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  background: var(--bg2); border: 1px solid var(--stroke);
+  color: var(--text-2); font-size: 11.5px; white-space: nowrap;
+}
 .date-btn {
-  background: none; border: none; color: #94a3b8; cursor: pointer;
+  background: none; border: none; color: var(--text-2); cursor: pointer;
   font-size: 13px; padding: 3px 5px; border-radius: 4px; transition: all .15s;
 }
-.date-btn:hover:not(:disabled) { color: #f59e0b; background: #33415544; }
+.date-btn.text {
+  border: 1px solid var(--stroke); padding: 3px 9px; font-size: 12px;
+  color: var(--text-2); background: var(--bg1);
+}
+.date-btn:hover:not(:disabled) { color: var(--brand); background: var(--bg2); }
 .date-btn:disabled { opacity: .3; cursor: not-allowed; }
-.date-label { font-size: 13px; font-weight: 600; color: #e2e8f0; min-width: 90px; text-align: center; }
+.date-cost {
+  font-size: 11px; color: var(--text-2); background: var(--bg2);
+  border: 1px solid var(--stroke);
+  padding: 2px 8px; border-radius: 4px; white-space: nowrap;
+}.date-label { font-size: 13px; font-weight: 600; color: #e2e8f0; min-width: 90px; text-align: center; }
 .date-time {
   font-size: 11px; color: #22c55e; background: #22c55e22;
   padding: 2px 8px; border-radius: 4px; white-space: nowrap;
@@ -635,65 +688,6 @@ onMounted(() => {
 .kpi-diff { font-size: 11px; font-weight: 700; }
 .kpi-diff.up { color: #22c55e; }
 .kpi-diff.dn { color: #ef4444; }
-
-/* ===== 账号卡片 ===== */
-.ac-card {
-  background: #1e293b; border: 1px solid #334155; border-radius: 14px;
-  padding: 16px; margin-bottom: 16px;
-  transition: border-color .2s;
-}
-.ac-card:hover { border-color: #475569; }
-
-.ac-hd {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 14px; padding-bottom: 12px;
-  border-bottom: 1px solid #334155;
-}
-.ac-avatar { font-size: 16px; }
-.ac-name { font-size: 15px; font-weight: 700; color: #e2e8f0; }
-.ac-username {
-  font-size: 12px; color: #22c55e; cursor: pointer; font-weight: 600;
-  background: #22c55e15; padding: 1px 8px; border-radius: 4px;
-}
-.ac-username:hover { text-decoration: underline; }
-.ac-meta { margin-left: auto; font-size: 11px; color: #64748b; }
-
-/* ---- 平台卡片 ---- */
-.pl-card + .pl-card { margin-top: 12px; padding-top: 12px; border-top: 1px dashed #2a3a52; }
-.pl-hd {
-  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
-}
-.pl-emoji { font-size: 14px; }
-.pl-name { font-size: 13px; font-weight: 700; color: #94a3b8; }
-
-/* ---- 指标行 ---- */
-.mr { margin-bottom: 10px; }
-.mr:last-child { margin-bottom: 0; }
-.mr-top {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 3px;
-}
-.mr-label { font-size: 12px; color: #94a3b8; font-weight: 600; min-width: 56px; }
-.mr-val { font-size: 14px; font-weight: 700; color: #e2e8f0; min-width: 50px; text-align: right; }
-.mr-diff { font-size: 11px; font-weight: 700; min-width: 48px; }
-.mr-diff.up { color: #22c55e; }
-.mr-diff.dn { color: #ef4444; }
-
-/* ---- 柱状条 ---- */
-.mr-bar { padding-left: 56px; } /* align with label */
-.mr-track {
-  position: relative; height: 8px;
-  background: #0f172a; border-radius: 4px; overflow: hidden;
-}
-.mr-fill {
-  position: absolute; top: 0; left: 0; height: 100%;
-  border-radius: 4px; transition: width .3s ease;
-}
-.mr-fill-today { background: linear-gradient(90deg, #3b82f6, #60a5fa); z-index: 2; }
-.mr-fill-yst {
-  background: linear-gradient(90deg, #475569, #64748b);
-  z-index: 1; opacity: .7;
-}
 
 /* ===== 趋势图表 ===== */
 .trend-section { margin-top: 24px; padding-top: 16px; border-top: 1px solid #334155; }

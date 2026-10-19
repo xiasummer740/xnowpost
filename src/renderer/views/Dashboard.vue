@@ -246,6 +246,8 @@
       </div>
       <div class="x-card-body">
         <!-- 主题 / 批量（仅已配置且空闲时可填） -->
+        <!-- 主题只在这里填一次，下面「立即生成 / 仅视频 / 仅图文」三个按钮都会带上它。
+             以前这里另有一个「生成」按钮，只它认主题、另外三个按钮把主题丢掉（P0 级隐性 bug）。 -->
         <template v-if="store.status.configured && !store.status.running && !store.status.schedulerActive">
           <div class="x-field gen-row">
             <span class="x-label"><b>主题</b></span>
@@ -253,16 +255,10 @@
               v-model="quickTopic"
               placeholder="输入主题（留空让 AI 自由发挥）…"
               class="x-input"
-              @keyup.enter="quickGenerate"
+              @keyup.enter="runAuto"
               :disabled="batchMode"
             />
             <div class="x-actions">
-              <button class="x-btn" @click="quickGenerate" :disabled="batchMode">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M13.5 3 5.5 13.5H11l-.7 7.5L18.5 10H13z" />
-                </svg>
-                <span>生成</span>
-              </button>
               <button class="x-btn" :class="{ on: batchMode }" @click="batchMode = !batchMode">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M9 6h11M9 12h11M9 18h11" />
@@ -384,13 +380,7 @@
             </svg>
             <span>仅图文</span>
           </button>
-          <button class="x-btn" @click="handleCollect" :disabled="collecting">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 19V5M4 19h16" />
-              <path d="M8 16v-4M12.5 16V8M17 16v-2.5" />
-            </svg>
-            <span>{{ collecting ? '采集中…' : '采集' }}</span>
-          </button>
+          <!-- 「采集」不在这张卡里：它属于数据，不属于生成。入口统一在「定时 → 采集面板」。 -->
         </div>
       </div>
     </div>
@@ -467,292 +457,6 @@
       </button>
     </div>
 
-    <!-- 系统状态 -->
-    <div class="kpis">
-      <div class="kpi" :class="{ on: store.status.running }">
-        <div class="k">
-          <span class="x-dot" :class="store.status.running ? 'ok' : 'off'"></span>引擎
-        </div>
-        <div class="v">
-          {{ store.status.running ? '运行中' : '空闲' }}
-          <span class="x-tag" :class="store.status.running ? 'brand' : 'mute'">{{ store.status.running ? '生成中' : '待命' }}</span>
-        </div>
-      </div>
-      <div class="kpi" :class="{ on: store.status.schedulerRunning }">
-        <div class="k">
-          <span class="x-dot" :class="store.status.schedulerRunning ? 'ok' : 'off'"></span>调度器
-        </div>
-        <div class="v">
-          {{ store.status.schedulerRunning ? '运行中' : '已停止' }}
-          <small>{{ store.status.schedulerLastRun ? `上次 ${store.status.schedulerLastRun}` : '未执行' }}</small>
-        </div>
-      </div>
-      <div class="kpi">
-        <div class="k">
-          <span class="x-dot" :class="store.status.recentErrors > 0 ? 'warn' : 'ok'"></span>错误
-        </div>
-        <div class="v" :class="{ err: store.status.recentErrors > 0 }">
-          {{ store.status.recentErrors || 0 }} 条
-          <span class="x-tag" :class="store.status.recentErrors > 0 ? 'danger' : 'ok'">{{ store.status.recentErrors > 0 ? '需处理' : '无异常' }}</span>
-        </div>
-      </div>
-      <div class="kpi">
-        <div class="k">
-          <span class="x-dot" :class="store.status.configured ? 'ok' : 'warn'"></span>配置
-        </div>
-        <div class="v">
-          {{ store.status.configured ? '已配置' : '未配置' }}
-          <span class="x-tag" :class="store.status.configured ? 'ok' : 'warn'">{{ store.status.configured ? '就绪' : '缺 Key' }}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 调度执行进度 -->
-    <div class="x-card sched-progress">
-      <div class="x-card-head">
-        <span class="x-ic">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="8.5" />
-            <path d="M12 7.5V12l3 2" />
-          </svg>
-        </span>
-        <h2>调度进度</h2>
-        <span class="x-hint">
-          <template v-if="sched.active">正在执行 · {{ sched.current?.label }} · 已用 {{ fmtElapsed(sched.current?.elapsedSec) }}</template>
-          <template v-else-if="sched.schedulerRunning">空闲 · 等下一个闹钟</template>
-          <template v-else>调度器未运行</template>
-        </span>
-        <div class="x-spacer"></div>
-        <span v-if="sched.active" class="x-tag brand">执行中</span>
-        <span v-else class="x-tag mute">待命</span>
-        <button class="x-mini" @click="refreshProgress" title="刷新">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20 12a8 8 0 1 1-2.3-5.6" /><path d="M20 4v4.5h-4.5" />
-          </svg>
-        </button>
-      </div>
-      <div class="x-card-body">
-        <!-- 当前任务 + 阶段 -->
-        <template v-if="sched.active">
-          <div class="sp-row">
-            <div class="sp-stage" :class="sched.stage">
-              <span class="x-dot" :class="sched.stage === 'failed' ? 'warn' : sched.stage === 'published' ? 'ok' : 'ok'"></span>
-              <b>{{ sched.stageText || '已启动' }}</b>
-              <span v-if="sched.sessionDir" class="sp-dir">{{ sched.sessionDir }}</span>
-            </div>
-            <span class="x-spacer"></span>
-            <span class="sp-time" v-if="sched.current?.startedAt">开始 {{ sched.current.startedAt.slice(11) }}</span>
-            <span class="sp-time mono">{{ fmtElapsed(sched.current?.elapsedSec) }}</span>
-          </div>
-          <div class="sp-bar"><i></i></div>
-          <!-- 阶段线路 -->
-          <div class="sp-steps">
-            <span v-for="(st, i) in SCHED_STEPS" :key="st.key" class="sp-step" :class="{ on: stepReached(i), cur: stepCurrent(i) }">
-              {{ st.text }}
-            </span>
-          </div>
-        </template>
-
-        <!-- 空闲：接下来跑什么 -->
-        <template v-else>
-          <div v-if="sched.next.length" class="sp-next">
-            <div v-for="n in sched.next" :key="n.time + n.account" class="sp-next-item">
-              <span class="sp-t mono">{{ n.time }}</span>
-              <span class="sp-n">{{ n.label || n.mode }}</span>
-              <span v-if="n.account" class="x-tag mute">账号 {{ n.account }}</span>
-              <span class="x-spacer"></span>
-              <span class="sp-in">{{ fmtIn(n.inMinutes) }}</span>
-            </div>
-          </div>
-          <div v-else class="x-hint">没有启用的闹钟 —— 去「定时」页加一个</div>
-          <div v-if="sched.lastRun" class="sp-last">上次执行：{{ sched.lastRun }}</div>
-        </template>
-
-        <!-- 日志尾 -->
-        <div v-if="sched.tail.length" class="sp-log">
-          <div v-for="(l, i) in sched.tail.slice(-6)" :key="i" class="sp-line">{{ l }}</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 引擎连续失败警告 -->
-    <div v-if="consecutiveFailures >= 2" class="x-tip warn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M10.3 4.3 2.8 17.5A1.7 1.7 0 0 0 4.3 20h15.4a1.7 1.7 0 0 0 1.5-2.5L13.7 4.3a1.9 1.9 0 0 0-3.4 0z" />
-        <path d="M12 9.5v4M12 16.6h.01" />
-      </svg>
-      <span>引擎已连续 {{ consecutiveFailures }} 次执行失败</span>
-      <button class="x-mini" @click="dismissWarning">知道了</button>
-    </div>
-
-
-
-    <!-- 最近费用 -->
-    <div v-if="store.latestCost" class="x-card">
-      <div class="x-card-head">
-        <span class="x-ic">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="6" width="18" height="12" rx="2.2" />
-            <path d="M3 10h18" />
-          </svg>
-        </span>
-        <h2>最近费用</h2>
-        <span class="x-hint">本条内容的模型消耗</span>
-        <div class="x-spacer"></div>
-      </div>
-      <div class="cost-body">
-        <div class="cost-item">
-          <span class="cost-metric">DeepSeek</span>
-          <span class="cost-value">¥{{ store.latestCost.deepseek?.toFixed(4) || '0' }}</span>
-        </div>
-        <div class="cost-item">
-          <span class="cost-metric">Kolors</span>
-          <span class="cost-value">¥{{ store.latestCost.kolors?.toFixed(2) || '0' }}</span>
-        </div>
-        <div class="cost-item cost-total">
-          <span class="cost-metric">合计</span>
-          <span class="cost-value">¥{{ store.latestCost.total?.toFixed(2) || '0' }}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 采集数据概览 -->
-    <div v-if="collectData" class="x-card">
-      <div class="x-card-head">
-        <span class="x-ic">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 19V5M4 19h16" />
-            <path d="M8 16v-4M12.5 16V8M17 16v-2.5" />
-          </svg>
-        </span>
-        <h2>数据概览</h2>
-        <span class="x-hint">{{ collectData.date }}</span>
-        <div class="x-spacer"></div>
-      </div>
-      <div class="x-card-body">
-        <div class="plat-grid">
-          <div v-for="(stats, platform) in collectData.platforms" :key="platform" class="plat-card">
-            <div class="plat-name">{{ platformNames[platform] || platform }}</div>
-            <div class="plat-stats">
-              <div v-for="(val, key) in stats" :key="key" class="stat-item">
-                <span class="stat-label">{{ metricLabels[key] || key }}</span>
-                <span class="stat-value">{{ formatNum(val) }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 今日产出 -->
-    <div class="x-card" v-if="store.status.todayDir">
-      <div class="x-card-head">
-        <span class="x-ic">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3.5" y="5" width="17" height="15" rx="2.2" />
-            <path d="M3.5 10h17M8 3.5v3M16 3.5v3" />
-          </svg>
-        </span>
-        <h2>今日产出</h2>
-        <span class="x-hint">
-          {{ store.status.todayDir }}<template v-if="todayItems.length"> · {{ todayItems.length }} 条</template>
-        </span>
-        <div class="x-spacer"></div>
-        <button v-if="todayItems.length > TODAY_LIMIT" class="x-mini" @click="todayExpanded = !todayExpanded">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="todayExpanded" d="m6 15 6-6 6 6" />
-            <path v-else d="m6 9 6 6 6-6" />
-          </svg>
-          <span>{{ todayExpanded ? '收起' : `显示全部 ${todayItems.length} 条` }}</span>
-        </button>
-        <button class="x-mini" @click="openDir">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h9A1.5 1.5 0 0 1 21.5 10v8A1.5 1.5 0 0 1 20 19.5H4.5A1.5 1.5 0 0 1 3 18z" />
-          </svg>
-          <span>打开目录</span>
-        </button>
-      </div>
-      <div class="x-card-body">
-        <!-- 骨架屏：加载中 -->
-        <div v-if="todayLoading" class="skeleton-list">
-          <div v-for="n in 2" :key="n" class="skeleton-card">
-            <div class="skeleton-thumb"></div>
-            <div class="skeleton-lines">
-              <div class="skeleton-line w-60"></div>
-              <div class="skeleton-line w-30"></div>
-            </div>
-          </div>
-        </div>
-
-        <div v-else-if="todayItems.length === 0" class="x-empty">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3.5 12.5 6 5.5h12l2.5 7v5.5a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z" />
-            <path d="M3.5 12.5H9l1 2.5h4l1-2.5h5.5" />
-          </svg>
-          <span>还没有产出，点「立即生成」开始</span>
-        </div>
-
-        <div v-else class="today-list">
-          <div v-for="item in shownToday" :key="item.id" class="item-card">
-            <div class="item-thumb">
-              <img v-if="item.thumbnail" :src="item.thumbnail" class="thumb-img" />
-              <span v-else class="thumb-ph">
-                <svg v-if="item.type === 'video'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
-                  <path d="m16 10.5 5-2.8v8.6l-5-2.8z" />
-                </svg>
-                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-                  <circle cx="9" cy="10" r="1.6" />
-                  <path d="m4.5 17 4.6-4.4 3.2 3 2.6-2.4 4.1 4" />
-                </svg>
-              </span>
-            </div>
-            <div class="item-body">
-              <div class="item-title">{{ item.title_zh }}</div>
-              <div class="item-meta">
-                <span>{{ item.type === 'video' ? '视频' : '图文' }}</span>
-                <span v-if="item.time">· {{ item.time }}</span>
-                <span class="item-status" :class="item.status === 'ready' ? 'ok' : 'warn'">· {{ item.status === 'ready' ? '完成' : '待合成' }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 日志区域（非运行状态折叠） -->
-    <div class="x-card">
-      <div class="x-card-head log-head" @click="logExpanded = !logExpanded">
-        <span class="x-ic">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="4.5" width="18" height="15" rx="2.2" />
-            <path d="m7.5 10 2.5 2.5-2.5 2.5M13 15.5h4" />
-          </svg>
-        </span>
-        <h2>最近日志</h2>
-        <span class="x-hint">{{ store.logs.length }} 条</span>
-        <div class="x-spacer"></div>
-        <span class="x-mini">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="logExpanded || store.status.running" d="m6 15 6-6 6 6" />
-            <path v-else d="m6 9 6 6 6-6" />
-          </svg>
-          <span>{{ logExpanded || store.status.running ? '收起' : '展开' }}</span>
-        </span>
-      </div>
-      <div v-if="logExpanded || store.status.running || store.logs.length > 0" class="log-container" :class="{ collapsed: !logExpanded && !store.status.running }">
-        <div v-if="store.logs.length === 0 && !store.status.running" class="x-empty">
-          暂无日志，触发「立即生成」后会显示在这里
-        </div>
-        <template v-else>
-          <div v-for="(log, i) in displayLogs" :key="i" class="log-line" :class="log.type">
-            <span class="log-time">{{ log.time }}</span>
-            <span class="log-msg">{{ log.message }}</span>
-          </div>
-        </template>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -832,85 +536,24 @@ async function pickShots() {
     store.addLog('error', '选择截图失败: ' + ((e && e.message) || e));
   }
 }
-const todayItems = ref([]);
-const todayLoading = ref(true);
 const isMorning = new Date().getHours() < 12;
 const cancelling = ref(false);
 const publishing = ref(false);
-const collecting = ref(false);
 const quickTopic = ref('');
 const batchMode = ref(false);
 const batchTopics = ref('');
 const batchTotal = ref(0);
 const batchDone = ref(0);
-const logExpanded = ref(false);
-const collectData = ref(null);
 const showCompletionBanner = ref(false);
 const previewData = ref(null);
 const pendingItems = ref([]);
-const consecutiveFailures = ref(0);
 
 // 列表默认只显示最近几条 —— 一屏塞 55 条谁都不想翻。
 // 想看全部就展开，或者直接点「打开文件夹」。
 const PENDING_LIMIT = 5;
-const TODAY_LIMIT = 4;
 const pendingExpanded = ref(false);
-const todayExpanded = ref(false);
 
-// ── 调度执行进度（控制台「调度进度」卡片）──
-const sched = ref({
-  schedulerRunning: false,
-  active: false,
-  current: null,
-  next: [],
-  tail: [],
-  sessionDir: '',
-  stage: '',
-  stageText: '',
-  lastRun: '',
-});
-const SCHED_STEPS = [
-  { key: 'generating', text: '生成内容' },
-  { key: 'publishing', text: '上传发布' },
-  { key: 'published', text: '完成' },
-];
-let schedTimer = null;
-
-function fmtElapsed(sec) {
-  const s = Math.max(0, Number(sec) || 0);
-  if (s < 60) return `${s} 秒`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m < 60) return r ? `${m} 分 ${r} 秒` : `${m} 分`;
-  return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
-}
-function fmtIn(min) {
-  const m = Math.max(0, Number(min) || 0);
-  if (m < 1) return '马上';
-  if (m < 60) return `${m} 分钟后`;
-  return `${Math.floor(m / 60)} 小时 ${m % 60} 分后`;
-}
-function stepIndex() {
-  const i = SCHED_STEPS.findIndex((s) => s.key === sched.value.stage);
-  if (i >= 0) return i;
-  return sched.value.stage === 'failed' ? 1 : 0;
-}
-function stepReached(i) {
-  return i <= stepIndex();
-}
-function stepCurrent(i) {
-  return i === stepIndex() && sched.value.stage !== 'failed';
-}
-async function refreshProgress() {
-  try {
-    if (!window.xnowpost.getScheduleProgress) return;
-    const r = await window.xnowpost.getScheduleProgress();
-    if (r) sched.value = r;
-  } catch (_) {
-    /* 单次失败忽略 */
-  }
-}
-
+// ── 待发布列表 ──
 // 待发布按「日期 + 场次」倒序（主进程返回的是目录顺序，不保证时间先后）
 const sortedPending = computed(() => [...pendingItems.value].sort(
   (a, b) => `${b.date}-${b.session}`.localeCompare(`${a.date}-${a.session}`),
@@ -924,19 +567,12 @@ const todayPendingCount = computed(() => pendingItems.value.filter((p) => !p.old
 // 勾上才把非当天的旧会话也发出去（护栏默认 OFF）
 const includeOld = ref(false);
 
-const shownToday = computed(() => todayExpanded.value
-  ? todayItems.value
-  : todayItems.value.slice(0, TODAY_LIMIT));
-
-function dismissWarning() { consecutiveFailures.value = 0; }
 let refreshTimer = null;
 let cleanupStatusPush = null;
-import { PLATFORM_NAMES as platformNames, METRIC_LABELS as metricLabels, formatNum } from '../constants.js';
 
 // 轮询状态跟踪
 let prevRunning = false
 let tickCount = 0
-// metricLabels, formatNum imported from constants.js
 
 const statusText = computed(() => {
   if (!store.status.configured) return '🔑 还需要配置 API Key 才能开始工作';
@@ -945,11 +581,11 @@ const statusText = computed(() => {
   return '🟢 一切就绪';
 });
 
+// 生成进度（内容生成卡片里的进度条 / 阶段文字）
 const currentStep = ref({ label: '准备中...', percent: 0 });
-let cleanupProgress = null;
-
+// 进度里显示的最近几行引擎日志
 const recentLogs = computed(() => store.logs.slice(-5));
-const displayLogs = computed(() => store.logs.slice(-20).reverse());
+let cleanupProgress = null;
 
 // ── 失败红条（2026-10-19 P0-3）──
 // TG 通知没配、系统 toast 也可能被系统静音，界面上必须有一眼看得到的位置。
@@ -968,61 +604,28 @@ function gotoLogs() {
   router.push('/logs');
 }
 
-// 非运行时自动折叠日志
-watch(() => store.status.running, (running, was) => {
-  // 引擎刚停下（从 true→false）且最后一条日志是错误 → 展开让用户看见
-  if (was && !running) {
-    const last = store.logs[store.logs.length - 1];
-    if (last && last.type === 'error') {
-      logExpanded.value = true;
-    } else {
-      logExpanded.value = false;
-    }
-  }
-});
-
-async function loadThumbnails(items) {
-  for (const item of items) {
-    if (item.dir) {
-      window.xnowpost.getThumbnail(item.dir).then(url => {
-        if (url) item.thumbnail = url;
-      }).catch(() => {});
-    }
-  }
-}
-
-async function refreshToday() {
-  todayLoading.value = true;
-  try {
-    const history = await window.xnowpost.getHistory();
-    const today = history.find(h => h.date === store.status.todayDir);
-    todayItems.value = today ? today.items : [];
-    if (todayItems.value.length) loadThumbnails(todayItems.value);
-  } catch (e) {
-    // 读取失败时保留已有列表，不把界面清空；这里不用 addLog，
-    // 因为 15s 轮询也会调用它，失败时会刷屏
-    console.error('读取今日产出失败:', e);
-  } finally {
-    todayLoading.value = false;
-  }
-}
-
 async function handleCancel() {
   cancelling.value = true;
   try { await store.cancelEngine(); } finally { cancelling.value = false; }
 }
 
-function quickGenerate() {
+/*
+ * 生成统一走这里：三个按钮只有「模式」不同，主题都取「主题」输入框。
+ * 2026-10-19 修：以前 runAuto/runVideo/runPost 传的是空串，用户填了主题点「立即生成」
+ * 主题被静默丢掉（只有已删掉的那个「生成」按钮认主题），AI 直接自由发挥，界面上毫无提示。
+ */
+async function generate(mode) {
   if (store.status.running) return;
   const topic = quickTopic.value?.trim() || '';
   store.addLog('info', topic ? `📝 主题: ${topic}` : '📝 未指定主题，AI 自由发挥');
-  store.addLog('info', '🚀 开始生成...');
-  store.runEngine('auto', topic, genOptions());
+  await store.runEngine(mode, topic, genOptions());
+  // 生成完只需要刷新待发布列表（今日产出/最新预览已随卡片移到历史页）
+  loadPendingItems();
 }
 
-async function runAuto() { await store.runEngine('auto', '', genOptions()); await refreshToday(); }
-async function runVideo() { await store.runEngine('video', '', genOptions()); await refreshToday(); }
-async function runPost() { await store.runEngine('post', '', genOptions()); await refreshToday(); }
+const runAuto = () => generate('auto');
+const runVideo = () => generate('video');
+const runPost = () => generate('post');
 
 const topicCount = computed(() => batchTopics.value.trim() ? batchTopics.value.trim().split('\n').filter(Boolean).length : 0)
 
@@ -1041,7 +644,7 @@ async function runBatch() {
     // 会让任何 ≥2 条的批量任务都在第 1 条后 break（P1-1）
     const result = await store.runEngine('auto', topic, genOptions())
     batchDone.value = i + 1
-    await refreshToday()
+    loadPendingItems()
     if (result?.cancelled) {
       store.addLog('warning', `批量生成已取消（已完成 ${batchDone.value}/${topics.length}）`)
       break
@@ -1049,30 +652,6 @@ async function runBatch() {
   }
   batchTotal.value = 0
   batchDone.value = 0
-}
-
-async function handleCollect() {
-  collecting.value = true
-  store.addLog('info', '📊 手动触发数据采集...')
-  try {
-    const result = await window.xnowpost.runCollect()
-    if (!result.ok) {
-      store.addLog('error', '采集失败: ' + (result.message || ''))
-    } else {
-      store.addLog('success', '✅ 采集完成，正在刷新数据...')
-      // 采集完成后自动刷新采集卡片
-      collectData.value = await window.xnowpost.getLatestCollect()
-    }
-  } catch (e) {
-    store.addLog('error', '采集调用失败: ' + (e.message || e))
-  }
-  collecting.value = false
-}
-
-async function refreshCollectData() {
-  try {
-    collectData.value = await window.xnowpost.getLatestCollect()
-  } catch (_) {}
 }
 
 // 目标账号：'' = 按配置第一个（老行为）；选了就必须发到那个号。
@@ -1218,30 +797,15 @@ async function loadLatestPreview() {
   } catch (_) {}
 }
 
-async function refreshStatus() {
-  const status = await window.xnowpost.getEngineStatus();
-  Object.assign(store.status, status);
-}
-
 onMounted(async () => {
   // ⚠️ 初始化必须整体隔离异常：一旦这里抛出，后面的定时器与订阅就全都不会注册，
   // Dashboard 的实时更新会被永久禁用（P2-3）
   try {
-    await refreshToday();
-    store.loadCost();
-    await refreshCollectData();
     loadPendingItems();
     await loadPublishAccounts();   // 「发到哪个号」的下拉，取本地配置，不走 FoxProfile
   } catch (e) {
     store.addLog('error', '控制台初始化失败: ' + ((e && e.message) || e));
   }
-
-  // 调度进度：5 秒一刷（当前任务 / 阶段 / 日志尾）
-  refreshProgress();
-  schedTimer = setInterval(() => {
-    if (document.hidden) return;
-    refreshProgress();
-  }, 5000);
 
   prevRunning = store.status.running;
   // 轮询：单次异常只跳过本轮，不能打断后续轮询
@@ -1256,22 +820,12 @@ onMounted(async () => {
       const wasRunning = prevRunning;
       prevRunning = status.running;
       Object.assign(store.status, status);
-      // load consecutive failure count
-      window.xnowpost.getFailureCount().then(c => { consecutiveFailures.value = c }).catch(() => {})
 
-      // engine just finished -> refresh output + cost + show banner
+      // 引擎刚跑完 → 弹完成横幅 + 刷新待发布（新生成的内容就在里面）
       if (wasRunning && !status.running) {
-        refreshToday();
-        store.loadCost();
         showCompletionBanner.value = true;
         loadPendingItems();
         loadLatestPreview();
-      }
-
-      // refresh output/collect every 60s (4th tick)
-      if (tickCount % 4 === 0) {
-        if (!status.running) refreshToday();
-        refreshCollectData();
       }
     } catch (_) {
       // 单次轮询失败忽略
@@ -1296,9 +850,8 @@ onMounted(async () => {
       prevRunning = status.running;
       Object.assign(store.status, status);
       if (wasRunning && !status.running) {
-        refreshToday();
-        store.loadCost();
         loadPendingItems();
+        loadLatestPreview();
       }
     });
   } catch (e) {
@@ -1308,7 +861,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-  if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
   if (cleanupProgress) { cleanupProgress(); cleanupProgress = null; }
   if (cleanupStatusPush) { cleanupStatusPush(); cleanupStatusPush = null; }
   window.removeEventListener('paste', onPaste);
