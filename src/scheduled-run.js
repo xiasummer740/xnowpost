@@ -154,6 +154,39 @@ export function runRecordFileName(record) {
   return `${date}-${hm}-${id}.json`;
 }
 
+/**
+ * 合并「这一轮发出去的」证据。
+ *
+ * 为什么必须合并：同一次发布有两个来源 —— 会话里的 `.published` 标记和
+ * `data/publish-ledger.jsonl` 的账本行，**时间戳各写各的**
+ * （实测 2026-10-19 pm_2257：标记 `14:59:12.421Z` / 账本 `14:59:12.422Z`，差 1 毫秒），
+ * 直接拼起来会把「发了 1 条」说成「已发布 2 条」—— 这正是"日志不许说谎"要防的那类错。
+ * 去重口径：**环境 + 会话**（同一环境同一会话只可能是一条作品）；
+ * 缺字段就互补（标记里没标题、账本里有，反之亦然）。
+ *
+ * @param {Array<{env?:string,session?:string,at?:string,title?:string}>} items
+ * @returns {Array<{env:string,session:string,at:string,title:string}>}
+ */
+export function mergePublishedEvidence(items) {
+  const map = new Map();
+  for (const it of Array.isArray(items) ? items : []) {
+    if (!it) continue;
+    const env = String(it.env || '').trim();
+    const session = String(it.session || '').trim();
+    const at = String(it.at || '');
+    const title = String(it.title || '');
+    const key = `${env}|${session}`;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, { env, session, at, title });
+      continue;
+    }
+    if (!prev.at && at) prev.at = at;
+    if (!prev.title && title) prev.title = title;
+  }
+  return [...map.values()];
+}
+
 function titlesOf(list) {
   return list.map((x) => (x && x.title ? `《${String(x.title).slice(0, 40)}》` : '')).filter(Boolean);
 }

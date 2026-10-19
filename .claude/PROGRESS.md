@@ -1,7 +1,7 @@
 # 接力开发 — 新对话从这里开始
 
-> 更新：2026-10-19 23:30 ｜ 版本 **1.6.40**（已打包 / 已部署 E:\software\XNOWPost / 已重启）
-> 状态：`npm run verify` **526 pass / 0 fail**；git HEAD `1e3ee64`，工作区干净；
+> 更新：2026-10-19 23:45 ｜ 版本 **1.6.41**（已打包 / 已部署 E:\software\XNOWPost / 已重启）
+> 状态：`npm run verify` **529 pass / 0 fail**；git HEAD `1e3ee64`，工作区干净；
 > 应用已在跑，调度器 ready **21 个任务**；今天已发 **16 条**（TK01×3、TK05×3，其余各 1~2）。
 
 ## 0. 这个项目当前长什么样（新对话先读这一段）
@@ -31,7 +31,7 @@ node src\publisher\index.js --env TK05 --max 1
 ```
 看两处日志：`⏳ 检查未完成（等了 Ns 就放行）` + `弹窗「检查未完成确认框」→ 点了「post now」`。
 
-**P1 — 今晚 00:30–01:15 那 10 轮 = 1.6.40 的真机验收（不用动手，看结果就行）**
+**P1 — 今晚 00:30–01:15 那 10 轮 = 1.6.41 的真机验收（不用动手，看结果就行）**
 那 10 个闹钟每轮都会往 `data/runs/` 写一条记录并在跑完后自己说进 AI 助手对话。
 明早核对：对话里应有 10 条「✅ 定时轮次完成（00:30 · 仅视频 · 账号 01）：已发布 → TK01《…》」，
 `data/runs/` 里对应 10 个 `<日期>-<HHMM>-<jobId>.json`，每条都带 `reportedAt`。
@@ -40,7 +40,7 @@ node src\publisher\index.js --env TK05 --max 1
 **P2 — `.published` 补 `confirmedAt`**
 现在账本/标记里的时间是"点 Post 的时刻"，公开确认往往晚 20~60 秒（10-19 22:59:12 点、22:59:45 确认）。
 账号页「最后发布」和 `get_last_task` 都只报点击时刻。发布器里拿到 `✅ 审查完成` 时补写 `confirmedAt` 即可。
-（1.6.40 的轮次回报已经会用 `.published` 里的证据，补上 `confirmedAt` 后文案可以顺带说「公开时刻」。）
+（1.6.41 的轮次回报已经会用 `.published` 里的证据，补上 `confirmedAt` 后文案可以顺带说「公开时刻」。）
 
 **P2 — 历史遗留（长期挂账，做之前先确认还有没有人疼）**
 `spawnSync` → `spawn`（调度器）；采集 0 成功时的退出码；`/login` 失败原因上报；子进程看门狗；
@@ -55,7 +55,7 @@ node src\publisher\index.js --env TK05 --max 1
 cd F:\summer\vs-code\xnowpost; npm run verify
 
 # 2) 版本号 + 打包 + 部署 + 重启（每次打包都要 bump 版本）
-(Get-Content package.json -Raw) -replace '"version": "1.6.40"', '"version": "1.6.41"' | Set-Content package.json -NoNewline
+(Get-Content package.json -Raw) -replace '"version": "1.6.41"', '"version": "1.6.42"' | Set-Content package.json -NoNewline
 npm run package
 Get-Process XNOWPost -EA SilentlyContinue | Stop-Process -Force
 robocopy release\win-unpacked E:\software\XNOWPost /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -88,9 +88,9 @@ Set-Clipboard -Value "今天发了几个？"; # 点输入框(窗口 660,800 / �
   **和** `handleDialogs()` 里给页面侧的那份映射（漏传就"命中但一个按钮都点不到"）。
 - `handleDialogs` / `page-sense` 是同一个框的两层判定，**加规则要两层一起加**，否则日志里还是「未知浮层」。
 - 任何 `spawn` 都要 `windowsHide: true`；发布器 `finally` 里必须 `closeFoxProfile`。
-- 永远别 `git checkout -- .` / `git stash`（HEAD 停在 1.2.18，工作区已到 1.6.40）。
+- 永远别 `git checkout -- .` / `git stash`（HEAD 停在 1.2.18，工作区已到 1.6.41）。
 
-## 1T（v1.6.40）闹钟轮次跑完自己说话（「调度器跑的轮次回报不进来」收口）
+## 1T（v1.6.40–1.6.41）闹钟轮次跑完自己说话（「调度器跑的轮次回报不进来」收口）
 用户口径：「跑完的生成/发布自动返回结果状态，不然我还要一直看着时间守着」。
 1.6.35–1.6.39 已经让**界面按钮 / 助手叫的**轮次自动回报，但 00:30 / 08:30 那些闹钟跑在
 `src/scheduler.js` **独立进程**里，`doRunEngine().finish()` 钩子根本不存在 → 那批轮次跑完只有日志。
@@ -108,15 +108,24 @@ Set-Clipboard -Value "今天发了几个？"; # 点输入框(窗口 660,800 / �
     `cost.json` / `collect-*.json`（采集轮次报「采到 8/10 个账号」）。
   - 会话目录取自引擎自己的 `📅 …/am_0830 | 模式: video` 行（`pickSession()` 取最后一条），
     不"猜最新目录"——那会把上一轮/手动发布的会话算进来。
-- **单测**：`tests/unit/scheduled-run.test.js` 21 条（会话行解析 / 5 个结果码映射 /
-  文案逐种结局 / 落盘-标记-清理 / 6 小时外不灌进对话 / 坏 JSON 跳过）。全量 **526 pass**。
-- **实测（真应用、真调度器）**：23:20 部署重启（版本 1.6.40，`data/runs/` 目录自动建好）；
+- **单测**：`tests/unit/scheduled-run.test.js` 24 条（会话行解析 / 5 个结果码映射 /
+  文案逐种结局 / 落盘-标记-清理 / 6 小时外不灌进对话 / 坏 JSON 跳过 / 证据去重）。全量 **529 pass**。
+- **自查抓到一个真 bug（1.6.41）**：同一次发布有两个证据来源 —— 会话 `.published` 与发布账本，
+  **时间戳各写各的**（实测 pm_2257：标记 `14:59:12.421Z`、账本 `14:59:12.422Z`，差 1 毫秒），
+  原来按「时间戳相等」去重 → 1 条会被说成「已发布 2 条」。现在统一走
+  `mergePublishedEvidence()`，按**环境 + 会话**去重、字段互补（标记没标题、账本有）。
+  另外 `readSessionRow()` 读的是 `m.at`，而标记里存的是 `publishedAt` →
+  标记那一路的 `at` 恒为空，时间只能靠账本补。
+  用**真实数据**（pm_2257 标记 + 账本 + `cost.json`）跑一遍验证：
+  `raw 条数: 2 → 合并后: 1` → `✅ 定时轮次完成（22:56 · 仅视频 · 账号 05）：已发布 → TK05
+  《矩阵打法：一个账号不如五个账号》（用时 2 分 48 秒 · ¥0.024）。`
+- **实测（真应用、真调度器）**：23:20 部署重启（v1.6.40，`data/runs/` 目录自动建好）；
   23:21 往线上 `schedule.json` 临时插一个 `23:23 仅图文 + 账号 01` 的闹钟（走"图文通道未实现"跳过分支，
   **不花 API 费用、不开浏览器**），调度器 23:20:32 热重载认到它 →
   - 23:23:00.594 写 `data/runs/2026-10-19-2323-999.json`（`result:"skipped"`、`durationMs:3`）
   - 23:23:01.430 `reportedAt` 落盘；app 日志 `🤖 AI 助手自动回报：⏭️ 定时轮次跳过（23:23 · 仅图文 ·
     账号 01）：TikTok 图文自动发布通道未实现（图文产出没有 mp4），本轮没生成也没发布。`
-  - 界面截图 `output/v1640-assistant.png`（AI 助手对话里就是这一条，版本号 v1.6.40）
+  - 界面截图 `output/v1640-assistant.png`（AI 助手对话里就是这一条，版本号 v1.6.40；1.6.41 只是同一功能的证据去重修复，界面行为不变）
   - 23:23:20 把临时闹钟删掉、`schedule.json` 恢复原样（21 个任务），调度器日志确认热重载。
   - 那条测试记录已删除（jobId 999 已不存在，留着只会让 `data/runs/` 多一个假轮次）。
 - **剩下的真机验收**：今晚 00:30–01:15 那 10 轮会各写一条并自己说进对话（见「下一步」P1 第二条）。

@@ -22,6 +22,7 @@ import {
   listPendingRunRecords,
   localHHMM,
   markRunReported,
+  mergePublishedEvidence,
   parseSessionLine,
   pickSession,
   pruneRunRecords,
@@ -229,6 +230,42 @@ test('publishedText：单条带标题，多条带条数和环境去重', () => {
   );
   assert.equal(publishedText([]), '');
   assert.equal(publishedText(null), '');
+});
+
+// ───── 4b. 证据合并：同一次发布不能算成两条（2026-10-19 实测差 1 毫秒） ─────
+
+test('mergePublishedEvidence：.published 与账本差 1 毫秒 → 只算 1 条，字段互补', () => {
+  // 真实数据形状（pm_2257 / TK05，2026-10-19 22:59）
+  const merged = mergePublishedEvidence([
+    // 会话 .published（没有 at 字段，标题在标记里）
+    { env: 'TK05', session: 'pm_2257', at: '', title: '' },
+    // 账本行（时间戳差 1 毫秒）
+    { env: 'TK05', session: 'pm_2257', at: '2026-10-19T14:59:12.422Z', title: '矩阵打法' },
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].at, '2026-10-19T14:59:12.422Z');
+  assert.equal(merged[0].title, '矩阵打法');
+  // 说人话：1 条，不是 2 条
+  assert.match(publishedText(merged), /^已发布 → TK05《矩阵打法》$/);
+});
+
+test('mergePublishedEvidence：不同会话 / 不同环境不合并（publish 轮次真发多条）', () => {
+  const merged = mergePublishedEvidence([
+    { env: 'TK01', session: 'am_0830', at: 't1', title: 'A' },
+    { env: 'TK01', session: 'am_0840', at: 't2', title: 'B' },
+    { env: 'TK05', session: 'am_0830', at: 't3', title: 'C' },
+    { env: 'TK01', session: 'am_0830', at: 't4', title: 'A2' },   // 重复来源
+  ]);
+  assert.equal(merged.length, 3);
+  assert.equal(merged[0].title, 'A');           // 先到的字段保留，不被后来的覆盖
+  assert.match(publishedText(merged), /已发布 3 条 → TK01、TK05（含《A》）/);
+});
+
+test('mergePublishedEvidence：空数组/坏输入不抛异常', () => {
+  assert.deepEqual(mergePublishedEvidence([]), []);
+  assert.deepEqual(mergePublishedEvidence(null), []);
+  assert.deepEqual(mergePublishedEvidence([null, undefined]), []);
+  assert.deepEqual(mergePublishedEvidence([{}]), [{ env: '', session: '', at: '', title: '' }]);
 });
 
 test('fmtDuration / fmtCost：小数值不说成 0（11 秒、¥0.004）', () => {

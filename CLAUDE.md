@@ -213,12 +213,17 @@
 - **结果码只来自 `runWithRetry()` 的返回值**（`ok/insufficient/unconfirmed/timeout/failed`），
   `runJob()` 因此改成统一返回 `{ result, reason }`（`outcomeOf()` 一处映射），
   **不许**靠搜日志文字判断成败 —— 返回值是契约，日志措辞会改。
-- 文案在 `src/scheduled-run.js#describeScheduledRun()`（纯函数，21 条单测
+- 文案在 `src/scheduled-run.js#describeScheduledRun()`（纯函数，24 条单测
   `tests/unit/scheduled-run.test.js`），只按落盘证据说话：
   - `.published` 的 `confirmed:false` 只说「没确认到公开」，不算成功；
   - 「进程正常退出但没成片也没发布」就说「没看到成片也没看到发布记录」；
   - `publish` 模式发的是**历史会话**，所以还会按 `startedAtMs..finishedAtMs` 时间窗查发布账本，
     否则那一轮看起来像"什么都没发"。
+  - **两个来源必须按「环境 + 会话」去重**（`mergePublishedEvidence()`）：
+    会话里的 `.published` 和账本行是同一件事，但**时间戳各写各的**（实测 pm_2257：
+    标记 `14:59:12.421Z` / 账本 `14:59:12.422Z`，差 1 毫秒）→ 按时间戳相等去重会把
+    「发了 1 条」说成「已发布 2 条」。另外 `readSessionRow()` 读的是 `m.at`，
+    而标记里存的字段名是 `publishedAt`，所以标记那一路的 `at` 恒为空，只能靠账本补。
 - 会话目录来自引擎自己的 `📅 …/am_0830 | 模式: video` 行（`pickSession()` 取最后一条，
   重试后的那次才是真正落地的产物），不靠"猜最新目录"——那样会把上一轮/手动发布的会话算进来。
 

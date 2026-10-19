@@ -11,6 +11,7 @@ import {
   describeScheduledRun,
   listPendingRunRecords,
   markRunReported,
+  mergePublishedEvidence,
   pruneRunRecords,
   RUNS_REL,
   RUN_KEEP_DAYS,
@@ -3031,6 +3032,10 @@ function setupIPC() {
     const dayDir = path.join(DATA_DIR, 'output', date);
     const from = startedMs - 60_000;
     const to = Number(record.finishedAtMs || Date.now()) + 120_000;
+    // 标记 + 账本最后要按「环境 + 会话」去重：两者时间戳差 1 毫秒，
+    // 直接拼会把 1 条说成「已发布 2 条」（见 src/scheduled-run.js#mergePublishedEvidence）
+    const raw = [];
+    const titles = new Map();        // 会话 → 文案首行（标记/账本里都可能没标题）
     try {
       if (record.session) {
         const row = readSessionRow(dayDir, record.session, 0);
@@ -3038,7 +3043,7 @@ function setupIPC() {
         ev.hasText = !!row.hasText;
         if (row.published) {
           if (row.published.confirmed) {
-            ev.published.push({ env: row.published.env || '', at: row.published.at || '', title: '' });
+            raw.push({ env: row.published.env || '', session: record.session, at: row.published.at || '', title: '' });
           } else {
             ev.unconfirmedPublish = true;
           }
@@ -3052,17 +3057,19 @@ function setupIPC() {
         try {
           const title = String(fs.readFileSync(path.join(dayDir, record.session, '文案.txt'), 'utf-8'))
             .split('\n')[0].trim();
-          if (title && ev.published.length) ev.published[0].title = title;
+          if (title) titles.set(record.session, title);
         } catch (_) { /* 没有文案就不报标题 */ }
       }
       // 账本里落在本轮时间窗内的发布（确认过的才算）
       for (const rec of readLedger(DATA_DIR)) {
         const at = Date.parse(rec.at || '');
         if (!Number.isFinite(at) || at < from || at > to) continue;
-        const env = rec.env || '';
-        if (ev.published.some((p) => p.at === rec.at && p.env === env)) continue;
-        ev.published.push({ env, at: rec.at || '', title: rec.title || '' });
+        raw.push({ env: rec.env || '', session: rec.session || '', at: rec.at || '', title: rec.title || '' });
       }
+      ev.published = mergePublishedEvidence(raw)
+        .filter((p) => p.at || p.title)
+        // 标题兜底：标记和账本都没标题时，用会话目录里 文案.txt 的首行
+        .map((p) => (p.title || !titles.get(p.session) ? p : { ...p, title: titles.get(p.session) }));
       // 采集轮次：最近一份本轮时间窗内的 collect-*.json 才是这一轮的证据
       if (record.mode === 'collect' && fs.existsSync(dayDir)) {
         const files = fs.readdirSync(dayDir).filter((f) => /^collect-.*\.json$/.test(f)).sort();
