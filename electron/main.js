@@ -90,6 +90,18 @@ function localHHMM(iso) {
 }
 
 /**
+ * 耗时的人话：<90 秒说秒，否则说分钟（11 秒的只出文案写成「1 分钟」会让人以为跑了很久）。
+ * @param {number} fromMs 起点时间戳
+ */
+function fmtSpent(fromMs) {
+  const secs = Math.max(1, Math.round((Date.now() - Number(fromMs || 0)) / 1000));
+  if (secs < 90) return `${secs} 秒`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s ? `${m} 分 ${s} 秒` : `${m} 分钟`;
+}
+
+/**
  * 当前跑到哪一步：读今天的 app 日志尾部，取最后一个"阶段"标记。
  * 用途：用户等 2~3 分钟只想知道"现在在配音还是在传视频"，
  * 以前 get_last_task 只有「已启动 / 已发布 / 失败」三态，中间全靠猜。
@@ -354,13 +366,15 @@ let tray = null;
 let isQuitting = false;
 let logBuffer = [];
 let schedulerRunning = false;  // 调度器是否正在执行引擎任务
-// 助手刚启动的那一轮（用来"跑完自动回报"）。
-// 用户口径（2026-10-19）：「发布完成后 自动返回结果状态，不然我还要一直看着时间守着」。
+// 「跑完自动回报」。
+// 用户口径（2026-10-19，连着问了两遍）：「发布完成后 自动返回结果状态，可以吗？
+// 不然我还要一直看着时间守着」。→ 只要这一轮是**应用里发起的**（助手叫的 or 按钮点的），
+// 结束时都往对话里推一条结论；只有调度器那个独立进程跑的轮次推不了（不在本进程）。
 // ⚠️ 必须放在模块顶层：写它的是 setupIPC() 里的 run_engine，读它的是顶层
 //    doRunEngine() 的 finish() —— 放在 setupIPC 里就形成作用域断裂（读不到）。
 let assistantRunWatch = null;
-/** 由 setupIPC() 注入：引擎跑完后替助手把结果说回对话里 */
-let onAssistantRunDone = null;
+/** 由 setupIPC() 注入：引擎跑完后把结果说回对话里 */
+let onEngineRunDone = null;
 // 手动发布的重入保护：2026-10-19 日志里 19:11:13 和 19:11:15 各跑了一次
 // 「📤 手动发布开始」，两次都把 307 条历史会话完整扫了一遍 —— 按钮被点了两下。
 let publishInFlight = false;
@@ -933,6 +947,8 @@ function setupIPC() {
   let engineRunning = false;
 
   function doRunEngine(mode, topic, options = {}) {
+    // 这一轮的开始时间（跑完自动回报要算耗时；也用于"太久了不是这一轮"的判定）
+    const runStartedAt = Date.now();
     // mode 只认这三种，其它一律当 auto（引擎不认识的参数等于没传）。
     // ⚠️ 'text' 曾经没有映射 → 助手说"只出文案约 ¥0.01"，实际跑了 auto（视频+图文，
     //    ¥0.03、3 分钟）。2026-10-19 22:29 实测踩到，现在 --text-only 是真的。
@@ -1020,12 +1036,14 @@ function setupIPC() {
         }
         try { pushEngineStatus(); } catch (_) { /* 窗口可能已关闭 */ }
         try { invalidateHistoryCache(); } catch (_) { /* 尚未初始化 */ }
-        // 助手发起的那一轮：跑完主动把结果说回对话（用户不用守着问）
+        // 这一轮跑完 → 主动把结果说回对话（用户不用守着时间问「OK 了吗」）。
+        // 助手叫的、按钮点的都报；调度器那个独立进程不经过这里（它的进度在日志/调度进度里）。
         try {
-          if (onAssistantRunDone) {
-            onAssistantRunDone(
+          if (onEngineRunDone) {
+            onEngineRunDone(
               cancelled ? 'cancelled' : (code === 0 && !errorMessage ? 'ok' : 'fail'),
               errorMessage || '',
+              { at: runStartedAt, mode, topic, account: options.account || '', autoPublish: options.autoPublish !== false },
             );
           }
         } catch (_) { /* 回报失败不影响任务结果 */ }
@@ -2835,15 +2853,36 @@ function setupIPC() {
    * 为什么不靠用户问：一轮 3~5 分钟，用户得盯着时间反复问「OK 了吗」。
    * 内容只用落盘证据（.published / FAILED / 账本 / cost.json），不用"已启动"。
    */
-  function reportAssistantRun(outcome, errorMessage = '') {
-    const w = assistantRunWatch;
-    if (!w) return;
+  /** 往对话里推一条"程序替他汇报"的消息（不是模型生成的），并把快照推给界面 */
+  function pushAssistantNote(text) {
+    const body = String(text || '').trim();
+    if (!body) return;
+    try {
+      const snap = ensureAssistantSession().notify(body);
+      if (snap && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('assistant:update', withUndo(snap));
+      }
+      addLog('info', `🤖 AI 助手自动回报：${body.slice(0, 60)}`);
+    } catch (e) {
+      addLog('warning', `AI 助手自动回报失败：${e.message}`);
+    }
+  }
+
+  /**
+   * 把「这一轮」的结果主动说回对话里（助手叫的 / 按钮点的都算）。
+   * 为什么不靠用户问：一轮 3~5 分钟，用户得盯着时间反复问「OK 了吗」。
+   * 内容只用落盘证据（.published / FAILED / 账本 / cost.json），不用"已启动"。
+   */
+  function reportEngineRun(outcome, errorMessage = '', meta = {}) {
+    const startedAt = Number(meta.at) || Date.now();
+    const byAssistant = !!assistantRunWatch;
     assistantRunWatch = null;      // 一次只回报一次
-    if (Date.now() - w.at > 90 * 60 * 1000) return;   // 太久了，多半不是这一轮
-    const secs = Math.max(1, Math.round((Date.now() - w.at) / 1000));
+    if (Date.now() - startedAt > 120 * 60 * 1000) return;   // 太久了，多半不是这一轮
+    const secs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
     // 11 秒的只出文案别写成「1 分钟」（实测就是这么报的，看着像跑了很久）
-    const spent = secs < 90 ? `${secs} 秒` : `${Math.round(secs / 60)} 分钟`;
-    const mins = spent;   // 下面文案沿用同一个说法
+    const mins = secs < 90 ? `${secs} 秒` : `${Math.round(secs / 60)} 分钟`;
+    const who = byAssistant ? '' : '（手动）';
+    const isText = meta.mode === 'text';
     let text = '';
     try {
       const dayDir = path.join(DATA_DIR, 'output', localDateStr());
@@ -2869,12 +2908,12 @@ function setupIPC() {
         const lines = fs.readFileSync(path.join(DATA_DIR, 'data', 'publish-ledger.jsonl'), 'utf-8').trim().split('\n');
         for (let i = lines.length - 1; i >= Math.max(0, lines.length - 6); i--) {
           const r = JSON.parse(lines[i]);
-          if (r && (!w.account || String(r.env || '').endsWith(w.account))) { title = String(r.title || ''); break; }
+          if (r && (!meta.account || String(r.env || '').endsWith(String(meta.account)))) { title = String(r.title || ''); break; }
         }
       } catch (_) { /* 账本坏行忽略 */ }
 
       // 只出文案（--text-only）：没有成片，标题从 文案.txt 首行读
-      if (w.mode === 'text') {
+      if (isText) {
         let t = '';
         try {
           t = String(fs.readFileSync(path.join(dayDir, row.session, '文案.txt'), 'utf-8')).split('\n')[0].trim();
@@ -2887,37 +2926,31 @@ function setupIPC() {
           text = `⚠️ 只出文案这一轮异常结束（${mins}）：${errorMessage || '退出码非 0'}。要我用 get_logs 翻一下吗？`;
         }
       } else if (outcome === 'cancelled') {
-        text = `⏹ 停了：${row ? row.session : '这一轮'} 被你取消，跑了 ${mins} 分钟，没有发布。`;
+        text = `⏹ 停了${who}：${row ? row.session : '这一轮'} 被取消，跑了 ${mins}，没有发布。`;
       } else if (row && row.published) {
         const at = localHHMM(row.published.at);
-        text = `✅ 好了（${mins}）：${describeSession(row)}${title ? `，标题《${title}》` : ''}${at ? `，发布时刻 ${at}` : ''}${cost}。`;
+        const env = row.published.env || '';
+        text = `✅ 发布完成${who}（${mins}）：${row.session}${env ? ` → ${env}` : ''}${title ? `《${title}》` : ''}${at ? `，公开时刻 ${at}` : ''}${cost}。`;
       } else if (row && row.failed) {
-        text = `❌ 失败（${mins}）：${describeSession(row)}${errorMessage ? ` · ${errorMessage}` : ''}${cost}。要看证据我可以调 explain_failures。`;
+        text = `❌ 失败${who}（${mins}）：${describeSession(row)}${errorMessage ? ` · ${errorMessage}` : ''}${cost}。要看证据我可以调 explain_failures。`;
       } else if (row && row.hasVideo) {
-        text = `📦 成片出来了（${mins}）：${describeSession(row)}${cost}。要发到哪个账号？告诉我一声。`;
+        const acc = String(meta.account || '').trim();
+        text = `📦 成片出来了${who}（${mins}）：${describeSession(row)}${cost}。${acc ? `这次没发出去（目标 ${acc}），` : ''}要发到哪个账号？告诉我一声。`;
       } else if (outcome === 'ok') {
-        text = `⚠️ 进程正常退出（${mins}），但${row ? ` ${row.session} ` : ''}没看到成片也没看到发布记录 —— 要我用 explain_failures 查一下卡在哪吗？`;
+        text = `⚠️ 进程正常退出${who}（${mins}），但${row ? ` ${row.session} ` : ''}没看到成片也没看到发布记录 —— 要我用 explain_failures 查一下卡在哪吗？`;
       } else {
-        text = `⚠️ 这一轮异常结束（${mins}）：${errorMessage || `退出码非 0`}。要我用 get_logs 翻一下吗？`;
+        text = `⚠️ 这一轮异常结束${who}（${mins}）：${errorMessage || `退出码非 0`}。要我用 get_logs 翻一下吗？`;
       }
     } catch (e) {
       text = `⚠️ 这一轮结束了（${mins}），但自动回报拼装失败：${e.message}。你问一句「刚才那条发成功了吗」我用 get_last_task 查。`;
     }
-    try {
-      const snap = ensureAssistantSession().notify(text);
-      if (snap && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('assistant:update', withUndo(snap));
-      }
-      addLog('info', `🤖 AI 助手自动回报：${text.slice(0, 60)}`);
-    } catch (e) {
-      addLog('warning', `AI 助手自动回报失败：${e.message}`);
-    }
+    pushAssistantNote(text);
   }
 
   // 把钩子挂到顶层 doRunEngine 的 finish() 上。
-  // ⚠️ 必须在这里赋值，不能写在 reportAssistantRun 函数体里 —— 那样只有"回报过一次"之后
+  // ⚠️ 必须在这里赋值，不能写在 reportEngineRun 函数体里 —— 那样只有"回报过一次"之后
   //    钩子才存在，于是永远回报不了（2026-10-19 22:30 实测：pm_2229 跑完了，一条回报都没有）。
-  onAssistantRunDone = reportAssistantRun;
+  onEngineRunDone = reportEngineRun;
 
   /** 会话按「日期 + 模型 + 版本」重建（日期/模型变了，系统提示里的口径也要跟着变） */
   function ensureAssistantSession() {
@@ -3882,6 +3915,7 @@ function setupIPC() {
 
       let published = 0;
       const failures = [];
+      const doneSessions = [];
       for (const item of todo) {
         const remaining = budgetMs - (Date.now() - started);
         if (remaining <= 60_000) {
@@ -3891,7 +3925,7 @@ function setupIPC() {
         addLog('info', `📤 发布: ${item.date}/${item.session}`);
         try {
           const r = await publishOne(item, { envId, apiKey, budgetMs: remaining });
-          if (r.ok) published += 1;
+          if (r.ok) { published += 1; doneSessions.push(item); }
           else failures.push(`${item.session}: ${r.message}`);
         } catch (err) {
           // 单条失败不影响后续；.published 未写，下轮会自动重试
@@ -3911,12 +3945,19 @@ function setupIPC() {
           body: failures.slice(0, 3).join('\n'),
           key: `publish-run|${failures.length}|${failures[0] || ''}`,
         });
+        // 发布完自动回报（用户在界面点了发布就该看到结论，不用守着问）
+        pushAssistantNote(`⚠️ 发布完成（手动，${fmtSpent(started)}）：成功 ${published} 条、失败 ${failures.length} 条，目标 ${envId}。\n失败：${failures.slice(0, 3).join('；')}`);
         return { ok: published > 0, published, failures, message: `${failures.length} 条失败` };
+      }
+      if (published > 0) {
+        const titles = doneSessions.slice(0, 3).map((t) => `《${t.title || t.session}》`).join('、');
+        pushAssistantNote(`✅ 发布完成（手动，${fmtSpent(started)}）：${published} 条 → ${envId}${titles ? `，${titles}` : ''}。`);
       }
       return { ok: true, published };
     } catch (err) {
       addLog('error', `❌ 发布失败: ${err.message}`);
       notifyFailure({ title: 'XNOWPost 手动发布失败', body: err.message, key: `publish-run|${err.message}` });
+      pushAssistantNote(`❌ 发布失败（手动，${fmtSpent(started)}）：${err.message}`);
       return { ok: false, message: err.message };
     } finally {
       publishInFlight = false;
