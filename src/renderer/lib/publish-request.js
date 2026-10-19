@@ -28,7 +28,9 @@ export function buildPublishOpts(input = {}) {
 export function publishTargetLabel(accounts, target) {
   const list = Array.isArray(accounts) ? accounts.filter((a) => a && a.name) : [];
   const name = String(target ?? '').trim();
-  const envOf = (a) => String(a?.browserEnv || a?.bitEnvId || '').trim();
+  // 三种来源都认：配置原始账号（browserEnv / bitEnvId）、publishTargetOptions 的输出（env）。
+  // 踩过：只读前两个字段，而界面传进来的是 {name, env} → 确认卡显示「未绑定环境」。
+  const envOf = (a) => String(a?.browserEnv || a?.bitEnvId || a?.env || '').trim();
 
   if (!name) {
     const first = list[0];
@@ -51,4 +53,40 @@ export function publishTargetOptions(accounts) {
       env: String(a.browserEnv || a.bitEnvId || '').trim(),
     })),
   };
+}
+
+/**
+ * 勾选模式：把界面选中的行变成 `publish:run` 的 `pick`（`date/session`）。
+ * 空数组 = 没勾，按"条数 + 顺序"发。
+ * @param {Array<{date?: string, session?: string}>} items 勾选的行
+ */
+export function buildPickKeys(items) {
+  const list = Array.isArray(items) ? items : [];
+  const keys = [];
+  for (const it of list) {
+    const date = String(it?.date ?? '').trim();
+    const session = String(it?.session ?? '').trim();
+    if (!session) continue;
+    const key = date ? `${date}/${session}` : session;
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * 这一轮到底发几条、发哪些 —— 确认卡和真正执行共用这一份判断。
+ * @param {{pick?: Array, count?: number|'all', total?: number}} input
+ * @returns {{mode: 'pick'|'all'|'count', count: number, detail: string}}
+ */
+export function describePublishPlan(input = {}) {
+  const picked = buildPickKeys(input.pick);
+  if (picked.length) {
+    return { mode: 'pick', count: picked.length, detail: `只发勾选的 ${picked.length} 条` };
+  }
+  if (input.count === 'all') {
+    return { mode: 'all', count: -1, detail: `发当天全部 ${Number(input.total) || 0} 条（不限条数）` };
+  }
+  const n = Number(input.count);
+  const count = Number.isFinite(n) && n > 0 ? n : 3;
+  return { mode: 'count', count, detail: `按顺序发前 ${count} 条（不勾选时默认）` };
 }

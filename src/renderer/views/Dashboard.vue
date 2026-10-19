@@ -464,13 +464,31 @@
       <table>
         <thead>
           <tr>
-            <th style="width: 178px">类型</th>
+            <th style="width: 34px">
+              <input
+                type="checkbox"
+                class="pc-check"
+                :checked="allShownSelected"
+                :indeterminate.prop="someShownSelected && !allShownSelected"
+                title="全选当前显示的条目"
+                @change="toggleSelectAll($event.target.checked)"
+              />
+            </th>
+            <th style="width: 152px">类型</th>
             <th>标题</th>
             <th style="width: 168px; text-align: right">生成时间</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(item, i) in shownPending" :key="i">
+          <tr
+            v-for="(item, i) in shownPending"
+            :key="`${item.date}/${item.session}`"
+            :class="{ 'pc-picked': isPicked(item) }"
+            @click="togglePick(item)"
+          >
+            <td class="pc-pickcell" @click.stop>
+              <input type="checkbox" class="pc-check" :checked="isPicked(item)" @change="togglePick(item)" />
+            </td>
             <td class="pc-type">
               <span v-if="item.type === 'video'" class="x-tag brand">视频</span>
               <span v-else class="x-tag mute">图文</span>
@@ -505,14 +523,28 @@
             </option>
           </select>
         </label>
+        <!-- 条数：以前写死「最多 3 条」，用户问「不能选择性发布吗」。现在既能选条数，
+             也能勾具体的某几条（勾了就按勾选的发，条数下拉自动失效）。 -->
+        <label class="pub-target" title="不勾选时按顺序发前 N 条（新→旧，不随机）">
+          <span>条数</span>
+          <select v-model="publishCount" class="x-select pc-count" :disabled="pickedCount > 0">
+            <option :value="1">1 条</option>
+            <option :value="2">2 条</option>
+            <option :value="3">3 条</option>
+            <option value="all">全部</option>
+          </select>
+        </label>
         <div class="x-spacer"></div>
-        <span class="x-hint pub-hint" title="默认只发当天、每轮最多 3 条；勾「含旧会话」才发历史日期">只发当天 · 最多 3 条</span>
+        <button v-if="pickedCount" class="x-mini pc-clear" @click="clearPicks" title="取消全部勾选">清空勾选</button>
+        <span class="x-hint pub-hint" :title="publishPlan.detail">
+          {{ pickedCount ? `已勾选 ${pickedCount} 条` : '按生成时间新→旧，不随机' }}
+        </span>
         <button class="x-btn" @click="handlePublish" :disabled="publishing">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
             <path d="m9.5 13.5 4.2-4.2" />
           </svg>
-          <span>{{ publishing ? '发布中…' : '发布全部' }}</span>
+          <span>{{ publishing ? '发布中…' : (pickedCount ? `发布勾选的 ${pickedCount} 条` : '发布') }}</span>
         </button>
       </div>
     </div>
@@ -539,14 +571,22 @@
           </div>
           <div class="pub-row">
             <span class="pub-k">条数</span>
-            <span class="pub-v">最多 {{ publishMaxCount }} 条{{ includeOld ? '，含历史日期会话' : '，只发当天' }}</span>
+            <span class="pub-v">{{ publishPlan.detail }}{{ includeOld ? '，含历史日期会话' : '' }}</span>
+          </div>
+          <div v-if="pickedCount" class="pub-row">
+            <span class="pub-k">内容</span>
+            <span class="pub-v pub-list">
+              <span v-for="p in pickedItems" :key="`${p.date}/${p.session}`" class="pub-item">
+                {{ p.date }} {{ p.time }} · {{ p.title || p.session }}
+              </span>
+            </span>
           </div>
           <div class="pub-row">
             <span class="pub-k">待发</span>
             <span class="pub-v">{{ pendingItems.length }} 条可发</span>
           </div>
           <div class="x-tip pub-tip">
-            发出去就撤不回来了。要发到别的号，关掉这张卡，在「发到」里换账号。
+            发出去就撤不回来了。要发到别的号 / 换几条，关掉这张卡再改。
           </div>
         </div>
         <div class="pub-dialog-foot">
@@ -732,7 +772,7 @@
 import { useAppStore } from '../stores/app.js';
 import { useRouter } from 'vue-router';
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
-import { buildPublishOpts, publishTargetLabel as targetLabelOf, publishTargetOptions } from '../lib/publish-request.js';
+import { buildPublishOpts, buildPickKeys, describePublishPlan, publishTargetLabel as targetLabelOf, publishTargetOptions } from '../lib/publish-request.js';
 
 const store = useAppStore();
 const router = useRouter();
@@ -1052,6 +1092,10 @@ async function refreshCollectData() {
 const publishTarget = ref(localStorage.getItem('xnowpost.publishTarget') || '')
 watch(publishTarget, (v) => localStorage.setItem('xnowpost.publishTarget', v || ''));
 const publishConfirm = ref(false)
+// 条数：1 / 2 / 3 / 'all'（不勾选时按顺序发前 N 条）
+const publishCount = ref(1)
+// 勾选的条目（key = date/session）。勾了就按勾选发，条数下拉失效。
+const pickedKeys = ref([])
 const pendingLoaded = ref(false)
 const publishMaxCount = 3;   // 和主进程 DEFAULT_MAX_PER_RUN 一致，超过也只发 3 条
 const accountOptions = ref([])
@@ -1072,6 +1116,33 @@ async function loadPublishAccounts() {
   } catch (_) {}
 }
 
+// ── 勾选与条数（2026-10-19 用户问「不能选择性发布吗，非要发 3 条或者随机？」）──
+const pickedItems = computed(() => pendingItems.value.filter((it) => isPicked(it)))
+const pickedCount = computed(() => pickedItems.value.length)
+const shownPendingKeys = computed(() => shownPending.value.map((it) => `${it.date}/${it.session}`))
+const allShownSelected = computed(() => shownPendingKeys.value.length > 0
+  && shownPendingKeys.value.every((k) => pickedKeys.value.includes(k)))
+const someShownSelected = computed(() => shownPendingKeys.value.some((k) => pickedKeys.value.includes(k)))
+
+// 这一轮到底发几条、发哪些 —— 确认卡和真正执行都读它
+const publishPlan = computed(() => describePublishPlan({
+  pick: pickedItems.value,
+  count: publishCount.value,
+  total: pendingItems.value.filter((it) => !it.old).length,
+}))
+
+function pickKeyOf(item) { return `${item.date}/${item.session}`; }
+function isPicked(item) { return pickedKeys.value.includes(pickKeyOf(item)); }
+function togglePick(item) {
+  const k = pickKeyOf(item);
+  pickedKeys.value = pickedKeys.value.includes(k)
+    ? pickedKeys.value.filter((x) => x !== k)
+    : [...pickedKeys.value, k];
+}
+function toggleSelectAll(on) {
+  pickedKeys.value = on ? [...new Set([...pickedKeys.value, ...shownPendingKeys.value])] : [];
+}
+function clearPicks() { pickedKeys.value = []; }
 // 文案和真正发出去的目标同源（都是 src/renderer/lib/publish-request.js，有单测守着）
 const publishTargetLabel = computed(() => targetLabelOf(accountOptions.value, publishTarget.value))
 
@@ -1092,15 +1163,21 @@ async function confirmPublish() {
   try {
     // includeOld / account 都由纯函数决定（单元测试守着），别在视图里再写一份
     const opts = buildPublishOpts({ target: publishTarget.value, includeOld: includeOld.value })
+    // 勾了就只发勾选的；没勾就按「条数」发前 N 条（'all' = 当天全部）
+    const pick = buildPickKeys(pickedItems.value)
+    if (pick.length) opts.pick = pick
+    else if (publishCount.value === 'all') opts.all = true
+    else opts.maxCount = Number(publishCount.value) || 1
     const result = await window.xnowpost.runPublish(opts)
     if (!result.ok) {
       store.addLog('error', '发布失败: ' + (result.message || ''))
     } else if (result.published > 0) {
-      store.addLog('success', `已发布 ${result.published} 条 → ${publishTargetLabel.value}`)
+      store.addLog('success', `已发布 ${result.published} 条 → ${publishTargetLabel.value}${pickedCount.value ? `（勾选的 ${pickedCount.value} 条）` : ''}`)
     } else {
       store.addLog('info', `没有可发的内容（${publishTargetLabel.value}）`)
     }
     publishConfirm.value = false
+    pickedKeys.value = []   // 发过的条目已不在待发里，勾选一并清掉
     await loadPendingItems()
   } catch (e) {
     store.addLog('error', '发布调用失败: ' + (e.message || e))
@@ -1477,6 +1554,15 @@ td.num { text-align: right; font-family: var(--font-mono); font-size: 11.5px; co
 /* 这一行现在有 4 个元素（含旧会话 / 发到 / 提示 / 按钮），窄了要能换行，控件不许被压扁 */
 .card-foot { flex-wrap: wrap; row-gap: 8px; }
 .pub-hint { flex: none; white-space: nowrap; }
+.pc-check { accent-color: var(--brand); cursor: pointer; margin: 0; }
+.pc-pickcell { width: 34px; }
+tbody tr { cursor: pointer; }
+tbody tr.pc-picked { background: color-mix(in srgb, var(--brand) 9%, transparent); }
+.pc-count { min-width: 76px; }
+.pc-clear { flex: none; }
+/* 勾选多条时「内容」要一条一行，挤成一段读不出来 */
+.pub-list { display: flex; flex-direction: column; gap: 2px; }
+.pub-item { display: block; line-height: 1.45; }
 
 /* 目标账号下拉：和「含旧会话」同一行，字号压低一点免得抢走按钮的视觉重心 */
 .pub-target {

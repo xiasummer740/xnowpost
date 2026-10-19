@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildPublishOpts, publishTargetLabel, publishTargetOptions } from '../../src/renderer/lib/publish-request.js';
+import { buildPublishOpts, buildPickKeys, describePublishPlan, publishTargetLabel, publishTargetOptions } from '../../src/renderer/lib/publish-request.js';
 
 const ACCOUNTS = [
   { name: '01', browserEnv: 'TK01' },
@@ -53,4 +53,50 @@ test('下拉选项：顺序跟配置一致，带 env 供界面显示', () => {
   const r = publishTargetOptions(ACCOUNTS);
   assert.equal(r.defaultLabel, '默认账号（01）');
   assert.deepEqual(r.options.map((o) => `${o.name}:${o.env}`), ['01:TK01', '02:TK02', '03:TK03']);
+});
+
+// ── 选择性发布（2026-10-19 用户问「不能选择性发布吗，非要发 3 条或者随机？」）──
+const ROWS = [
+  { date: '2026-10-19', session: 'pm_1911', title: '甲' },
+  { date: '2026-10-19', session: 'am_0830', title: '乙' },
+  { date: '2026-10-18', session: 'pm_2014', title: '丙' },
+];
+
+test('勾选 → pick 里是 date/session，顺序按勾选先后', () => {
+  assert.deepEqual(buildPickKeys(ROWS), ['2026-10-19/pm_1911', '2026-10-19/am_0830', '2026-10-18/pm_2014']);
+});
+
+test('重复勾选去重、空行/坏行丢掉，不抛异常', () => {
+  assert.deepEqual(buildPickKeys([ROWS[0], ROWS[0]]), ['2026-10-19/pm_1911']);
+  assert.deepEqual(buildPickKeys([{ session: 'am_0830' }]), ['am_0830']);
+  assert.deepEqual(buildPickKeys([{ date: 'x' }, null, undefined]), []);
+  assert.deepEqual(buildPickKeys(null), []);
+});
+
+test('计划：勾了就只发勾选的（条数下拉失效）', () => {
+  const p = describePublishPlan({ pick: [ROWS[0]], count: 3, total: 5 });
+  assert.equal(p.mode, 'pick');
+  assert.equal(p.count, 1);
+  assert.match(p.detail, /只发勾选的 1 条/);
+});
+
+test('计划：没勾按条数；条数非法时回落 3 条', () => {
+  assert.equal(describePublishPlan({ count: 1 }).count, 1);
+  assert.equal(describePublishPlan({ count: 2 }).count, 2);
+  assert.equal(describePublishPlan({ count: 0 }).count, 3);
+  assert.equal(describePublishPlan({ count: 'x' }).count, 3);
+  assert.equal(describePublishPlan({}).count, 3);
+});
+
+test('计划：全部 = 当天全部条数（不是 999 硬编码）', () => {
+  const p = describePublishPlan({ count: 'all', total: 4 });
+  assert.equal(p.mode, 'all');
+  assert.match(p.detail, /全部 4 条/);
+});
+test('界面上传的是下拉选项（{name, env}）时，确认卡也要显示 TK02 而不是「未绑定环境」', () => {
+  // 2026-10-19 真 bug：publishTargetLabel 只读 browserEnv/bitEnvId，
+  // 而界面传的是 publishTargetOptions 产出的 {name, env} → 卡片写「账号 02（未绑定环境）」
+  const opts = publishTargetOptions(ACCOUNTS).options;
+  assert.equal(publishTargetLabel(opts, '02'), '账号 02（TK02）');
+  assert.equal(publishTargetLabel(opts, '01'), '账号 01（TK01）');
 });

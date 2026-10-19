@@ -3386,8 +3386,10 @@ function setupIPC() {
     const defaultMax = Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_PER_RUN;
     const reqMax = Number(opts?.maxCount);
     const maxCount = Number.isFinite(reqMax) && reqMax > 0 ? reqMax : defaultMax;
+    // 手动勾选的条数：>0 表示"只发这几条"（逐条显式指定，优先于 maxCount）
+    const pickCount = Array.isArray(opts?.pick) ? opts.pick.length : 0;
     try {
-      addLog('info', `📤 手动发布开始（预算 ${Math.round(budgetMs / 60000)} 分钟）...`);
+      addLog('info', `📤 手动发布开始（预算 ${Math.round(budgetMs / 60000)} 分钟${pickCount ? `，勾选 ${pickCount} 条` : ''}）...`);
       const config = loadConfig();
       // 目标账号：2026-10-19 用户实测事故 —— 让助手"发 TK02"，结果发到了 TK01。
       // 根因是这条链路**只认 accounts[0]**（连 opts 都不看）。判定逻辑抽到
@@ -3418,6 +3420,30 @@ function setupIPC() {
         addLog('warning', '⚠️ 本次允许发布非当天的旧会话（includeOld=true），请确认内容仍然有效');
       }
 
+      // 手动勾选：界面上一条条点出来的（`date/session` 或 `session` 都认）。
+      // 这是**逐条显式指定**，所以它优先于 includeOld / maxCount ——
+      // 用户点的是哪条就发哪条，不再"按顺序抓前 3 条"（2026-10-19 用户提问
+      // 「不能选择性发布吗，非要发 3 条或者随机？」）。
+      const pickedRaw = Array.isArray(opts?.pick) ? opts.pick : [];
+      const pickKeys = pickedRaw
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+        .map((x) => (x.includes('/') ? x : `/${x}`));   // 只给 session 时按后缀匹配
+      let picked = null;
+      if (pickKeys.length) {
+        const all = scanUnpublished({ outputDir: outDir, today: localDateStr(), onlyToday: false, maxCount: 0 }).pending;
+        picked = all
+          .filter((p) => pickKeys.some((k) => (k.startsWith('/') ? `/${p.session}` === k : `${p.date}/${p.session}` === k)))
+          .sort((a, b) => (a.date === b.date ? (a.time < b.time ? -1 : 1) : (a.date < b.date ? -1 : 1)));
+        const missing = pickKeys.length - picked.length;
+        if (picked.length === 0) {
+          addLog('error', '❌ 勾选的条目已经不在待发列表里（可能刚被发过），本轮不动');
+          return { ok: false, message: '勾选的条目不在待发列表里' };
+        }
+        addLog('info', `🎯 手动勾选 ${picked.length} 条${missing > 0 ? `（另有 ${missing} 条已不可发，已忽略）` : ''}：`
+          + picked.map((p) => `${p.session}《${p.title || '无标题'}》`).join('、'));
+      }
+
       if (skippedRows.length) {
         // 积压几十条时会有一堆 old-date（旧日期）/published，按原因聚合成一行，
         // 只把"需要人管"的明细（未确认 / 合成失败 / 标记损坏）逐条打出来。
@@ -3429,14 +3455,22 @@ function setupIPC() {
         if (needAttention.length > 8) addLog('warning', `   · …另有 ${needAttention.length - 8} 条同类，见「运行日志」`);
       }
 
-      if (unpublished.length === 0) {
-        addLog('info', '📭 没有未发布的内容');
-        return { ok: true, published: 0 };
+      if (picked) {
+        addLog('info', `📋 待发布 ${unpublished.length} 条，本轮只发勾选的 ${picked.length} 条`);
+      } else {
+        if (unpublished.length === 0) {
+          addLog('info', '📭 没有未发布的内容');
+          return { ok: true, published: 0 };
+        }
+        addLog('info', `📋 待发布 ${unpublished.length} 条`);
       }
 
-      // 🔴 原先这里写死 unpublished[0]，所以「发布全部」实际只发 1 条。
-      const todo = maxCount === Infinity ? unpublished : unpublished.slice(0, maxCount);
-      addLog('info', `📋 待发布 ${unpublished.length} 条，本轮处理 ${todo.length} 条`);
+      // 顺序是**确定的**：日期倒序 → 同一天 pm 先于 am → 同前缀时间倒序（src/output-scan.js），不随机。
+      // 原先这里写死 unpublished[0]，所以「发布全部」其实只发 1 条。
+      const todo = picked
+        ? picked
+        : (maxCount === Infinity || opts?.all === true ? unpublished : unpublished.slice(0, maxCount));
+      addLog('info', `📤 本轮实际发 ${todo.length} 条：${todo.map((t) => t.session).join('、')}`);
 
       let published = 0;
       const failures = [];
