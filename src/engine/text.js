@@ -266,9 +266,22 @@ async function callDeepSeek(sysPrompt, userPrompt, retries = 2) {
         ],
       });
 
-      if (response.usage) trackDeepSeek(response.usage);
+      if (response.usage) {
+        // 记账用**接口回包里的真实模型名**（可能和请求的不一样：DeepSeek 会把
+        // deepseek-chat 这类老别名静默路由到别的模型，实测回的是 deepseek-flash）
+        trackDeepSeek(response.usage, response.model || cfg.model);
+      }
       const raw = response.choices[0]?.message?.content;
-      if (!raw) throw new Error('DeepSeek 返回空内容');
+      if (!raw) {
+        // 推理型模型把 token 全花在思考上时正文就是空的 —— 说清楚原因，别只报"空内容"
+        const reasoning = Number(response.usage?.completion_tokens_details?.reasoning_tokens) || 0;
+        const fin = response.choices[0]?.finish_reason;
+        throw new Error(
+          `DeepSeek 返回空内容（model=${response.model || cfg.model}，max_tokens=${cfg.maxTokens}`
+          + `${reasoning ? `，其中 ${reasoning} 花在思考上` : ''}${fin ? `，finish_reason=${fin}` : ''}）`
+          + `${fin === 'length' ? '；预算被用光 → 调大 max_tokens 或换回非推理模型' : ''}`,
+        );
+      }
 
       const parsed = robustJSONParse(raw);
       if (parsed) return parsed;

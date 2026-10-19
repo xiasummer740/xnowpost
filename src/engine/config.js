@@ -173,24 +173,66 @@ export function getVideoStyleConfig() {
   };
 }
 
+/**
+ * 界面里选的模型 / 输出上限（存在数据目录的 config/user.json）。
+ *
+ * 为什么要有这一层：模型名原来只写在代码目录的 config/default.json 里，
+ * 打包后在安装目录（app.asar.unpacked）—— 想换模型就得改代码重新打包。
+ * 而 DeepSeek 的模型是会更新的：`deepseek-chat` 这个老别名现在被服务端
+ * **静默路由到 deepseek-flash**（接口回包的 model 字段为证，2026-10-19 实测），
+ * 旗舰是 `deepseek-v4-pro`。所以模型必须能由用户在界面上切换。
+ *
+ * 优先级：数据目录 user.json > 代码目录 default.json > 内置 FALLBACK。
+ */
+function readAiOverrides() {
+  try {
+    const f = dataPath('config', 'user.json');
+    if (!fs.existsSync(f)) return {};
+    const raw = fs.readJsonSync(f);
+    const model = typeof raw?.deepseekModel === 'string' ? raw.deepseekModel.trim() : '';
+    const mt = Number(raw?.deepseekMaxTokens);
+    return {
+      model,
+      maxTokens: Number.isFinite(mt) && mt >= 256 ? Math.round(mt) : 0,
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
+/** 推理型模型（会先花一大截 token 思考）—— max_tokens 给小了就只出思考、正文空 */
+export function isReasoningModel(model) {
+  // 只认「结尾就是 pro/reasoner/r1/thinking（可带 -0915 这类快照后缀）」，
+  // 不能拿 'pro' 当子串判（'deepseek-promote' 会被误判）
+  return /(^|[-_])(pro|reasoner|r1|thinking)(-[\w.]+)?$/i.test(String(model || '').trim());
+}
+
+/** 推理模型建议的 max_tokens（实测 v4-pro 一次思考 1930 token） */
+export const REASONING_MIN_MAX_TOKENS = 8000;
+
 /** DeepSeek 调用参数 */
 export function getDeepSeekConfig() {
   const cfg = getEngineConfig().deepseek || {};
-  const model = typeof cfg.model === 'string' && cfg.model.trim() ? cfg.model.trim() : FALLBACK.deepseek.model;
-  if (model !== FALLBACK.deepseek.model) {
-    warnOnce('ds-model', `deepseek.model=${model} 与 cost.js 的价格表 (${FALLBACK.deepseek.model}) 不一致，费用会按旧单价估算`);
+  const override = readAiOverrides();
+  const model = override.model
+    || (typeof cfg.model === 'string' && cfg.model.trim() ? cfg.model.trim() : FALLBACK.deepseek.model);
+  const rawMax = override.maxTokens || cfg.max_tokens;
+  let maxTokens = Math.round(num(rawMax, FALLBACK.deepseek.max_tokens, {
+    min: 256, max: 32768, key: 'ds-max-tokens', name: 'deepseek.max_tokens',
+  }));
+  if (isReasoningModel(model) && maxTokens < REASONING_MIN_MAX_TOKENS) {
+    // 不偷偷改用户配置，但必须说清楚为什么可能出空稿
+    warnOnce('ds-reasoning-tokens', `deepseek.model=${model} 是推理模型，max_tokens=${maxTokens} 偏小（建议 ≥${REASONING_MIN_MAX_TOKENS}），思考过程可能吃光预算导致正文为空`);
   }
   return {
     model,
+    maxTokens,
     temperature: num(cfg.temperature, FALLBACK.deepseek.temperature, {
       min: 0, max: 2, key: 'ds-temp', name: 'deepseek.temperature',
     }),
     retryTemperature: num(cfg.retryTemperature, FALLBACK.deepseek.retryTemperature, {
       min: 0, max: 2, key: 'ds-temp-retry', name: 'deepseek.retryTemperature',
     }),
-    maxTokens: Math.round(num(cfg.max_tokens, FALLBACK.deepseek.max_tokens, {
-      min: 256, max: 32768, key: 'ds-max-tokens', name: 'deepseek.max_tokens',
-    })),
   };
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "xnowpost",
-  "version": "1.6.9",
+  "version": "1.6.10",
   "type": "module",
   "description": "XNOWPost 内容营销自动化引擎",
   "author": "xiasummer740",
@@ -43,3 +43,4 @@
     "vite": "^6.0.0"
   }
 }
+

@@ -21,6 +21,8 @@ import {
 // 日志行解析/分类/合并（app 日志 + 调度器日志），纯函数，单测在 tests/unit/log-lines.test.js
 import { parseLogText, mergeLogLines, dropEchoedSchedulerLines } from './lib/log-lines.js';
 import { pickLogsToPrune } from './lib/log-prune.js';
+// AI 服务错误的人话翻译（401=Key 无效 / 402=余额 / 429=限流 / 断连 ≠ Key 坏）
+import { describeAiError } from './lib/ai-error.js';
 import { pickOldDateDirs, isCleanable } from '../src/output-retention.js';
 // 发布候选扫描（唯一实现：只认当天 / 跳 FAILED / 跳已发布 / 默认 3 条）
 import { scanUnpublished, summarizeSkips, DEFAULT_MAX_PER_RUN } from '../src/output-scan.js';
@@ -191,6 +193,12 @@ const USER_CONFIG_PATH = () => path.join(DATA_DIR, 'config', 'user.json');
 // 默认配置
 const DEFAULT_CONFIG = {
   deepseekApiKey: '',
+  // 模型与输出上限（空/0 = 用代码目录 config/default.json 里的默认值）。
+  // 为什么要能配置：DeepSeek 会把老别名 `deepseek-chat` **静默路由到别的模型**
+  // （2026-10-19 实测回包 model=deepseek-flash），旗舰是 `deepseek-v4-pro`。
+  // 模型名写死在安装目录里的 default.json 里 = 用户想换只能改代码重新打包。
+  deepseekModel: '',
+  deepseekMaxTokens: 0,
   siliconflowApiKey: '',
   pexelsApiKey: '',
   tgBotToken: '',
@@ -1424,6 +1432,83 @@ function setupIPC() {
     return out;
   });
 
+  /**
+   * 在**主进程里**发一次 DeepSeek chat 请求。
+   *
+   * ⚠️ 绝不能用 OpenAI SDK（它的 fetch = undici）—— 2026-10-19 实测：
+   *    同一把 Key、同一台机器，`node` 里用 SDK 连打 5 次全通（0.4~0.9s），
+   *    但在 **Electron 主进程**里必然 0.6~0.8s 就 `Premature close`
+   *    （连 `/models` 这种 GET 用 axios 都正常，只有 SDK 的请求挂）。
+   *    所以这里走 axios（node:https），和硅基流动 / Pexels 的测试走同一套栈。
+   * 返回 `{ model, usage }`；HTTP 4xx/5xx 也当作异常抛出，并带上 status 供文案分类。
+   */
+  async function deepSeekChatMain(apiKey, { model, maxTokens = 10, timeout = 30000, retries = 1 } = {}) {
+    const axios = (await import('axios')).default;
+    let lastErr = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const r = await axios.post(
+          'https://api.deepseek.com/chat/completions',
+          { model, max_tokens: maxTokens, messages: [{ role: 'user', content: 'hi' }] },
+          {
+            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            timeout,
+            validateStatus: () => true,
+          },
+        );
+        if (r.status >= 400) {
+          const e = new Error(r.data?.error?.message || `HTTP ${r.status}`);
+          e.status = r.status;
+          throw e;
+        }
+        return { model: r.data?.model || model, usage: r.data?.usage || null };
+      } catch (e) {
+        lastErr = e;
+        addLog('error', `DeepSeek 请求失败（第 ${attempt + 1} 次）：${e.name || 'Error'} ${e.message}`);
+      }
+    }
+    throw lastErr;
+  }
+
+  // 模型列表 + 「当前请求的模型实际被路由到了哪个模型」
+  // 背景（2026-10-19）：用户问"模型是最新的吗、会自动升级吗"。
+  // 实测 `deepseek-chat` 这个老别名被服务端静默路由到 `deepseek-flash`，
+  // 而 `/models` 只列出 flash 和 v4-pro —— 界面上必须能看见这件事。
+  ipcMain.handle('ai:models', async () => {
+    const config = loadConfig();
+    const apiKey = String(config.deepseekApiKey || '').trim();
+    const requested = String(config.deepseekModel || '').trim() || 'deepseek-chat';
+    if (!apiKey) {
+      return { ok: false, message: '请先填写 DeepSeek API Key 再刷新模型列表', models: [], requested, actual: '' };
+    }
+    const out = { ok: false, message: '', models: [], requested, actual: '', elapsedMs: 0 };
+    try {
+      const axios = (await import('axios')).default;
+      const r = await axios.get('https://api.deepseek.com/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        timeout: 15000,
+      });
+      out.models = (r.data?.data || []).map((m) => String(m?.id || '')).filter(Boolean).sort();
+      out.ok = true;
+    } catch (e) {
+      out.message = describeAiError(e, { provider: 'DeepSeek 模型列表' });
+      return out;
+    }
+    // 再用一个极小的请求问出"实际跑的是哪个模型"（别名可能被服务端路由）
+    const started = Date.now();
+    try {
+      const r = await deepSeekChatMain(apiKey, { model: requested, maxTokens: 1, retries: 1 });
+      out.actual = r.model || requested;
+      out.elapsedMs = Date.now() - started;
+      out.message = out.actual !== requested
+        ? `请求的 ${requested} 被服务端路由到 ${out.actual}（${(out.elapsedMs / 1000).toFixed(1)}s）`
+        : `请求的 ${requested} 就是实际模型（${(out.elapsedMs / 1000).toFixed(1)}s）`;
+    } catch (e) {
+      out.message = describeAiError(e, { provider: 'DeepSeek 探测实际模型', elapsedMs: Date.now() - started, attempts: 2 });
+    }
+    return out;
+  });
+
   // 测试 API 连接
   ipcMain.handle('config:test', async (_event, type, key) => {
     // 只接受真实 Key：配置页现在拿到的是掩码，
@@ -1434,25 +1519,33 @@ function setupIPC() {
 
     if (type === 'deepseek') {
       if (!apiKey) return { ok: false, message: '请先填写 DeepSeek API Key' };
+      const model = String(config.deepseekModel || '').trim() || 'deepseek-chat';
+      const started = Date.now();
       try {
-        const OpenAI = (await import('openai')).default;
-        const client = new OpenAI({
-          apiKey,
-          baseURL: 'https://api.deepseek.com',
-          timeout: 10000,
-        });
-        await client.chat.completions.create({
-          model: 'deepseek-chat', max_tokens: 10,
-          messages: [{ role: 'user', content: 'hi' }],
-        });
-        return { ok: true, message: 'DeepSeek 文案 API ✅ 连接成功' };
+        // 30 秒 + 重试 1 次；用 axios 而不是 OpenAI SDK（原因见 deepSeekChatMain 注释）
+        const r = await deepSeekChatMain(apiKey, { model, maxTokens: 10, timeout: 30000, retries: 1 });
+        const elapsedMs = Date.now() - started;
+        // ⚠️ 回包里的 model 才是**真正跑的那个模型**：别名可能被服务端路由到别的型号
+        const actual = r.model || model;
+        const routed = actual !== model ? `（请求 ${model}，实际由服务端路由到 ${actual}）` : '';
+        return {
+          ok: true,
+          model: actual,
+          requestedModel: model,
+          elapsedMs,
+          message: `DeepSeek 文案 API ✅ 连接成功 · 实际模型 ${actual}${routed} · ${(elapsedMs / 1000).toFixed(1)}s`,
+        };
       } catch (err) {
-        return { ok: false, message: 'DeepSeek ❌ ' + err.message };
+        return {
+          ok: false,
+          message: describeAiError(err, { provider: 'DeepSeek', elapsedMs: Date.now() - started, attempts: 2 }),
+        };
       }
     }
 
     if (type === 'siliconflow') {
       if (!apiKey) return { ok: false, message: '请先填写硅基流动 API Key' };
+      const started = Date.now();
       try {
         // 测试生图 API
         const axios = (await import('axios')).default;
@@ -1462,11 +1555,18 @@ function setupIPC() {
           { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 30000 }
         );
         if (resp.status === 200) {
-          return { ok: true, message: '硅基流动 生图 API ✅ 连接成功（模型: Kolors）' };
+          return { ok: true, message: `硅基流动 生图 API ✅ 连接成功（模型: Kolors，${((Date.now() - started) / 1000).toFixed(1)}s）` };
         }
         return { ok: false, message: '硅基流动 ❌ HTTP ' + resp.status };
       } catch (err) {
-        return { ok: false, message: '硅基流动 ❌ ' + (err.response?.data?.message || err.message) };
+        // 服务商给的业务错误优先（比如"余额不足"），否则用统一的人话翻译
+        const biz = err.response?.data?.message;
+        return {
+          ok: false,
+          message: biz
+            ? `硅基流动 ❌ ${biz}`
+            : describeAiError(err, { provider: '硅基流动', elapsedMs: Date.now() - started }),
+        };
       }
     }
 

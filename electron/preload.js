@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('xnowpost', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   testApi: (type, key) => ipcRenderer.invoke('config:test', type, key),
+  // DeepSeek 模型列表 + 「请求的模型实际被路由到哪个模型」
+  aiModels: () => ipcRenderer.invoke('ai:models'),
   testBit: (apiKey, opts) => ipcRenderer.invoke('config:testBit', apiKey, opts),
   listFoxProfiles: () => ipcRenderer.invoke('config:foxProfiles'),
   getDataDir: () => ipcRenderer.invoke('config:getDataDir'),

@@ -111,6 +111,41 @@
           </div>
         </div>
 
+        <!-- 模型选择：DeepSeek 会把老别名静默路由到别的型号（deepseek-chat → deepseek-flash），
+             所以这里既要能选，也要显示「请求的」和「实际跑的」分别是什么 -->
+        <div class="x-field wide-act">
+          <span class="x-label">
+            <b>文案模型</b>
+            <span v-if="modelState.actual" class="x-tag ok">{{ modelState.actual }}</span>
+            <span v-else class="x-tag mute">未探测</span>
+          </span>
+          <div class="stack">
+            <div class="model-line">
+              <select v-model="form.deepseekModel" class="x-select" @change="onModelChange">
+                <option value="">默认（deepseek-chat）</option>
+                <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+              </select>
+              <button class="x-mini" type="button" @click="refreshModels" :disabled="modelState.loading">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1" />
+                  <path d="M20.5 4.5V10h-5.4" />
+                </svg>
+                <span>{{ modelState.loading ? '查询中' : '刷新列表' }}</span>
+              </button>
+            </div>
+            <div v-if="modelState.message" class="res-line" :class="modelState.ok ? 'ok' : 'err'">
+              {{ modelState.message }}
+            </div>
+            <div class="res-line dim">
+              请求：{{ form.deepseekModel || 'deepseek-chat' }} ·
+              实际：{{ modelState.actual || '点「刷新列表」问服务端' }} ·
+              输出上限：{{ form.deepseekMaxTokens || 4096 }} tokens
+              <template v-if="isReasoning">（推理模型建议 ≥8000，否则正文可能为空）</template>
+            </div>
+          </div>
+          <div class="x-actions"></div>
+        </div>
+
         <!-- 硅基流动 -->
         <div class="x-field wide-act">
           <span class="x-label">
@@ -584,12 +619,15 @@
 </template>
 
 <script setup>
-import { reactive, ref, onMounted } from 'vue'
+import { reactive, ref, computed, onMounted } from 'vue'
 import { useAppStore } from '../stores/app.js'
 
 const store = useAppStore()
 const form = reactive({
   deepseekApiKey: '',
+  // 文案模型 / 输出上限（空 / 0 = 用代码里的默认 deepseek-chat、4096）
+  deepseekModel: '',
+  deepseekMaxTokens: 0,
   siliconflowApiKey: '',
   pexelsApiKey: '',
   tgBotToken: '',
@@ -613,6 +651,41 @@ const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, 
 // FoxProfile 环境列表（给账号下拉用）
 const foxProfiles = ref([])
 const foxLoadError = ref('')
+
+// ── 文案模型（2026-10-19）────────────────────────────────────────────
+// 背景：DeepSeek 把 `deepseek-chat` 静默路由到了 `deepseek-flash`，旗舰是 `deepseek-v4-pro`。
+// 所以这里既让人能选模型，也把"请求的"和"服务端实际跑的"分开显示 —— 否则永远看不见被换了。
+const modelOptions = ref([])
+const modelState = reactive({ loading: false, ok: false, message: '', actual: '' })
+// 推理型模型：会先花一大截 token 思考，max_tokens 给小了正文就是空的
+const isReasoning = computed(() => /(^|[-_])(pro|reasoner|r1|thinking)(-[\w.]+)?$/i.test(String(form.deepseekModel || '').trim()))
+
+async function refreshModels() {
+  modelState.loading = true
+  modelState.ok = false
+  modelState.message = ''
+  try {
+    const r = await window.xnowpost.aiModels()
+    modelOptions.value = r.models || []
+    modelState.actual = r.actual || ''
+    modelState.ok = !!r.ok
+    modelState.message = r.message || (r.ok ? `服务端可用 ${modelOptions.value.length} 个模型` : '查询失败')
+  } catch (e) {
+    modelState.message = '查询失败: ' + ((e && e.message) || e)
+  } finally {
+    modelState.loading = false
+  }
+}
+
+// 换模型时把输出上限一起调整（推理模型必须给够，否则只出思考不出正文）
+function onModelChange() {
+  if (isReasoning.value) {
+    if (!form.deepseekMaxTokens || form.deepseekMaxTokens < 8000) form.deepseekMaxTokens = 8000
+  } else if (form.deepseekMaxTokens === 8000) {
+    form.deepseekMaxTokens = 4096
+  }
+}
+
 const saving = ref(false)
 const errorMsg = ref('')
 const validationErrors = reactive({})
@@ -710,6 +783,8 @@ onMounted(async () => {
   } catch (_) {}
   // 拉一次 FoxProfile 环境列表填充下拉（连不上就提示，不阻断页面）
   loadFoxProfiles()
+  // 顺手探测一次「实际在跑哪个模型」（只花 1 个 token；慢也不阻塞页面）
+  refreshModels()
 })
 
 // 读取 FoxProfile 环境列表（下拉选项）
@@ -883,6 +958,17 @@ function restartApp() {
 }
 .res-line.ok { color: var(--ok); }
 .res-line.err { color: var(--danger); }
+.res-line.dim { color: var(--text-3); font-size: 11px; }
+
+/* 模型行：下拉 + 刷新按钮并排（下拉要能吃满剩余宽度） */
+.model-line {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.model-line .x-select { flex: 1 1 auto; min-width: 0; }
+.model-line .x-mini { flex: 0 0 auto; }
 
 .field-error {
   font-size: 11px;
@@ -1000,3 +1086,5 @@ function restartApp() {
 }
 
 </style>
+
+

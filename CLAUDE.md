@@ -629,6 +629,38 @@ node src/publisher/index.js --env TK01 --max 1
   3. **日报页「这天发了什么」**：IPC `report:publishDay` 读发布账本（成功）+ 会话目录 FAILED（失败/未确认）。
      账号都没数据时数据日报全是「—」，但这三个数永远是实话。
 
+## 模型名不许写死在安装目录里（`deepseek-chat` 是个会变的别名）
+用户 2026-10-19 问「模型是最新的吗、会自动升级吗」。实测三件事：
+- `GET https://api.deepseek.com/models` 只列 `deepseek-flash` 和 `deepseek-v4-pro`；
+- 用 `deepseek-chat` 请求，**回包里的 `model` 字段是 `deepseek-flash`** —— 老别名被服务端
+  **静默路由**了（当天 10 条成片其实都是 flash 出的）；
+- `deepseek-v4-pro` 是**推理模型**：同一个 9 分镜口播稿，flash 9.6s / 1893 tokens / 正文 1012 字，
+  v4-pro 21.9s / 2257 tokens（其中 **1930 是思考**）/ 正文 856 字；max_tokens 给 120 和 3000
+  都返回**空正文**（`finish_reason=length`），给 8000 才有内容。
+
+所以：
+- **模型/上限存在数据目录 `config/user.json` 的 `deepseekModel` / `deepseekMaxTokens`**，
+  优先级 数据目录 > 代码目录 `config/default.json` > 内置 FALLBACK（`src/engine/config.js` 的
+  `readAiOverrides()`）。别再只改 `config/default.json` —— 打包后它在安装目录里，用户改不了。
+- 配置页有「文案模型」下拉（列表来自 `/models`）+ 「刷新列表」，并**分开显示「请求的」和「实际的」**：
+  只要两者不一致就说明被路由了，这件事必须看得见（`ai:models` IPC 用一个 1 token 请求探测）。
+- 选到推理模型时自动把上限提到 **8000**（`REASONING_MIN_MAX_TOKENS`），否则正文会是空的；
+  引擎侧 `getDeepSeekConfig()` 对推理模型 + 小 max_tokens 会 warnOnce 说明原因。
+- **记账按回包里的真实模型名**：`trackDeepSeek(usage, response.model)`，`cost.json` 多写
+  `models[]` 与 `estimated`。价格表只有 `deepseek-chat` 是确认过的，其它模型按它估算并**明确标记**
+  （`priceForModel()`），别把未知模型算成 0 元 = 假装免费。
+- 「测试连接」改成 **30 秒超时 + 自动重试一次 + 错误分类**（`electron/lib/ai-error.js`）：
+  401=Key 无效、402=余额不足、429=限流、5xx=服务端、超时/DNS/传输中断分开说。
+  起因：用户截图里的 `Premature close` 被当成 Key 坏了，其实同一把 Key 连打 5 次全通（0.4~0.9s）。
+- **主进程里绝对不要用 OpenAI SDK 发 DeepSeek 请求**（这是本轮最值钱的一条）：
+  2026-10-19 实测，同一把 Key、同一台机器 —— `node` 里用 SDK 连打 5 次全通（0.4~0.9s），
+  但在 **Electron 主进程**里必然 0.6~0.8s 就 `Invalid response body ... Premature close`；
+  同时 `GET /models`（axios）和硅基流动生图（axios）都正常。
+  所以主进程里统一走 `deepSeekChatMain()`（axios + `node:https`）；
+  引擎跑在**独立 node 子进程**里，继续用 SDK 没问题（每天 10 条成片都是它生成的）。
+  排查入口：失败时应用日志会写 `DeepSeek 请求失败（第 N 次）：<name> <message>`。
+
+
 ## 凭据备份与恢复（`src/secrets-backup.js`）
 - 每天把 5 个文件（`data/env-accounts.json`、`account-profiles.json`、`account-meta.json`、
   `config/schedule.json`、`data/publish-ledger.jsonl`）+ 全部 cookie 打成

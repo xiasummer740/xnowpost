@@ -1,6 +1,66 @@
 # 接力开发 — 新对话从这里开始
 
-> 更新：2026-10-19 12:2x ｜ 版本 **1.6.9**（已打包、已部署、已重启验证）
+> 更新：2026-10-19 13:0x ｜ 版本 **1.6.10**（已打包、已部署、已重启验证）
+
+## 1F. v1.6.10（2026-10-19 13:00）模型可选 + 测试连接改稳
+
+用户问「deepseek 模型是最新的吗，会自动升级吗」—— 查出来的根因比问题本身严重。
+
+### 实测（都是拿用户那把 Key 真打的）
+- `GET /models` 只列 **`deepseek-flash`** 和 **`deepseek-v4-pro`**；
+- 用 `deepseek-chat` 请求，**回包 `model` 字段 = `deepseek-flash`** → 老别名被**静默路由**，
+  当天 10 条成片其实全是 flash 出的；
+- `deepseek-v4-pro` 是**推理模型**：同一 9 分镜稿 flash 9.6s / 1893 tokens / 正文 1012 字，
+  v4-pro 21.9s / 2257 tokens（**1930 是思考**）/ 正文 856 字；max_tokens 给 120、3000 都返回
+  **空正文**（`finish_reason=length`），给 8000 才有内容。
+- 用户截图里的 `Premature close` 是**瞬时断连**：同一把 Key 连打 5 次全通（0.4~0.9s），
+  但老「测试连接」只给 10 秒且不重试，一抖就红，看着像 Key 坏了。
+
+### 改了什么
+- `src/engine/config.js`：新增 `readAiOverrides()`，模型/上限优先级
+  **数据目录 `config/user.json`（`deepseekModel` / `deepseekMaxTokens`）> 代码目录 `config/default.json` > FALLBACK**；
+  新增 `isReasoningModel()` 与 `REASONING_MIN_MAX_TOKENS=8000`（推理模型 + 小上限会 warnOnce 说明会出空稿）。
+- `src/engine/cost.js`：`trackDeepSeek(usage, model)` 按**回包真实模型名**记账，`priceForModel()`
+  对没有确认单价的模型标 `estimated`（只有 `deepseek-chat` 是确认价，其余按它估算并明说），
+  `cost.json` 多写 `models[]` / `estimated`。
+- `src/engine/text.js`：空正文的报错带 `model / max_tokens / reasoning_tokens / finish_reason`，
+  `finish_reason=length` 时直接提示「预算被用光 → 调大 max_tokens 或换回非推理模型」。
+- `electron/lib/ai-error.js`（新）+ 9 单测：401=Key 无效 / 402=余额不足 / 429=限流 / 5xx=服务端 /
+  超时 / DNS / **传输中断（明说不是 Key 的问题）**；文案带耗时与重试次数。
+- `electron/main.js`：`config:test` 的 deepseek 改 **30 秒 + SDK 重试 1 次**，成功时回显
+  **实际模型**与耗时；新增 IPC **`ai:models`**（列表 + 用 1 token 请求探测"实际被路由到哪个模型"）；
+  `DEFAULT_CONFIG` 增 `deepseekModel` / `deepseekMaxTokens`；硅基流动也用同一份错误文案 + 耗时。
+- `electron/preload.js`：`aiModels()`。
+- `src/renderer/views/Config.vue`：AI 卡新增「文案模型」行 —— 下拉（列表来自 `/models`）+「刷新列表」，
+  下面一行显示 `请求：X · 实际：Y · 输出上限：N tokens`，**两者不一致就说明被路由了**；
+  选到推理模型自动把上限提到 8000。进页面时自动探测一次（只花 1 token）。
+- 单测：`ai-error` 9 例 + `model-choice` 5 例（推理模型判定不能把 `deepseek-promote` 当推理模型；
+  未知模型单价必须标估算且不能算成 0）。
+- 全量 `npm run verify`：**371 条全绿**。
+
+### 已知边界
+- 只有 `deepseek-chat` 的单价是确认过的；flash / v4-pro 的费用是**估算**（已在日志和 cost.json 标记）。
+- `deepseek-v4-pro` 生成要 20 秒以上、token 翻倍 —— 默认仍用 `deepseek-chat`（现路由到 flash），
+  要换由用户在配置页自己选。
+
+### 部署后验收（都实测过）
+- 应用内点「测试」→ `DeepSeek 文案 API ✅ 连接成功 · 实际模型 deepseek-flash（请求 deepseek-chat，
+  实际由服务端路由到 deepseek-flash）· 0.4s`；
+- 点「刷新列表」→ `请求的 deepseek-chat 被服务端路由到 deepseek-flash（0.8s）`，
+  标签显示 `deepseek-flash`，下行 `请求：deepseek-chat · 实际：deepseek-flash · 输出上限：4096 tokens`；
+- 下拉切到 `deepseek-flash` → 点「保存配置」→ `user.json` mtime 12:57:05 → 12:58:16，
+  `deepseekModel='deepseek-flash'`、两个 Key 仍是 35 / 51 字符（掩码没被写进去）、账号 10 个，
+  日志 `配置已保存`；
+- 全量 `npm run verify`：**377 条全绿**（1.6.9 的 357 + ai-error 9 + model-choice 5 + model-override 6）。
+
+### ⚠️ 本轮最值钱的发现：主进程里不能用 OpenAI SDK
+第一次打包测试时，应用内「测试」和「探测实际模型」**都失败**，报的正是用户截图那句
+`传输中途断开`（0.6~0.8s）。同一把 Key 在 `node` 里连打 5 次全通、`GET /models`（axios）也通 ——
+说明不是 Key 也不是网络，而是 **Electron 主进程里 openai SDK 的 fetch(undici)** 在这台机器上必挂。
+改用 axios（`node:https`）后一次就通。引擎跑在独立 node 子进程里，继续用 SDK 没问题。
+以后在主进程里发 AI 请求，一律走 `deepSeekChatMain()`（失败会往应用日志写
+`DeepSeek 请求失败（第 N 次）：<name> <message>`）。
+
 
 ## 1E. v1.6.9（2026-10-19 12:20）P0 前三件：快照 / 凭据恢复 / 发布护栏 + 失败通知
 
