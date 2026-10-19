@@ -354,7 +354,9 @@ export function describeToolCall(name, args = {}, ctx = {}) {
     }
     case 'schedule_action': {
       const job = (ctx.jobs || []).find((j) => String(j.id) === String(a.id));
-      const who = job ? `${job.time} ${job.type || job.mode || ''}${job.account ? ` · 账号 ${job.account}` : ''}` : `id=${a.id}`;
+      const who = job
+        ? `#${job.id} · ${job.time} ${job.type || job.mode || ''}${job.account ? ` · 账号 ${job.account}` : ''}`
+        : `id=${a.id}`;
       if (a.op === 'enable') return `启用定时任务：${who}`;
       if (a.op === 'disable') return `停用定时任务：${who}`;
       if (a.op === 'delete') return `删除定时任务：${who}（不可撤销）`;

@@ -193,6 +193,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 import TimePicker from '../components/TimePicker.vue'
 import { MODE_OPTIONS as modeOptions, MODE_LABEL_MAP as modeLabelMap } from '../constants.js'
+import { reconcileJobIds, nextJobId as nextJobIdFrom } from '../../job-ids.js'
 
 const jobs = ref([])
 const accounts = ref([])
@@ -201,42 +202,17 @@ const saved = ref(false)
 const saveError = ref('')
 const searchTexts = ref({})  // 每个闹钟的账号搜索文本
 
-// ===== 闹钟 id 分配（P1-2）=====
+// ===== 闹钟 id 分配 =====
 // 旧实现是模块级 `let nextId = 100`，每次组件挂载都重置，且 load() 不与磁盘数据对账，
 // 于是每次会话都重新发 100/101…，config/schedule.json 里出现了 2,101,101 这样的重复 id。
-// 现在：load() 时先对账/去重，idSeq 只在首次对齐后单调递增。
+// 更早的版本还用过 `Date.now()` 当 id，留下 1783852240727 这种 13 位数字，和 1/2/102 混在一份配置里
+// （用户 2026-10-19 反馈「编码能统一一下吗」）。
+// 现在规则只有一份，在 `src/job-ids.js`：id 是 1~999 的纯序号、只增不改、重复/越界自动重发号；
+// 历史 13 位 id 已由 `scripts/normalize-schedule-ids.mjs` 一次性迁移（08:30–09:15 → 1–10）。
 let idSeq = 0
 
-// 保证 id 唯一：保留首次出现的合法 id，重复/非法的重新分配一个更大的 id；
-// 返回当前最大 id，供后续 addJob/cloneJob 继续发号
-function reconcileJobIds(list) {
-  let max = 0
-  for (const job of list) {
-    const id = Number(job.id)
-    if (Number.isFinite(id) && id > 0) max = Math.max(max, id)
-  }
-  const seen = new Set()
-  for (const job of list) {
-    const id = Number(job.id)
-    if (Number.isFinite(id) && id > 0 && !seen.has(id)) {
-      seen.add(id)
-    } else {
-      job.id = ++max
-      seen.add(job.id)
-    }
-  }
-  return max
-}
-
-// 下一个安全的自增 id（永远大于当前所有 id）
 function nextJobId() {
-  let max = idSeq
-  for (const job of jobs.value) {
-    const id = Number(job.id)
-    if (Number.isFinite(id) && id > max) max = id
-  }
-  idSeq = max + 1
-  return idSeq
+  return nextJobIdFrom(jobs.value, idSeq)
 }
 
 // 采集面板

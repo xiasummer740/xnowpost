@@ -7,6 +7,8 @@
  */
 import path from 'path';
 import fs from 'fs-extra';
+// id 发号/自愈的唯一实现（界面、主进程、迁移脚本共用；单测 tests/unit/job-ids.test.js）
+import { reconcileJobIds } from '../../src/job-ids.js';
 
 // === 密钥掩码 ===
 
@@ -98,29 +100,29 @@ export function readTextCapped(file, maxBytes = 5 * 1024 * 1024) {
 }
 
 /**
- * 定时任务 id 自愈。
- * 历史配置里存在重复 id（根因是前端 `nextId` 是模块级计数器、每次挂载重置为 100）。
- * 只重写「重复的」那些，唯一 id 原样保留，尽量不与前端内存状态分叉。
+ * 定时任务 id 自愈（主进程侧的护栏，`schedule:list` / `schedule:save` 都会过一遍）。
+ *
+ * 实现只有一份：`src/job-ids.js` 的 `reconcileJobIds()`（界面、主进程、迁移脚本共用）。
+ * 这里只负责两件主进程特有的事：
+ *   ① 纯函数 —— 先浅拷贝再交给它（它会原地改 id，不能让调用方的对象被改）；
+ *   ② 返回 `{jobs, changed}`，`changed` 用改前改后的 id 字符串比对得出。
+ *
+ * 口径（和 job-ids 一致）：合法 id（1~999 的正整数）**永远保留**，重复/非法/越界
+ * （历史上用过 `Date.now()`，留下 1783852240727 这类 13 位数字）才重新发号。
+ * 所以老配置第一次被这个函数碰到时，13 位 id 会自动变成小序号 —— 那是刻意的自愈。
  */
 export function dedupeJobIds(jobs) {
   if (!Array.isArray(jobs)) return { jobs, changed: false };
-  const seen = new Set();
-  let maxId = 0;
-  for (const j of jobs) {
-    const n = Number(j?.id);
-    if (Number.isFinite(n) && n > maxId) maxId = n;
-  }
-  let nextId = Math.max(maxId, 100) + 1;
+  const out = jobs.map((j) => (j && typeof j === 'object' ? { ...j } : j));
+  const before = jobs.map((j) => (j && typeof j === 'object' ? String(j.id) : ''));
+  reconcileJobIds(out);
   let changed = false;
-  const out = jobs.map(j => {
-    if (!j || typeof j !== 'object') return j;
-    const n = Number(j.id);
-    if (Number.isFinite(n) && n > 0 && !seen.has(n)) {
-      seen.add(n);
-      return j;
+  for (let i = 0; i < out.length; i += 1) {
+    const j = out[i];
+    if (j && typeof j === 'object' && String(j.id) !== before[i]) {
+      changed = true;
+      break;
     }
-    changed = true;
-    return { ...j, id: nextId++ };
-  });
+  }
   return { jobs: out, changed };
 }
