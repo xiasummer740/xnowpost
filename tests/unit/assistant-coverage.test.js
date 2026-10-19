@@ -17,6 +17,7 @@ import {
   needsConfirm,
   validateArgs,
   describeToolCall,
+  buildSystemPrompt,
   LEVEL,
 } from '../../electron/lib/assistant-tools.js';
 
@@ -83,6 +84,25 @@ test('get_trend 的天数被夹在 1~30，且预览带上天数', () => {
   assert.equal(validateArgs('get_trend', { whatever: 1 }).ok, false);
 });
 
+
+test('发内容能指定账号（2026-10-19 发错号事故的护栏）', () => {
+  // ① 工具定义里有 account，且预览把"发到哪个号"写出来
+  assert.match(describeToolCall('run_publish', { maxCount: 1, account: '02' }), /账号 02/);
+  assert.match(describeToolCall('run_publish', { maxCount: 1 }), /默认账号（01）/);
+  assert.match(describeToolCall('run_publish', { maxCount: 1, env: 'tk03' }), /TK03/);
+  assert.match(describeToolCall('run_engine', { mode: 'video', account: '02' }), /发账号 02/);
+  assert.match(describeToolCall('run_engine', { mode: 'video' }), /账号按配置/);
+
+  // ② 参数校验收下 account / env / autoPublish，且不许塞别的东西
+  assert.equal(validateArgs('run_publish', { account: '02' }).ok, true);
+  assert.equal(validateArgs('run_publish', { env: 'TK02' }).ok, true);
+  assert.equal(validateArgs('run_engine', { mode: 'video', account: '02', autoPublish: true }).ok, true);
+  assert.equal(validateArgs('run_publish', { target: '02' }).ok, false);
+
+  // ③ 系统提示词必须写死"用户点名账号就要带 account，不许先跑再说发错"
+  const p = buildSystemPrompt({ today: '2026-10-19', appVersion: '1.6.18', model: 'deepseek-chat' });
+  assert.match(p, /必须带 account/);
+});
 test('工具总数受控（每次加能力都要显式改这个数，防"偷偷多塞"）', () => {
   assert.equal(PUBLIC_TOOLS_NAMES.length, 22);
 });

@@ -26,6 +26,8 @@ import { describeAiError } from './lib/ai-error.js';
 import { pickOldDateDirs, isCleanable } from '../src/output-retention.js';
 // 发布候选扫描（唯一实现：只认当天 / 跳 FAILED / 跳已发布 / 默认 3 条）
 import { scanUnpublished, summarizeSkips, DEFAULT_MAX_PER_RUN, sessionTime } from '../src/output-scan.js';
+// 「这条发到哪个账号」唯一实现（点名账号必须命中，不许回落 accounts[0]）
+import { resolvePublishTarget, describePublishTarget } from './lib/publish-target.js';
 // 凭据/关键状态的加密备份（纯逻辑 + 单测在 tests/unit/secrets-backup.test.js）
 import {
   SECRET_FILES,
@@ -813,8 +815,15 @@ function setupIPC() {
   function doRunEngine(mode, topic, options = {}) {
     const args = mode === 'video' ? ['--video-only'] : mode === 'post' ? ['--post-only'] : [];
     if (topic) { args.push('--topic'); args.push(topic); }
+    // 绑定账号：引擎本来就支持 `--account NN --auto-publish`（定时任务一直这么跑），
+    // 只是手动/助手这条路以前没接上 → 生成完不知道发哪，最后都落到账号 01。
+    const bindAccount = String(options.account || '').trim();
+    if (bindAccount) {
+      args.push('--account', bindAccount);
+      if (options.autoPublish !== false) args.push('--auto-publish');
+    }
     engineCancelRequested = false;   // 新任务开始，清掉上一次的取消标记
-    addLog('info', `🚀 引擎启动 — 模式: ${mode}${topic ? ` | 主题: ${topic}` : ''}`);
+    addLog('info', `🚀 引擎启动 — 模式: ${mode}${topic ? ` | 主题: ${topic}` : ''}${bindAccount ? ` | 发到账号 ${bindAccount}` : ''}`);
 
     return new Promise((resolve) => {
       // 引擎脚本路径：安装版用解包目录，开发版用项目目录
@@ -2414,20 +2423,56 @@ function setupIPC() {
       }
 
       case 'run_engine': {
+        // 指定账号时必须先确认这个号真的存在，否则宁可不动（会花钱 + 会发错号）
+        const wantAccount = String(args.account || '').trim();
+        if (wantAccount) {
+          const acc = (loadConfig().accounts || []).find((a) => String(a.name || '').trim() === wantAccount.padStart(2, '0'));
+          if (!acc) return { ok: false, error: `配置里没有账号 ${wantAccount}（现有：${(loadConfig().accounts || []).map((a) => a.name).join('、')}）` };
+        }
+        const bindPublish = !!wantAccount && args.autoPublish !== false;
         // 不 await：一轮生成要 5~15 分钟，等它结束对话就卡死了
-        Promise.resolve(ACTIONS.get('engine:run')(null, args.mode, args.topic || '', {})).catch((e) => {
+        Promise.resolve(ACTIONS.get('engine:run')(null, args.mode, args.topic || '', {
+          account: wantAccount || undefined,
+          autoPublish: bindPublish,
+        })).catch((e) => {
           addLog('error', `AI 助手启动生成失败：${e.message}`);
         });
-        addLog('info', `🤖 AI 助手启动${args.mode === 'text' ? '文案' : '视频'}生成${args.topic ? `（主题：${args.topic}）` : ''}`);
-        return { ok: true, summary: `已启动${args.mode === 'text' ? '文案' : '视频'}生成，进度在控制台/日志页`, started: true };
+        addLog('info', `🤖 AI 助手启动${args.mode === 'text' ? '文案' : '视频'}生成${args.topic ? `（主题：${args.topic}）` : ''}${wantAccount ? ` → 发到账号 ${wantAccount}` : ''}`);
+        return {
+          ok: true,
+          summary: wantAccount
+            ? `已启动生成，生成完会直接发到账号 ${wantAccount.padStart(2, '0')}${bindPublish ? '' : '（不自动发布）'}；用 get_last_task 查结果`
+            : `已启动${args.mode === 'text' ? '文案' : '视频'}生成（账号按配置=通常 01），进度在控制台/日志页`,
+          started: true,
+          account: wantAccount || '',
+        };
       }
       case 'run_publish': {
         const maxCount = clampPublishCount(args.maxCount);
-        Promise.resolve(ACTIONS.get('publish:run')(null, { maxCount, includeOld: args.includeOld === true })).catch((e) => {
+        const wantAccount = String(args.account || '').trim();
+        const wantEnv = String(args.env || '').trim().toUpperCase();
+        // 指定了账号就校验存在性 —— 这条是 2026-10-19 发错号事故的直接护栏
+        if (wantAccount) {
+          const acc = (loadConfig().accounts || []).find((a) => String(a.name || '').trim() === wantAccount.padStart(2, '0'));
+          if (!acc) return { ok: false, error: `配置里没有账号 ${wantAccount}` };
+        }
+        Promise.resolve(ACTIONS.get('publish:run')(null, {
+          maxCount,
+          includeOld: args.includeOld === true,
+          ...(wantAccount ? { account: wantAccount } : {}),
+          ...(wantEnv ? { env: wantEnv } : {}),
+        })).catch((e) => {
           addLog('error', `AI 助手启动发布失败：${e.message}`);
         });
-        addLog('info', `🤖 AI 助手启动发布（最多 ${maxCount} 条${args.includeOld ? '，含历史日期' : ''}）`);
-        return { ok: true, summary: `已启动发布，最多 ${maxCount} 条`, started: true, maxCount };
+        addLog('info', `🤖 AI 助手启动发布（最多 ${maxCount} 条${args.includeOld ? '，含历史日期' : ''}${wantAccount ? ` → 账号 ${wantAccount}` : wantEnv ? ` → ${wantEnv}` : ' → 默认账号'}）`);
+        return {
+          ok: true,
+          summary: `已启动发布，最多 ${maxCount} 条${wantAccount ? ` → 账号 ${wantAccount}` : wantEnv ? ` → ${wantEnv}` : '（发到默认账号 01，没指定账号）'}`,
+          started: true,
+          maxCount,
+          account: wantAccount || '',
+          env: wantEnv || '',
+        };
       }
       case 'run_collect': {
         const list = String(args.accounts || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -3344,13 +3389,18 @@ function setupIPC() {
     try {
       addLog('info', `📤 手动发布开始（预算 ${Math.round(budgetMs / 60000)} 分钟）...`);
       const config = loadConfig();
-      const envId = String(config.accounts?.[0]?.browserEnv || config.accounts?.[0]?.bitEnvId || '').trim();
-      const apiKey = config.bitApiKey || '';
-
-      if (!envId) {
-        addLog('error', '❌ 未配置指纹浏览器环境名，请在配置页设置账号');
-        return { ok: false, message: '未配置指纹浏览器环境名' };
+      // 目标账号：2026-10-19 用户实测事故 —— 让助手"发 TK02"，结果发到了 TK01。
+      // 根因是这条链路**只认 accounts[0]**（连 opts 都不看）。判定逻辑抽到
+      // electron/lib/publish-target.js（纯函数 + 9 条单测）：点名就必须命中，命中不了就失败。
+      const target = resolvePublishTarget(config.accounts, { account: opts?.account, env: opts?.env });
+      if (!target.ok) {
+        addLog('error', `❌ ${target.error}，已中止（不会退回发到账号 01）`);
+        return { ok: false, message: target.error };
       }
+      const envId = target.envId;
+      const targetName = target.name;
+      const apiKey = config.bitApiKey || '';
+      addLog('info', `🎯 发布目标：${describePublishTarget(target)}${target.explicit ? '' : ' —— 没指定账号，按配置里第一个发'}`);
 
       const outDir = path.join(DATA_DIR, 'output');
       if (!fs.existsSync(outDir)) return { ok: true, published: 0 };
@@ -4496,7 +4546,6 @@ app.on('before-quit', () => {
   // 统一收掉调度器 / 引擎 / 采集器及其孙进程（FFmpeg、Chromium 等）
   killAllChildren();
 });
-
 
 
 

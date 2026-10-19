@@ -159,10 +159,16 @@ test('撤销文案：刚刚 / N 分钟前', () => {
   assert.match(describeUndo({ at: Date.now() - 3 * 60 * 1000, label: '改定时' }), /3 分钟前/);
 });
 
-test('run_engine 不再提供 account 参数（引擎不支持按次指定账号）', async () => {
+test('run_engine 现在支持 account（旧结论已推翻：引擎本来就吃 --account）', async () => {
+  // 2026-10-19 更正：这里以前断言"引擎不支持按次指定账号"，是错的。
+  // `src/index.js` 一直支持 `--account NN --auto-publish`，定时任务天天这么跑，
+  // 只是手动/助手那条路没接上 → 用户说"发 TK02"结果发到 TK01。
+  // 现在 account 是合法参数（传了就生成完直发该号），不传才按配置。
   const { getToolDef, validateArgs } = await import('../../electron/lib/assistant-tools.js');
   const def = getToolDef('run_engine');
-  assert.deepEqual(Object.keys(def.parameters.properties), ['mode', 'topic']);
-  const r = validateArgs('run_engine', JSON.stringify({ mode: 'video', account: '01' }));
-  assert.equal(r.ok, false, '多传 account 应直接拒绝，而不是静默忽略');
+  assert.deepEqual(Object.keys(def.parameters.properties), ['mode', 'topic', 'account', 'autoPublish']);
+  assert.equal(def.parameters.required.includes('account'), false, 'account 是可选的');
+  const r = validateArgs('run_engine', JSON.stringify({ mode: 'video', account: '02' }));
+  assert.equal(r.ok, true);
+  assert.equal(r.args.account, '02');
 });

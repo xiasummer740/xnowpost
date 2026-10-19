@@ -83,8 +83,10 @@ test('参数校验：多余字段 / 缺必填 / 类型不对 全部拒绝', () =
   const ok = validateArgs('run_engine', '{"mode":"video"}');
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.args, { mode: 'video' });
-  // account 已经不是合法参数：引擎不支持按次指定账号，静默忽略会变成"预览说账号 01、实际按配置跑"
-  assert.equal(validateArgs('run_engine', '{"mode":"video","account":"01"}').ok, false);
+  // account 现在是合法参数（引擎支持 --account，见 tests/unit/assistant-memory.test.js 的更正说明）；
+  // 但**不认识**的字段依旧要拒绝，避免"预览里看不到、实际被默默用了"
+  assert.equal(validateArgs('run_engine', '{"mode":"video","account":"01"}').ok, true);
+  assert.equal(validateArgs('run_engine', '{"mode":"video","who":"01"}').ok, false);
   // 空参数也能过（全部可选）
   assert.equal(validateArgs('get_status', '').ok, true);
   assert.equal(validateArgs('get_status', undefined).ok, true);

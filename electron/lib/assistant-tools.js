@@ -196,18 +196,25 @@ export const TOOL_DEFS = [
   {
     name: 'run_engine',
     level: LEVEL.SPEND,
-    description: '跑一轮内容生成（会花钱：约 ¥0.01/条）。mode=video 出视频，mode=text 只出文案。用哪个账号由配置决定，不提供指定账号。',
+    description: '跑一轮内容生成（会花钱：约 ¥0.01/条）。mode=video 出视频，mode=text 只出文案。'
+      + '用户指定了账号（如「发 TK02」「账号 02」）时**必须**传 account：这样生成完会直接发到那个账号；'
+      + '不传则账号由配置决定（通常是账号 01），生成完只是一份待发内容。',
     parameters: obj({
       mode: { type: 'string', enum: ['video', 'text'] },
       topic: { type: 'string', description: '主题，留空让 AI 自由发挥' },
+      account: { type: 'string', description: '目标账号编号（配置里的 01…10），如 "02"；传了就生成完直发这个号' },
+      autoPublish: { type: 'boolean', description: '给了 account 时是否生成完自动发布，默认 true' },
     }, ['mode']),
   },
   {
     name: 'run_publish',
     level: LEVEL.SPEND,
-    description: `把待发布的内容发出去（每条最多 ${PUBLISH_MAX_PER_TURN} 个，避免一次误发太多）。`,
+    description: `把待发布的内容发出去（每条最多 ${PUBLISH_MAX_PER_TURN} 个，避免一次误发太多）。`
+      + '用户指定了账号时必须传 account —— 不传会发到配置里的第一个账号（通常是 01），发了就撤不回来。',
     parameters: obj({
       maxCount: { type: 'number', description: `本轮发几条，1~${PUBLISH_MAX_PER_TURN}，默认 1` },
+      account: { type: 'string', description: '发到哪个账号（配置里的 01…10），如 "02"；强烈建议总是给' },
+      env: { type: 'string', description: '或直接给环境名，如 "TK02"（与 account 二选一）' },
       includeOld: { type: 'boolean', description: '是否包含历史日期的会话（默认 false）' },
     }),
   },
@@ -513,11 +520,14 @@ export function describeToolCall(name, args = {}, ctx = {}) {
       const diffs = Object.entries(a.patch || {}).map(([k, v]) => `${k}: ${fmt(job ? job[k] : '?')} → ${fmt(v)}`);
       return `改定时任务：${who}\n  ${diffs.join('\n  ') || '（没有实际改动）'}`;
     }
-    case 'run_engine':
-      return `跑一轮${a.mode === 'text' ? '文案生成' : '视频生成'}${a.topic ? `，主题「${a.topic}」` : ''}（账号按配置）· 会花钱（约 ¥0.01/条）`;
+    case 'run_engine': {
+      const who = a.account ? ` · 生成完直发账号 ${a.account}` : ' · 账号按配置（通常是 01）';
+      return `跑一轮${a.mode === 'text' ? '文案生成' : '视频生成'}${a.topic ? `，主题「${a.topic}」` : ''}${who} · 会花钱（约 ¥0.01/条）`;
+    }
     case 'run_publish': {
       const n = clampPublishCount(a.maxCount);
-      return `发布 ${n} 条${a.includeOld ? '（含历史日期会话！）' : '（只发当天）'} · 会真的发到 TikTok`;
+      const who = a.account ? ` · 发到账号 ${a.account}` : a.env ? ` · 发到 ${String(a.env).toUpperCase()}` : ' · 发到默认账号（01）';
+      return `发布 ${n} 条${who}${a.includeOld ? '（含历史日期会话！）' : '（只发当天）'} · 会真的发到 TikTok`;
     }
     case 'run_collect':
       return `跑一轮数据采集${a.accounts ? `（账号 ${a.accounts}）` : '（全部账号）'} · 会打开浏览器，约 2~3 分钟`;
@@ -738,6 +748,9 @@ export function buildSystemPrompt({ today = '', appVersion = '', model = '', mem
     '   必须再调 get_last_task 看真实结果（账本 / FAILED 标记 / 进程是否还在），然后给三态结论：',
     '   ✅ 已发布 / ❌ 失败（附原因）/ ⏳ 还在跑（附已等多久）。**不许把"已启动"说成"已发布"。**',
     '7. 结论要写在第一行，别让用户自己去翻工具行；失败时给出可执行的下一步。',
+    '8. **用户点名了账号/环境（「发 TK02」「账号 02」「发到 03 号」）时，run_engine / run_publish 必须带 account**。',
+    '   不传就等于"发到默认账号 01"，发出去撤不回来 —— 2026-10-19 真出过这事故。拿不准就先问，',
+    '   宁可多问一句，也不许先跑再报告「发错号了」。',
     '',
     '事实口径（很重要，别搞错）：',
     '- 「未确认」= 点过发布按钮但没能证明已公开：不算成功、也不会重发，需要人工去后台核对。',
