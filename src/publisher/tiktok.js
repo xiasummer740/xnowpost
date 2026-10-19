@@ -8,6 +8,7 @@ import { BrowserTracer } from './debug-trace.js';
 import { writeJsonAtomicSync } from '../fs-atomic.js';
 import { appendLedger, dataDirOfSession } from '../publish-history.js';
 import { handleDialogs, findFatalDialog } from './dialogs.js';
+import { releaseMessage, releaseNote } from './check-wording.js';
 import {
   createDeadline, assertBudget, budgetedWait, envBudgetMs,
   BudgetExceededError, MIN_RETRY_BUDGET_MS,
@@ -768,6 +769,8 @@ async function publishToTikTokCore(options) {
     // 否则复盘时会以为检查正常通过（2026-10-19 22:17 实测：检查根本没跑完，
     // 日志先写「⏭️ 检查还在跑…放行」，下一行又写「✅ 检查已通过」）。
     let checksTimedOut = false;
+    // 实际等了多久（毫秒）—— 超时放行时要把秒数写进日志，别让"等了多久"靠猜
+    let checksWaitedMs = 0;
     let readyStreak = 0;
     let loggedShape = false;
     for (let i = 0; i < 180; i++) {  // 最长等 15 分钟（受发布总预算约束，会更早结束）
@@ -801,6 +804,7 @@ async function publishToTikTokCore(options) {
 
         if (musicOk && contentOk && !checking) {
           console.log(`  ✅ 检查已通过 (约${(i + 1) * 5}秒)${musicIdx < 0 ? '（本页面无音乐检查项）' : ''}${contentIdx < 0 ? '（本页面无内容检查项）' : ''}`);
+          checksWaitedMs = (i + 1) * 5000;
           checksPassed = true;
           break;
         }
@@ -815,6 +819,7 @@ async function publishToTikTokCore(options) {
           }
           if (readyStreak >= 2) {
             console.log(`  ✅ Post 按钮已可用且无检查进行中 (约${(i + 1) * 5}秒)，放行发布`);
+            checksWaitedMs = (i + 1) * 5000;
             checksPassed = true;
             break;
           }
@@ -834,6 +839,7 @@ async function publishToTikTokCore(options) {
             console.log('     ⚠️ 注意：这次不是"检查通过"，是超时放行 —— 点 Post 后 TikTok 可能再弹一次「Continue to post?」');
             checksPassed = true;
             checksTimedOut = true;
+            checksWaitedMs = waitedMs;
             break;
           }
         }
@@ -849,9 +855,8 @@ async function publishToTikTokCore(options) {
       throw new Error('检查超时（15分钟），两项"未发现问题"未全部出现，请手动检查 TikTok 页面');
     }
     // 检查后等 3s 再发，给 TikTok 留一点缓冲时间（原来 10s，配合上面的判定没必要这么久）
-    console.log(checksTimedOut
-      ? '  ⏳ 检查未完成（超时放行），等 3s 后发布...'
-      : '  ⏳ 检查已通过，等 3s 后发布...');
+    console.log('  ' + releaseMessage(checksTimedOut, (checksWaitedMs || 0) / 1000));
+    if (checksTimedOut) console.log('     ⚠️ ' + releaseNote(true));
     await budgetedWait(page, 3000, deadline, '发布前缓冲等待');
     console.log('  📤 开始发布...');
 
