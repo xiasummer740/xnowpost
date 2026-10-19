@@ -271,6 +271,18 @@ export function createAssistantSession({ exec, callModel, systemPrompt, onLedger
     answer,
     reset,
     snapshot: () => snapshot({ ok: true }),
+    /**
+     * 换掉系统提示词（记忆写进去之后要立刻生效）。
+     * 为什么不做成"重建会话"：重建会把当前对话的上下文丢掉，用户刚说完「记住我喜欢英文配音」，
+     * 紧接着问「那你会怎么写」就断片了。只换 messages[0] 既能生效又保留历史。
+     */
+    updateSystemPrompt: (next) => {
+      const text = String(next || '');
+      if (!text) return false;
+      if (messages[0] && messages[0].role === 'system') messages[0].content = text;
+      else messages.unshift({ role: 'system', content: text });
+      return true;
+    },
     /** 单测用：拿到完整 messages（含 tool 结果），验证顺序与裁剪 */
     _messages: () => messages.slice(),
     _view: () => view.slice(),

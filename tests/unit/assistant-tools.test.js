@@ -51,10 +51,14 @@ test('发给模型的工具与内置定义一致（不能偷偷多塞）', () =>
 });
 
 test('读操作不需要确认，写/花钱操作必须确认', () => {
+  // note 级（助手自己的笔记本：remember/forget）只动它自己的文件，不需要确认；
+  // 业务写操作（改配置/改定时）和花钱动作（跑生成/发布/采集）一律必须确认。
   for (const t of TOOL_DEFS) {
-    if (t.level === LEVEL.READ) assert.equal(needsConfirm(t.name), false, `${t.name} 不该要确认`);
-    else assert.equal(needsConfirm(t.name), true, `${t.name} 必须确认`);
+    const auto = t.level === LEVEL.READ || t.level === LEVEL.NOTE;
+    assert.equal(needsConfirm(t.name), !auto, `${t.name}（${t.level}）确认判定不对`);
   }
+  assert.equal(needsConfirm('remember'), false);
+  assert.equal(needsConfirm('forget'), false);
   assert.equal(needsConfirm('update_config'), true);
   assert.equal(needsConfirm('schedule_action'), true);
   assert.equal(needsConfirm('run_engine'), true);
@@ -76,9 +80,11 @@ test('参数校验：多余字段 / 缺必填 / 类型不对 全部拒绝', () =
   assert.equal(validateArgs('get_logs', { limit: 'abc' }).ok, false);    // 非数字
   assert.equal(validateArgs('get_schedule', { onlyEnabled: 'yes' }).ok, false);
 
-  const ok = validateArgs('run_engine', '{"mode":"video","account":"01"}');
+  const ok = validateArgs('run_engine', '{"mode":"video"}');
   assert.equal(ok.ok, true);
-  assert.deepEqual(ok.args, { mode: 'video', account: '01' });
+  assert.deepEqual(ok.args, { mode: 'video' });
+  // account 已经不是合法参数：引擎不支持按次指定账号，静默忽略会变成"预览说账号 01、实际按配置跑"
+  assert.equal(validateArgs('run_engine', '{"mode":"video","account":"01"}').ok, false);
   // 空参数也能过（全部可选）
   assert.equal(validateArgs('get_status', '').ok, true);
   assert.equal(validateArgs('get_status', undefined).ok, true);

@@ -21,7 +21,8 @@
           </div>
           <p class="x-tip">
             它读的是真实数据（发布账本 / FAILED 目录 / 调度日志 / 采集证据），不会编数字。
-            改配置、改闹钟、发内容这类动作会先显示「要改什么」，你点「执行」才生效。
+            改配置、改闹钟、发内容这类动作会先显示「要改什么」，你点「执行」才生效；
+            改完 30 分钟内输入框上方会出现「撤销」。
           </p>
         </div>
 
@@ -59,6 +60,25 @@
         </div>
       </div>
 
+      <!-- 撤销栏：只对"改配置 / 改定时"出现（跑生成/发布/采集钱已经出去了，不提供撤销） -->
+      <div v-if="undoList.length" class="undo-bar">
+        <span class="undo-hint">30 分钟内可撤销：</span>
+        <button
+          v-for="u in undoList"
+          :key="u.id"
+          class="undo-chip"
+          :disabled="busy"
+          :title="'把 ' + u.label + ' 之前的内容原样恢复'"
+          @click="doUndo(u.id)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M9 14 4 9l5-5" />
+            <path d="M4 9h10a6 6 0 0 1 0 12h-3" />
+          </svg>
+          {{ u.text }}
+        </button>
+      </div>
+
       <div class="asst-input-row">
         <textarea
           ref="input"
@@ -85,6 +105,8 @@ import { nextTick, onMounted, ref } from 'vue';
 
 const log = ref([]);
 const pending = ref([]);
+// 可撤销的写操作（主进程每次响应都捎回来，过期/已撤销的会自动消失）
+const undoList = ref([]);
 const draft = ref('');
 const busy = ref(false);
 const thinkingText = ref('思考中…');
@@ -96,6 +118,7 @@ const hints = [
   '为什么最近这一轮失败了？',
   '还有几条待发？',
   '哪个号掉登录了？',
+  '记住：配音一律用英文',
   '把 09:05 那个闹钟关掉',
 ];
 
@@ -143,6 +166,7 @@ function applyResult(r) {
     log.value = r.view.map((v) => ({ ...v }));
   }
   pending.value = Array.isArray(r.pending) ? r.pending : [];
+  undoList.value = Array.isArray(r.undo) ? r.undo : [];
   if (r.ok === false && r.error) {
     log.value.push({ role: 'error', text: r.error });
   }
@@ -193,6 +217,29 @@ async function decide(id, approve) {
     log.value.push({ role: 'error', text: `执行失败：${e.message}` });
   } finally {
     stopThinking();
+  }
+}
+
+async function doUndo(id) {
+  if (busy.value) return;
+  const item = undoList.value.find((u) => u.id === id);
+  startThinking();
+  try {
+    const r = await window.xnowpost.assistantUndo(id);
+    applyResult(r);
+    if (r && r.ok) {
+      log.value.push({
+        role: 'tool',
+        preview: `↩ 撤销：${item ? item.label : id}${Array.isArray(r.restored) && r.restored.length ? `（${r.restored.join('、')}）` : ''}`,
+        ok: true,
+        ms: 0,
+      });
+    }
+  } catch (e) {
+    log.value.push({ role: 'error', text: `撤销失败：${e.message}` });
+  } finally {
+    stopThinking();
+    scrollBottom();
   }
 }
 
@@ -276,6 +323,21 @@ onMounted(async () => {
 
 /* 输入区：原来 36px（沿用了单行 .x-input 的 height），鼠标很难点中。
    现在换 .x-textarea + 88px 最小高度、字号 13.5px，点击/输入都舒服。 */
+.undo-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 16px; border-top: 1px solid var(--line);
+  background: rgba(255, 176, 32, 0.06);
+}
+.undo-hint { font-size: 11.5px; color: #ffcf7a; }
+.undo-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: rgba(255, 176, 32, 0.14); color: #ffd79a;
+  border: 1px solid rgba(255, 176, 32, 0.4); border-radius: 999px;
+  padding: 4px 11px; font-size: 12px; cursor: pointer; transition: background .15s, border-color .15s;
+}
+.undo-chip svg { width: 12px; height: 12px; }
+.undo-chip:hover:not(:disabled) { background: rgba(255, 176, 32, 0.24); border-color: rgba(255, 176, 32, 0.7); }
+.undo-chip:disabled { opacity: .55; cursor: not-allowed; }
 .asst-input-row { display: flex; gap: 12px; padding: 14px 16px 8px; border-top: 1px solid var(--line); align-items: flex-end; }
 .asst-input {
   flex: 1; resize: none; font-family: inherit;

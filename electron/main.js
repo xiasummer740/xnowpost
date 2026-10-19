@@ -48,6 +48,13 @@ import {
   validateConfigPatch,
   clampPublishCount,
   getToolDef,
+  makeMemoryEntry,
+  mergeMemory,
+  dropMemory,
+  listUndoable,
+  canUndo,
+  describeUndo,
+  UNDO_KEEP,
 } from './lib/assistant-tools.js';
 
 /** 日志页一次最多渲染多少行（再多 DOM 会卡；文件本身不截断，界面可以「显示更早」） */
@@ -1662,6 +1669,127 @@ function setupIPC() {
     }
   }
 
+  // ── 长期记忆（`data/assistant-memory.json`）──────────────────────────
+  // 跨对话保留用户习惯。注意：记忆会拼进**每一轮**的系统提示词，
+  // 所以条数和长度都有上限（`MEMORY_LIMIT` / `MEMORY_MAX_TEXT`），超了丢最老的。
+  const assistantMemoryFile = () => path.join(DATA_DIR, 'data', 'assistant-memory.json');
+
+  function readMemory() {
+    try {
+      const file = assistantMemoryFile();
+      if (!fs.existsSync(file)) return [];
+      const j = fs.readJsonSync(file);
+      if (Array.isArray(j)) return j.filter((x) => x && x.text);
+      return Array.isArray(j?.items) ? j.items.filter((x) => x && x.text) : [];
+    } catch (e) {
+      addLog('warning', `AI 助手记忆读不出来（当空处理，不覆盖原文件）：${e.message}`);
+      return [];
+    }
+  }
+
+  function writeMemory(list) {
+    try {
+      fs.ensureDirSync(path.join(DATA_DIR, 'data'));
+      fs.writeJsonSync(assistantMemoryFile(), Array.isArray(list) ? list : [], { spaces: 2 });
+      return true;
+    } catch (e) {
+      addLog('error', `AI 助手记忆写不进去：${e.message}`);
+      return false;
+    }
+  }
+
+  // ── 写操作快照 / 撤销 ────────────────────────────────────────────────
+  // 只快照会被改的那几个小 JSON（config/user.json、config/schedule.json）。
+  // 撤销 = 原样盖回去，比"再执行一次反向操作"可靠（反向操作遇到中间态会改出新花样）。
+  // 边界：撤销只在本进程内有效（重启后记录不再提供），窗口 30 分钟。
+  const assistantUndoDir = () => path.join(DATA_DIR, 'data', 'assistant-undo');
+  let undoStack = [];
+
+  function assistantTxBegin(label, relPaths) {
+    const id = `tx_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const dir = path.join(assistantUndoDir(), id);
+    const files = [];
+    try {
+      fs.ensureDirSync(dir);
+      relPaths.forEach((rel, i) => {
+        const abs = path.join(DATA_DIR, rel);
+        if (fs.existsSync(abs)) {
+          const backup = path.join(dir, `${i}.bak`);
+          fs.copyFileSync(abs, backup);
+          files.push({ rel, abs, backup, existed: true });
+        } else {
+          files.push({ rel, abs, backup: '', existed: false });
+        }
+      });
+    } catch (e) {
+      addLog('warning', `AI 助手快照失败（这次改动将不可撤销）：${e.message}`);
+      return null;
+    }
+    const tx = { id, at: Date.now(), label, files, undone: false };
+    undoStack.unshift(tx);
+    undoStack = undoStack.slice(0, UNDO_KEEP);
+    // 清掉被挤出窗口的快照目录（否则每次改配置都留一份备份，一个月能攒几百个）
+    try {
+      const root = assistantUndoDir();
+      for (const d of fs.readdirSync(root)) {
+        if (undoStack.some((t) => t.id === d)) continue;
+        fs.rmSync(path.join(root, d), { recursive: true, force: true });
+      }
+    } catch (_) { /* 清理失败不影响撤销 */ }
+    return tx;
+  }
+
+  async function assistantUndo(id) {
+    const tx = undoStack.find((t) => String(t.id) === String(id));
+    if (!tx) return { ok: false, error: '找不到这条可撤销记录（可能已过期，或应用重启过）' };
+    if (!canUndo(tx)) return { ok: false, error: tx.undone ? '这一步已经撤销过了' : '超过 30 分钟，已经不能撤销' };
+    const restored = [];
+    for (const f of tx.files) {
+      try {
+        if (f.existed && f.backup && fs.existsSync(f.backup)) {
+          fs.ensureDirSync(path.dirname(f.abs));
+          fs.copyFileSync(f.backup, f.abs);
+          restored.push(f.rel);
+        } else if (!f.existed && fs.existsSync(f.abs)) {
+          fs.rmSync(f.abs, { force: true });
+          restored.push(`${f.rel}（删掉新增文件）`);
+        }
+      } catch (e) {
+        return { ok: false, error: `恢复 ${f.rel} 失败：${e.message}` };
+      }
+    }
+    tx.undone = true;
+    if (restored.some((r) => r.startsWith('config/user.json'))) {
+      try {
+        saveConfig(loadConfig()); // 回滚后要把 Key 等环境变量重新同步一遍
+      } catch (e) {
+        addLog('warning', `回滚后同步配置失败：${e.message}`);
+      }
+    }
+    addLog('info', `↩️ AI 助手撤销：${tx.label}（${restored.join('、') || '无实际改动'}）`);
+    assistantLedger({
+      at: new Date().toISOString(),
+      tool: 'undo',
+      level: 'write',
+      confirmed: true,
+      ok: true,
+      ms: 0,
+      args: { id: tx.id },
+      brief: `撤销：${tx.label}`,
+    });
+    return { ok: true, label: tx.label, restored, message: `已撤销：${tx.label}` };
+  }
+
+  /** 让系统提示词里的记忆段立刻生效（不重建会话，保留当前对话） */
+  function refreshAssistantPrompt() {
+    if (!assistantSession) return;
+    const config = loadConfig();
+    const model = String(config.deepseekModel || '').trim() || 'deepseek-chat';
+    assistantSession.updateSystemPrompt(
+      buildSystemPrompt({ today: localDateStr(), appVersion: app.getVersion(), model, memory: readMemory() }),
+    );
+  }
+
   /** 定时任务列表（供预览显示"旧的几点 → 新的几点"） */
   function readScheduleJobs() {
     try {
@@ -1912,11 +2040,14 @@ function setupIPC() {
       case 'update_config': {
         const v = validateConfigPatch(args.patch);
         if (!v.ok) return { ok: false, error: v.error };
+        const keys = Object.keys(v.patch).join(', ');
+        // 改之前先快照（撤销用）。快照失败只告警、不拦着改
+        assistantTxBegin(`改配置：${keys}`, ['config/user.json']);
         const config = loadConfig();
         const next = { ...config, ...v.patch };
         saveConfig(next);   // 与配置页「保存配置」同一份实现
-        addLog('info', `🤖 AI 助手修改配置：${Object.keys(v.patch).join(', ')}${args.reason ? `（${args.reason}）` : ''}`);
-        return { ok: true, summary: `已改 ${Object.keys(v.patch).join(', ')}`, applied: v.patch };
+        addLog('info', `🤖 AI 助手修改配置：${keys}${args.reason ? `（${args.reason}）` : ''}`);
+        return { ok: true, summary: `已改 ${keys}（30 分钟内可撤销）`, applied: v.patch, undoable: true };
       }
       case 'schedule_action': {
         const jobs = readScheduleJobs();
@@ -1937,10 +2068,49 @@ function setupIPC() {
         } else {
           return { ok: false, error: `不支持的 op：${args.op}` };
         }
+        assistantTxBegin(`定时任务 ${job.time} ${args.op}`, ['config/schedule.json']);
         const saved = await ACTIONS.get('schedule:save')(null, jobs);
         if (!saved || saved.ok === false) return { ok: false, error: saved?.message || '保存定时表失败' };
         addLog('info', `🤖 AI 助手${args.op === 'delete' ? '删除' : args.op === 'enable' ? '启用' : args.op === 'disable' ? '停用' : '修改'}定时任务 ${job.time} ${job.label || job.mode}`);
-        return { ok: true, summary: `定时任务 ${job.time} 已${args.op === 'delete' ? '删除' : args.op === 'enable' ? '启用' : args.op === 'disable' ? '停用' : '修改'}`, jobs: saved.jobs?.length };
+        return {
+          ok: true,
+          summary: `定时任务 ${job.time} 已${args.op === 'delete' ? '删除' : args.op === 'enable' ? '启用' : args.op === 'disable' ? '停用' : '修改'}（30 分钟内可撤销）`,
+          jobs: saved.jobs?.length,
+          undoable: true,
+        };
+      }
+
+      case 'get_memory': {
+        const list = readMemory();
+        return {
+          ok: true,
+          summary: list.length ? `一共记住 ${list.length} 条` : '还没有任何记忆',
+          memory: list.map((m) => ({ id: m.id, tag: m.tag, text: m.text, at: m.at })),
+        };
+      }
+      case 'remember': {
+        const list = readMemory();
+        const entry = makeMemoryEntry(args.text, { tag: args.tag || '偏好', seq: list.length });
+        if (!entry) return { ok: false, error: '记忆内容为空' };
+        const r = mergeMemory(list, entry);
+        if (!r.added && !r.duplicate) return { ok: false, error: '记忆没有变化' };
+        writeMemory(r.list);
+        if (r.added) addLog('info', `🧠 AI 助手记住：${entry.text}`);
+        refreshAssistantPrompt(); // 立刻生效，不用等下次重建会话
+        return {
+          ok: true,
+          summary: r.duplicate ? `这条已经记过了（更新了分类）：${entry.text}` : `已记住：${entry.text}`,
+          duplicate: r.duplicate,
+          total: r.list.length,
+        };
+      }
+      case 'forget': {
+        const r = dropMemory(readMemory(), args.id);
+        if (!r.removed) return { ok: false, error: `没有 id=${args.id} 的记忆（先用 get_memory 查）` };
+        writeMemory(r.list);
+        addLog('info', `🧠 AI 助手忘掉一条记忆（id=${args.id}）`);
+        refreshAssistantPrompt();
+        return { ok: true, summary: `已忘掉，还剩 ${r.list.length} 条` };
       }
 
       case 'run_engine': {
@@ -2022,7 +2192,7 @@ function setupIPC() {
     const model = String(config.deepseekModel || '').trim() || 'deepseek-chat';
     const key = `${today}|${model}|${app.getVersion()}`;
     if (assistantSession && assistantSessionKey === key) return assistantSession;
-    const systemPrompt = buildSystemPrompt({ today, appVersion: app.getVersion(), model });
+    const systemPrompt = buildSystemPrompt({ today, appVersion: app.getVersion(), model, memory: readMemory() });
     assistantSession = createAssistantSession({
       callModel: assistantCallModel,
       exec: assistantExec,
@@ -2032,23 +2202,21 @@ function setupIPC() {
       log: (m) => addLog('info', m),
     });
     assistantSessionKey = key;
-    addLog('info', `🤖 AI 助手就绪（模型 ${model}，工具 ${publicTools().length} 个）`);
+    addLog('info', `🤖 AI 助手就绪（模型 ${model}，工具 ${publicTools().length} 个，记忆 ${readMemory().length} 条）`);
     return assistantSession;
   }
 
-  handle('assistant:send', async (_event, text) => {
-    const r = await ensureAssistantSession().send(text);
-    return r;
-  });
-  handle('assistant:answer', async (_event, approvals) => {
-    const r = await ensureAssistantSession().answer(approvals);
-    return r;
-  });
-  handle('assistant:state', () => ensureAssistantSession().snapshot());
+  /** 每个响应都捎上"现在能撤销什么"（界面据此显示「撤销」按钮） */
+  const withUndo = (r) => ({ ...(r || {}), undo: listUndoable(undoStack) });
+
+  handle('assistant:send', async (_event, text) => withUndo(await ensureAssistantSession().send(text)));
+  handle('assistant:answer', async (_event, approvals) => withUndo(await ensureAssistantSession().answer(approvals)));
+  handle('assistant:state', () => withUndo(ensureAssistantSession().snapshot()));
+  handle('assistant:undo', async (_event, id) => withUndo(await assistantUndo(id)));
   handle('assistant:reset', () => {
     const s = ensureAssistantSession();
     s.reset();
-    return { ok: true };
+    return withUndo({ ok: true });
   });
 
   // 测试指纹浏览器（FoxProfile）连接

@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('xnowpost', {
   assistantAnswer: (approvals) => ipcRenderer.invoke('assistant:answer', approvals),
   assistantState: () => ipcRenderer.invoke('assistant:state'),
   assistantReset: () => ipcRenderer.invoke('assistant:reset'),
+  // 撤销一次写操作（30 分钟内有效，只能撤改配置/改定时）
+  assistantUndo: (id) => ipcRenderer.invoke('assistant:undo', id),
   testBit: (apiKey, opts) => ipcRenderer.invoke('config:testBit', apiKey, opts),
   listFoxProfiles: () => ipcRenderer.invoke('config:foxProfiles'),
   getDataDir: () => ipcRenderer.invoke('config:getDataDir'),
