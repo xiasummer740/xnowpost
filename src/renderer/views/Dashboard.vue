@@ -7,12 +7,6 @@
         {{ store.status.running ? '引擎运行中' : store.status.schedulerActive ? '调度器执行中' : '引擎空闲' }} · {{ store.status.configured ? '已配置' : '未配置' }}
       </span>
       <span class="x-spacer"></span>
-      <button class="x-btn primary" @click="runAuto" :disabled="store.status.running || !store.status.configured">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13.5 3 5.5 13.5H11l-.7 7.5L18.5 10H13z" />
-        </svg>
-        <span>立即生成（{{ isMorning ? '1视频+1图文' : '1视频' }}）</span>
-      </button>
     </div>
 
     <!-- ===== 状态条 ===== -->
@@ -62,6 +56,170 @@
             <b>硅基流动</b> — AI 生成图片（注册送 14 元）<br />
             <b>Telegram Bot</b> — 可选，推送到频道
           </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 待发布卡片 -->
+    <div v-if="pendingItems.length > 0" class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+            <path d="m9.5 13.5 4.2-4.2" />
+          </svg>
+        </span>
+        <h2>待发布内容</h2>
+        <span class="x-hint">{{ pendingItems.length }} 项</span>
+        <span v-if="todayPendingCount !== pendingItems.length" class="x-tag mute">当天 {{ todayPendingCount }}</span>
+        <div class="x-spacer"></div>
+        <button v-if="pendingItems.length > PENDING_LIMIT" class="x-mini" @click="pendingExpanded = !pendingExpanded">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path v-if="pendingExpanded" d="m6 15 6-6 6 6" />
+            <path v-else d="m6 9 6 6 6-6" />
+          </svg>
+          <span>{{ pendingExpanded ? '只看最近' : `展开全部` }}</span>
+        </button>
+        <button class="x-mini" @click="openDir">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h9A1.5 1.5 0 0 1 21.5 10v8A1.5 1.5 0 0 1 20 19.5H4.5A1.5 1.5 0 0 1 3 18z" />
+          </svg>
+          <span>打开文件夹</span>
+        </button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 34px">
+              <input
+                type="checkbox"
+                class="pc-check"
+                :checked="allShownSelected"
+                :indeterminate.prop="someShownSelected && !allShownSelected"
+                title="全选当前显示的条目"
+                @change="toggleSelectAll($event.target.checked)"
+              />
+            </th>
+            <th style="width: 152px">类型</th>
+            <th>标题</th>
+            <th style="width: 168px; text-align: right">生成时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="(item, i) in shownPending"
+            :key="`${item.date}/${item.session}`"
+            :class="{ 'pc-picked': isPicked(item) }"
+            @click="togglePick(item)"
+          >
+            <td class="pc-pickcell" @click.stop>
+              <input type="checkbox" class="pc-check" :checked="isPicked(item)" @change="togglePick(item)" />
+            </td>
+            <td class="pc-type">
+              <span v-if="item.type === 'video'" class="x-tag brand">视频</span>
+              <span v-else class="x-tag mute">图文</span>
+              <!-- 旧日期/失败过的会话必须标出来：默认不会被发布，别让人以为点了「发布全部」就会发 -->
+              <span v-if="item.old" class="x-tag mute" title="非当天的旧会话，默认不发布">旧</span>
+              <span v-if="item.failed" class="x-tag" :class="item.retryable ? 'warn' : 'danger'"
+                    :title="item.retryable ? '上次卡在发布阶段，会重试' : `上次失败于「${item.failedStage || '未知'}」，需要先重新生成`">
+                {{ item.retryable ? '待重试' : '失败' }}
+              </span>
+            </td>
+            <td><span class="pc-title">{{ item.title }}</span></td>
+            <td class="num">{{ item.date }} {{ item.time }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="!pendingExpanded && pendingItems.length > PENDING_LIMIT" class="pc-hint">
+        还有 {{ pendingItems.length - PENDING_LIMIT }} 项未显示
+      </div>
+      <div class="card-foot">
+        <label class="pc-old" title="勾上才会把非当天的旧会话也发出去">
+          <input v-model="includeOld" type="checkbox" />
+          <span>含旧会话</span>
+        </label>
+        <!-- 目标账号：2026-10-19 加的。以前这里只能发 accounts[0]，用户想发 02 号没入口，
+             助手也跟着发错号。现在选哪个就发哪个，选「默认」才按配置第一个。 -->
+        <label class="pub-target" title="这条发到哪个指纹环境">
+          <span>发到</span>
+          <select v-model="publishTarget" class="x-select">
+            <option value="">{{ defaultAccountLabel }}</option>
+            <option v-for="a in accountOptions" :key="a.name" :value="a.name">
+              {{ a.name }} · {{ a.env }}
+            </option>
+          </select>
+        </label>
+        <!-- 条数：以前写死「最多 3 条」，用户问「不能选择性发布吗」。现在既能选条数，
+             也能勾具体的某几条（勾了就按勾选的发，条数下拉自动失效）。 -->
+        <label class="pub-target" title="不勾选时按顺序发前 N 条（新→旧，不随机）">
+          <span>条数</span>
+          <select v-model="publishCount" class="x-select pc-count" :disabled="pickedCount > 0">
+            <option :value="1">1 条</option>
+            <option :value="2">2 条</option>
+            <option :value="3">3 条</option>
+            <option value="all">全部</option>
+          </select>
+        </label>
+        <div class="x-spacer"></div>
+        <button v-if="pickedCount" class="x-mini pc-clear" @click="clearPicks" title="取消全部勾选">清空勾选</button>
+        <span class="x-hint pub-hint" :title="publishPlan.detail">
+          {{ pickedCount ? `已勾选 ${pickedCount} 条` : '按生成时间新→旧，不随机' }}
+        </span>
+        <button class="x-btn primary" @click="handlePublish" :disabled="publishing">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+            <path d="m9.5 13.5 4.2-4.2" />
+          </svg>
+          <span>{{ publishing ? '发布中…' : publishBtnLabel }}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 发布确认：账号发错撤不回来，所以点完按钮先看一眼"发到哪个号、几条" -->
+    <div v-if="publishConfirm" class="pub-mask" @click.self="publishConfirm = false">
+      <div class="pub-dialog">
+        <div class="pub-dialog-head">
+          <span class="x-ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+              <path d="m9.5 13.5 4.2-4.2" />
+            </svg>
+          </span>
+          <span>确认发布</span>
+        </div>
+        <div class="pub-dialog-body">
+          <div class="pub-row">
+            <span class="pub-k">发到</span>
+            <span class="pub-v">
+              <b>{{ publishTargetLabel }}</b>
+              <em v-if="!publishTarget" class="pub-warn">（没选账号 = 配置里第一个）</em>
+            </span>
+          </div>
+          <div class="pub-row">
+            <span class="pub-k">条数</span>
+            <span class="pub-v">{{ publishPlan.detail }}{{ includeOld ? '，含历史日期会话' : '' }}</span>
+          </div>
+          <div v-if="pickedCount" class="pub-row">
+            <span class="pub-k">内容</span>
+            <span class="pub-v pub-list">
+              <span v-for="p in pickedItems" :key="`${p.date}/${p.session}`" class="pub-item">
+                {{ p.date }} {{ p.time }} · {{ p.title || p.session }}
+              </span>
+            </span>
+          </div>
+          <div class="pub-row">
+            <span class="pub-k">待发</span>
+            <span class="pub-v">{{ pendingItems.length }} 条可发</span>
+          </div>
+          <div class="x-tip pub-tip">
+            发出去就撤不回来了。要发到别的号 / 换几条，关掉这张卡再改。
+          </div>
+        </div>
+        <div class="pub-dialog-foot">
+          <button class="x-btn" @click="publishConfirm = false" :disabled="publishing">取消</button>
+          <button class="x-btn primary" @click="confirmPublish" :disabled="publishing">
+            {{ publishing ? '发布中…' : `发到 ${publishTargetLabel}` }}
+          </button>
         </div>
       </div>
     </div>
@@ -233,13 +391,6 @@
             </svg>
             <span>{{ collecting ? '采集中…' : '采集' }}</span>
           </button>
-          <button class="x-btn" @click="handlePublish" :disabled="publishing" :title="`发到 ${publishTargetLabel}`">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
-              <path d="m9.5 13.5 4.2-4.2" />
-            </svg>
-            <span>{{ publishing ? '发布中…' : (publishTarget ? `发布 → ${publishTarget} 号` : '发布') }}</span>
-          </button>
         </div>
       </div>
     </div>
@@ -259,7 +410,7 @@
             <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
             <path d="m9.5 13.5 4.2-4.2" />
           </svg>
-          <span>{{ publishing ? '发布中…' : `立即发布 → ${publishTargetLabel}` }}</span>
+          <span>{{ publishing ? '发布中…' : publishBtnLabel }}</span>
         </button>
         <button class="x-mini" @click="showCompletionBanner = false" aria-label="关闭">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -434,169 +585,6 @@
       <button class="x-mini" @click="dismissWarning">知道了</button>
     </div>
 
-    <!-- 待发布卡片 -->
-    <div v-if="pendingItems.length > 0" class="x-card">
-      <div class="x-card-head">
-        <span class="x-ic">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
-            <path d="m9.5 13.5 4.2-4.2" />
-          </svg>
-        </span>
-        <h2>待发布内容</h2>
-        <span class="x-hint">{{ pendingItems.length }} 项</span>
-        <span v-if="todayPendingCount !== pendingItems.length" class="x-tag mute">当天 {{ todayPendingCount }}</span>
-        <div class="x-spacer"></div>
-        <button v-if="pendingItems.length > PENDING_LIMIT" class="x-mini" @click="pendingExpanded = !pendingExpanded">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="pendingExpanded" d="m6 15 6-6 6 6" />
-            <path v-else d="m6 9 6 6 6-6" />
-          </svg>
-          <span>{{ pendingExpanded ? '只看最近' : `展开全部` }}</span>
-        </button>
-        <button class="x-mini" @click="openDir">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h9A1.5 1.5 0 0 1 21.5 10v8A1.5 1.5 0 0 1 20 19.5H4.5A1.5 1.5 0 0 1 3 18z" />
-          </svg>
-          <span>打开文件夹</span>
-        </button>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 34px">
-              <input
-                type="checkbox"
-                class="pc-check"
-                :checked="allShownSelected"
-                :indeterminate.prop="someShownSelected && !allShownSelected"
-                title="全选当前显示的条目"
-                @change="toggleSelectAll($event.target.checked)"
-              />
-            </th>
-            <th style="width: 152px">类型</th>
-            <th>标题</th>
-            <th style="width: 168px; text-align: right">生成时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="(item, i) in shownPending"
-            :key="`${item.date}/${item.session}`"
-            :class="{ 'pc-picked': isPicked(item) }"
-            @click="togglePick(item)"
-          >
-            <td class="pc-pickcell" @click.stop>
-              <input type="checkbox" class="pc-check" :checked="isPicked(item)" @change="togglePick(item)" />
-            </td>
-            <td class="pc-type">
-              <span v-if="item.type === 'video'" class="x-tag brand">视频</span>
-              <span v-else class="x-tag mute">图文</span>
-              <!-- 旧日期/失败过的会话必须标出来：默认不会被发布，别让人以为点了「发布全部」就会发 -->
-              <span v-if="item.old" class="x-tag mute" title="非当天的旧会话，默认不发布">旧</span>
-              <span v-if="item.failed" class="x-tag" :class="item.retryable ? 'warn' : 'danger'"
-                    :title="item.retryable ? '上次卡在发布阶段，会重试' : `上次失败于「${item.failedStage || '未知'}」，需要先重新生成`">
-                {{ item.retryable ? '待重试' : '失败' }}
-              </span>
-            </td>
-            <td><span class="pc-title">{{ item.title }}</span></td>
-            <td class="num">{{ item.date }} {{ item.time }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-if="!pendingExpanded && pendingItems.length > PENDING_LIMIT" class="pc-hint">
-        还有 {{ pendingItems.length - PENDING_LIMIT }} 项未显示
-      </div>
-      <div class="card-foot">
-        <label class="pc-old" title="勾上才会把非当天的旧会话也发出去">
-          <input v-model="includeOld" type="checkbox" />
-          <span>含旧会话</span>
-        </label>
-        <!-- 目标账号：2026-10-19 加的。以前这里只能发 accounts[0]，用户想发 02 号没入口，
-             助手也跟着发错号。现在选哪个就发哪个，选「默认」才按配置第一个。 -->
-        <label class="pub-target" title="这条发到哪个指纹环境">
-          <span>发到</span>
-          <select v-model="publishTarget" class="x-select">
-            <option value="">{{ defaultAccountLabel }}</option>
-            <option v-for="a in accountOptions" :key="a.name" :value="a.name">
-              {{ a.name }} · {{ a.env }}
-            </option>
-          </select>
-        </label>
-        <!-- 条数：以前写死「最多 3 条」，用户问「不能选择性发布吗」。现在既能选条数，
-             也能勾具体的某几条（勾了就按勾选的发，条数下拉自动失效）。 -->
-        <label class="pub-target" title="不勾选时按顺序发前 N 条（新→旧，不随机）">
-          <span>条数</span>
-          <select v-model="publishCount" class="x-select pc-count" :disabled="pickedCount > 0">
-            <option :value="1">1 条</option>
-            <option :value="2">2 条</option>
-            <option :value="3">3 条</option>
-            <option value="all">全部</option>
-          </select>
-        </label>
-        <div class="x-spacer"></div>
-        <button v-if="pickedCount" class="x-mini pc-clear" @click="clearPicks" title="取消全部勾选">清空勾选</button>
-        <span class="x-hint pub-hint" :title="publishPlan.detail">
-          {{ pickedCount ? `已勾选 ${pickedCount} 条` : '按生成时间新→旧，不随机' }}
-        </span>
-        <button class="x-btn" @click="handlePublish" :disabled="publishing">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
-            <path d="m9.5 13.5 4.2-4.2" />
-          </svg>
-          <span>{{ publishing ? '发布中…' : (pickedCount ? `发布勾选的 ${pickedCount} 条` : '发布') }}</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- 发布确认：账号发错撤不回来，所以点完按钮先看一眼"发到哪个号、几条" -->
-    <div v-if="publishConfirm" class="pub-mask" @click.self="publishConfirm = false">
-      <div class="pub-dialog">
-        <div class="pub-dialog-head">
-          <span class="x-ic">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
-              <path d="m9.5 13.5 4.2-4.2" />
-            </svg>
-          </span>
-          <span>确认发布</span>
-        </div>
-        <div class="pub-dialog-body">
-          <div class="pub-row">
-            <span class="pub-k">发到</span>
-            <span class="pub-v">
-              <b>{{ publishTargetLabel }}</b>
-              <em v-if="!publishTarget" class="pub-warn">（没选账号 = 配置里第一个）</em>
-            </span>
-          </div>
-          <div class="pub-row">
-            <span class="pub-k">条数</span>
-            <span class="pub-v">{{ publishPlan.detail }}{{ includeOld ? '，含历史日期会话' : '' }}</span>
-          </div>
-          <div v-if="pickedCount" class="pub-row">
-            <span class="pub-k">内容</span>
-            <span class="pub-v pub-list">
-              <span v-for="p in pickedItems" :key="`${p.date}/${p.session}`" class="pub-item">
-                {{ p.date }} {{ p.time }} · {{ p.title || p.session }}
-              </span>
-            </span>
-          </div>
-          <div class="pub-row">
-            <span class="pub-k">待发</span>
-            <span class="pub-v">{{ pendingItems.length }} 条可发</span>
-          </div>
-          <div class="x-tip pub-tip">
-            发出去就撤不回来了。要发到别的号 / 换几条，关掉这张卡再改。
-          </div>
-        </div>
-        <div class="pub-dialog-foot">
-          <button class="x-btn" @click="publishConfirm = false" :disabled="publishing">取消</button>
-          <button class="x-btn primary" @click="confirmPublish" :disabled="publishing">
-            {{ publishing ? '发布中…' : `发到 ${publishTargetLabel}` }}
-          </button>
-        </div>
-      </div>
-    </div>
 
 
     <!-- 最近费用 -->
@@ -1124,11 +1112,16 @@ const allShownSelected = computed(() => shownPendingKeys.value.length > 0
   && shownPendingKeys.value.every((k) => pickedKeys.value.includes(k)))
 const someShownSelected = computed(() => shownPendingKeys.value.some((k) => pickedKeys.value.includes(k)))
 
-// 这一轮到底发几条、发哪些 —— 确认卡和真正执行都读它
+// 这一轮到底发几条、发哪些 —— 确认卡和真正执行都读它。
+// eligible = 实际候选数（勾了「含旧会话」时比当天多），按钮上显示的条数就是 plan.send。
+const publishEligible = computed(() => (includeOld.value
+  ? pendingItems.value.length
+  : pendingItems.value.filter((it) => !it.old).length))
 const publishPlan = computed(() => describePublishPlan({
   pick: pickedItems.value,
   count: publishCount.value,
   total: pendingItems.value.filter((it) => !it.old).length,
+  eligible: publishEligible.value,
 }))
 
 function pickKeyOf(item) { return `${item.date}/${item.session}`; }
@@ -1146,6 +1139,17 @@ function clearPicks() { pickedKeys.value = []; }
 // 文案和真正发出去的目标同源（都是 src/renderer/lib/publish-request.js，有单测守着）
 const publishTargetLabel = computed(() => targetLabelOf(accountOptions.value, publishTarget.value))
 
+/*
+ * 主按钮和「生成完成」横幅共用同一份文案：发几条 + 发到哪个号。
+ * 为什么必须带条数：以前生成行里那个按钮只写「发布 → 02 号」，看不出这次发几条、发哪条，
+ * 而它发的其实是待发布列表里按上次选择的内容 —— 这是最容易"账号对了内容错了"的一格。
+ */
+const publishBtnLabel = computed(() => {
+  const short = publishTarget.value ? `${publishTarget.value} 号` : '默认账号'
+  const n = pickedCount.value || publishPlan.value.send
+  return `${pickedCount.value ? '发布勾选的' : '发布'} ${n} 条 → ${short}`
+})
+
 // 点「发布」只是开确认卡：账号发错撤不回来，值得多看一眼
 function handlePublish() {
   if (publishing.value) return
@@ -1153,6 +1157,13 @@ function handlePublish() {
   // 由主进程给准话（否则界面一次接口抖动就变成"点了没反应"）
   if (pendingLoaded.value && !pendingItems.value.length) {
     store.addLog('info', '没有待发布的内容')
+    return
+  }
+  // 有内容但一条都发不出去（今天 0 条 + 没勾「含旧会话」+ 没点名）时别开确认卡，
+  // 直接说清怎么才能发 —— 否则确认卡里写「待发 0 条」，用户只会觉得按钮坏了。
+  // 只在"列表已读到且有内容"时才拦（列表没读到时交给主进程给准话）。
+  if (pendingLoaded.value && pendingItems.value.length && publishPlan.value.send === 0) {
+    store.addLog('info', '今天还没有可发的内容：勾上「含旧会话」，或直接在列表里点要发的那一条')
     return
   }
   publishConfirm.value = true

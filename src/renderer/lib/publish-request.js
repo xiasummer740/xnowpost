@@ -75,18 +75,32 @@ export function buildPickKeys(items) {
 
 /**
  * 这一轮到底发几条、发哪些 —— 确认卡和真正执行共用这一份判断。
- * @param {{pick?: Array, count?: number|'all', total?: number}} input
- * @returns {{mode: 'pick'|'all'|'count', count: number, detail: string}}
+ * @param {{pick?: Array, count?: number|'all', total?: number, eligible?: number}} input
+ *   total    = 当天待发条数（用于文案）
+ *   eligible = 本次实际可能发出去的条数（勾了「含旧会话」时比 total 大；默认等于 total）
+ * @returns {{mode: 'pick'|'all'|'count', count: number, send: number, detail: string}}
  */
 export function describePublishPlan(input = {}) {
   const picked = buildPickKeys(input.pick);
+  const total = Number(input.total) || 0;
+  const eligibleRaw = Number(input.eligible);
+  const eligible = Number.isFinite(eligibleRaw) && eligibleRaw >= 0 ? eligibleRaw : total;
+
   if (picked.length) {
-    return { mode: 'pick', count: picked.length, detail: `只发勾选的 ${picked.length} 条` };
+    return { mode: 'pick', count: picked.length, send: picked.length, detail: `只发勾选的 ${picked.length} 条` };
   }
   if (input.count === 'all') {
-    return { mode: 'all', count: -1, detail: `发当天全部 ${Number(input.total) || 0} 条（不限条数）` };
+    return {
+      mode: 'all',
+      count: -1,
+      send: eligible,
+      detail: `发全部 ${eligible} 条待发（不限条数）`,
+    };
   }
   const n = Number(input.count);
   const count = Number.isFinite(n) && n > 0 ? n : 3;
-  return { mode: 'count', count, detail: `按顺序发前 ${count} 条（不勾选时默认）` };
+  // 「发 1 条」但今天一条都没有时，真实结果是发 0 条 —— 按钮上必须显示这个数，
+  // 否则用户会以为点下去会发一条（2026-10-19 首页按钮统一文案时定的口径）。
+  const send = Math.min(count, eligible);
+  return { mode: 'count', count, send, detail: `按顺序发前 ${count} 条（不勾选时默认），本轮实际发 ${send} 条` };
 }

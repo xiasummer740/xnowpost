@@ -100,3 +100,30 @@ test('界面上传的是下拉选项（{name, env}）时，确认卡也要显示
   assert.equal(publishTargetLabel(opts, '02'), '账号 02（TK02）');
   assert.equal(publishTargetLabel(opts, '01'), '账号 01（TK01）');
 });
+// ── 「本轮实际发几条」（2026-10-19 首页按钮统一文案时加） ────────────────
+// 按钮上写的条数必须等于真正会发出去的条数：以前「发 1 条」在当天 0 条待发时
+// 点下去什么都不发，用户白等一场。
+test('plan.send：当天 0 条待发时，"发 1 条" 实际是 0 条', () => {
+  const p = describePublishPlan({ count: 1, total: 0, eligible: 0 });
+  assert.equal(p.send, 0);
+  assert.equal(p.count, 1);
+});
+
+test('plan.send：勾了「含旧会话」时按 eligible 算，不按当天数', () => {
+  assert.equal(describePublishPlan({ count: 1, total: 0, eligible: 28 }).send, 1);
+  assert.equal(describePublishPlan({ count: 3, total: 2, eligible: 28 }).send, 3);
+  assert.equal(describePublishPlan({ count: 'all', total: 0, eligible: 28 }).send, 28);
+  assert.equal(describePublishPlan({ count: 'all', total: 28 }).send, 28);
+});
+
+test('plan.send：候选不够时按候选数（不多报）', () => {
+  assert.equal(describePublishPlan({ count: 3, total: 2 }).send, 2);
+  assert.equal(describePublishPlan({ count: 3, total: 2, eligible: 2 }).send, 2);
+});
+
+test('plan.send：勾选的条目不受 eligible 限制（显式点名就算数）', () => {
+  const picks = [ROWS[0], ROWS[1]];
+  const p = describePublishPlan({ pick: picks, count: 1, total: 0, eligible: 0 });
+  assert.equal(p.mode, 'pick');
+  assert.equal(p.send, 2);
+});
