@@ -3054,9 +3054,37 @@ function readSecretSources() {
   return files;
 }
 
+/**
+ * 读最近一天的 cookie 备份（`backups/cookies/<日期>/<环境>.json`）并进加密包。
+ * 为什么需要：启动时的凭据包原先只有 5 个配置文件、**没有登录态** ——
+ * 换机器/环境坏了照样得重登（重登就要 2FA，2FA 又可能没落盘）。
+ * 这里只取**最新一天**：凭据包本来就是「当前状态」的快照，历史 cookie 留着也没用。
+ */
+function readLatestCookieBackups() {
+  const out = {};
+  try {
+    const root = path.join(DATA_DIR, 'backups', 'cookies');
+    if (!fs.existsSync(root)) return out;
+    const days = fs
+      .readdirSync(root)
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+    const latest = days[days.length - 1];
+    if (!latest) return out;
+    const dir = path.join(root, latest);
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.toLowerCase().endsWith('.json')) continue;
+      try {
+        const list = fs.readJsonSync(path.join(dir, f));
+        if (Array.isArray(list) && list.length) out[path.basename(f, '.json')] = list;
+      } catch (_) { /* 单个坏文件跳过 */ }
+    }
+  } catch (_) { /* 目录读不到就当没有 */ }
+  return out;
+}
+
 /** 当前状态：ok / missing / corrupt（json 类才校验能不能解析） */
-function probeSecretState(rel) {
-  const p = path.join(DATA_DIR, rel);
+function probeSecretState(rel) {  const p = path.join(DATA_DIR, rel);
   try {
     if (!fs.existsSync(p)) return 'missing';
     const text = fs.readFileSync(p, 'utf-8');
@@ -3108,7 +3136,9 @@ function autoBackupSecrets({ cookies = {} } = {}) {
     return { ok: false, reason: 'no-safestorage' };
   }
   try {
-    let bundle = buildBundle({ files: readSecretSources(), cookies, version: app.getVersion() });
+    // 启动时调用方没传 cookie → 用已落盘的最近一天 cookie 备份补上（保证包是自包含的）
+    const cookieMap = Object.keys(cookies || {}).length ? cookies : readLatestCookieBackups();
+    let bundle = buildBundle({ files: readSecretSources(), cookies: cookieMap, version: app.getVersion() });
     const existing = readTodaySecretsBundle(ss);
     if (existing) {
       bundle = { ...bundle, cookies: { ...(existing.cookies || {}), ...(bundle.cookies || {}) } };
