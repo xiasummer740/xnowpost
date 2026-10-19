@@ -1,8 +1,15 @@
 // 文案去重模块：防止生成重复内容
 import fs from 'fs-extra';
-import path from 'path';
+import { dataPath } from '../paths.js';
+import { writeJsonAtomicSync } from '../fs-atomic.js';
 
-const HISTORY_FILE = path.resolve('output/history.json');
+// ⚠️ 历史记录必须落在"数据目录"里（打包版 = %APPDATA%/xnowpost）：
+//    旧实现用 path.resolve('output/history.json')，安装版会写到安装目录，
+//    而引擎读的是数据目录 → 去重历史实际永远为空，"去重"形同虚设。
+function historyFile() {
+  return dataPath('output', 'history.json');
+}
+
 const MAX_RETRIES = 5;
 
 // ============ 改进的中文相似度算法 ============
@@ -45,8 +52,16 @@ export function similarity(a, b) {
   const gramScore = overlap / Math.max(ga.size, gb.size);
 
   // 2. 关键词权重加分（如果数字/价格模式相似 → 大概率重复）
+  // ⚠️ 必须要求真实字面重叠（≥3 个 n-gram）才计入这 0.3 分。
+  //    旧实现无条件计入，于是两段毫无字面关系的标题只要"都带价格/数字"
+  //    就能白拿 0.3 分（0.45 阈值的地板值），与内容是否重复无关。
+  //    实测 output/history.json 的 122 个标题：本次收紧让 127 对
+  //    "零/极低重叠但被地板值抬到 ~0.30"的标题对归零，
+  //    而原本被判重复的 13 对（gram 0.07~0.86）全部保留 —— 不误伤真重复。
   const wa = keywordWeight(a), wb = keywordWeight(b);
-  const kwScore = wa > 0 && wb > 0 ? 1 - Math.abs(wa - wb) / Math.max(wa, wb) : 0;
+  const kwScore = (overlap >= 3 && wa > 0 && wb > 0)
+    ? 1 - Math.abs(wa - wb) / Math.max(wa, wb)
+    : 0;
 
   // 加权合并
   return gramScore * 0.7 + kwScore * 0.3;
@@ -63,27 +78,30 @@ export function contentSimilarity(contentA, contentB) {
 // ============ 历史管理 ============
 
 export function loadHistory() {
+  const file = historyFile();
   try {
-    if (fs.existsSync(HISTORY_FILE)) {
-      return fs.readJsonSync(HISTORY_FILE);
+    if (fs.existsSync(file)) {
+      return fs.readJsonSync(file);
     }
   } catch (e) { /* ignore */ }
   return { titles: [], contents: [], count: 0, lastStrategy: null };
 }
 
 export function saveTitle(title, strategy) {
+  const file = historyFile();
   const h = loadHistory();
   h.titles.push({ title, strategy, time: new Date().toISOString() });
   // 只保留最近 200 条
   if (h.titles.length > 200) h.titles = h.titles.slice(-200);
   h.count++;
   h.lastStrategy = strategy;
-  fs.ensureDirSync(path.dirname(HISTORY_FILE));
-  fs.writeJsonSync(HISTORY_FILE, h, { spaces: 2 });
+  // 原子写：进程被杀不会留下半截 JSON（那会让去重历史整份失效）
+  writeJsonAtomicSync(file, h, 2);
 }
 
 // 保存完整内容用于深度去重
 export function saveContent(content, strategy) {
+  const file = historyFile();
   const h = loadHistory();
   h.contents = h.contents || [];
   h.contents.push({
@@ -94,8 +112,7 @@ export function saveContent(content, strategy) {
   });
   if (h.contents.length > 50) h.contents = h.contents.slice(-50);
   h.lastStrategy = strategy;
-  fs.ensureDirSync(path.dirname(HISTORY_FILE));
-  fs.writeJsonSync(HISTORY_FILE, h, { spaces: 2 });
+  writeJsonAtomicSync(file, h, 2);
 }
 
 // ============ 双重去重检查 ============

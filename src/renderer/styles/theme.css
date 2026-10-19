@@ -1,0 +1,281 @@
+/* ============================================================
+   XNOWPost 设计变量 + 通用组件类
+   规则：颜色只留一个品牌色（TikTok 粉），绿/琥珀/红只表示状态。
+   新页面一律用这里的 class，不要再写死色值。
+   ============================================================ */
+:root {
+  /* 背景分层 */
+  --bg0: #0a1017;   /* 窗口底 */
+  --bg1: #0e1621;   /* 侧栏 / 输入框底 */
+  --bg2: #131d2b;   /* 卡片 */
+  --bg3: #1a2637;   /* 卡片内嵌块、标签底 */
+  --stroke: #22303f;
+  --stroke-2: #2c3d50;
+
+  /* 文字 */
+  --text: #e8eff7;
+  --text-2: #9aa9bc;
+  --text-3: #64748b;
+
+  /* 品牌与状态 */
+  --brand: #ff2e5b;
+  --brand-hover: #ff4d73;
+  --brand-soft: rgba(255, 46, 91, 0.12);
+  --ok: #2dd4a7;
+  --ok-soft: rgba(45, 212, 167, 0.12);
+  --warn: #f5a524;
+  --warn-soft: rgba(245, 165, 36, 0.12);
+  --info: #4c9aff;
+  --info-soft: rgba(76, 154, 255, 0.1);
+  --danger: #f0514e;
+  --danger-soft: rgba(240, 81, 78, 0.12);
+
+  /* 圆角 / 间距 */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 22px;
+
+  /* 字体 */
+  --font-ui: 'Segoe UI', 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', Consolas, monospace;
+
+  /* 阴影 */
+  --shadow-1: 0 6px 18px rgba(0, 0, 0, 0.28);
+  --shadow-2: 0 18px 44px rgba(0, 0, 0, 0.5);
+}
+
+/* ── 通用按钮 ── */
+.x-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--stroke-2);
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.16s, border-color 0.16s, transform 0.06s;
+  white-space: nowrap;
+}
+.x-btn:hover { background: var(--bg3); border-color: #3a4d61; }
+.x-btn:active { transform: translateY(1px); }
+.x-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.x-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+.x-btn.primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(255, 46, 91, 0.28);
+}
+.x-btn.primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+.x-btn.ghost { background: transparent; }
+
+/* 小号按钮（表格行内 / 字段右侧） */
+.x-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--stroke-2);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.16s, color 0.16s, border-color 0.16s;
+  white-space: nowrap;
+}
+.x-mini:hover { background: var(--bg3); color: var(--text); }
+.x-mini svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.9; }
+.x-mini.hi {
+  border-color: rgba(255, 46, 91, 0.42);
+  color: #ff8aa0;
+  background: rgba(255, 46, 91, 0.08);
+}
+.x-mini.hi:hover { background: rgba(255, 46, 91, 0.16); color: #ffb3c2; }
+.x-mini:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── 卡片 ── */
+.x-card {
+  background: var(--bg2);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.x-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--stroke);
+}
+.x-card-head .x-ic {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+}
+.x-card-head .x-ic svg { width: 15px; height: 15px; stroke: var(--text-2); fill: none; stroke-width: 1.8; }
+.x-card-head h2 {
+  font-size: 13.5px;
+  font-weight: 640;
+  letter-spacing: 0.2px;
+  color: var(--text);
+}
+.x-card-head .x-hint { font-size: 11.5px; color: var(--text-3); }
+.x-card-head .x-spacer { flex: 1; }
+.x-card-body { padding: 6px 16px 12px; }
+
+/* ── 字段行：标签 · 控件 · 操作 ── */
+.x-field {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 0;
+}
+.x-field + .x-field { border-top: 1px dashed rgba(34, 48, 63, 0.7); }
+.x-field .x-label {
+  font-size: 13px;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.x-field .x-label b { color: var(--text); font-weight: 600; }
+.x-field .x-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+/* ── 输入类控件 ── */
+.x-input,
+.x-select,
+.x-textarea {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  background: var(--bg1);
+  border: 1px solid var(--stroke-2);
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: var(--font-ui);
+  outline: none;
+  transition: border-color 0.16s, box-shadow 0.16s;
+}
+.x-textarea { height: auto; padding: 8px 10px; line-height: 1.5; resize: vertical; }
+.x-input::placeholder,
+.x-textarea::placeholder { color: #5a6a7d; }
+.x-input:focus,
+.x-select:focus,
+.x-textarea:focus {
+  border-color: rgba(255, 46, 91, 0.6);
+  box-shadow: 0 0 0 3px rgba(255, 46, 91, 0.12);
+}
+.x-input.mono { font-family: var(--font-mono); letter-spacing: 1.2px; }
+.x-select { appearance: none; cursor: pointer; }
+
+/* ── 标签徽标 ── */
+.x-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.x-tag.ok { color: var(--ok); background: var(--ok-soft); }
+.x-tag.warn { color: var(--warn); background: var(--warn-soft); }
+.x-tag.danger { color: var(--danger); background: var(--danger-soft); }
+.x-tag.mute { color: var(--text-3); background: var(--bg3); }
+.x-tag.brand { color: var(--brand); background: var(--brand-soft); }
+
+/* ── 状态点 ── */
+.x-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.x-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(45, 212, 167, 0.14); }
+.x-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(245, 165, 36, 0.14); }
+.x-dot.off { background: var(--text-3); }
+
+/* ── 底部提示条 ── */
+.x-tip {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--info-soft);
+  border: 1px solid rgba(76, 154, 255, 0.22);
+  color: #a9c7f0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.x-tip svg { width: 15px; height: 15px; flex: 0 0 15px; stroke: #6fa8f5; fill: none; stroke-width: 1.8; margin-top: 1px; }
+.x-tip.warn {
+  background: var(--warn-soft);
+  border-color: rgba(245, 165, 36, 0.24);
+  color: #f0cf9a;
+}
+.x-tip.warn svg { stroke: var(--warn); }
+
+/* ── 页面标题栏 ── */
+.x-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 0 16px;
+}
+.x-head h1 { font-size: 16.5px; font-weight: 640; letter-spacing: 0.2px; color: var(--text); }
+.x-head .x-sub { font-size: 12px; color: var(--text-3); }
+.x-head .x-spacer { flex: 1; }
+
+/* ── 开关 ── */
+.x-switch {
+  width: 38px;
+  height: 21px;
+  border-radius: 20px;
+  background: var(--bg3);
+  border: 1px solid var(--stroke-2);
+  position: relative;
+  cursor: pointer;
+  flex: 0 0 38px;
+  transition: background 0.18s, border-color 0.18s;
+}
+.x-switch i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #6b7a8d;
+  transition: left 0.18s, background 0.18s;
+}
+.x-switch.on { background: rgba(255, 46, 91, 0.22); border-color: rgba(255, 46, 91, 0.5); }
+.x-switch.on i { left: 19px; background: var(--brand); }
+
+/* ── 空状态 / 骨架屏（沿用旧类名，换成新色） ── */
+.x-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 20px;
+  color: var(--text-3);
+  font-size: 13px;
+}

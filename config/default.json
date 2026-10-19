@@ -12,17 +12,28 @@
     "retryDelay": 2000
   },
   "video": {
-    "scenes": 9,
-    "minDuration": 5,
-    "maxDuration": 7,
-    "totalDuration": 30,
+    "scenes": 4,
+    "minDuration": 4,
+    "maxDuration": 6,
+    "totalDuration": 20,
     "bgmVolume": 0.15,
     "fadeIn": 0.5,
-    "fadeOut": 1.0
+    "fadeOut": 1.0,
+    "motion": true,
+    "transitionSec": 0.5,
+    "heroI2V": false,
+    "heroScenes": 1,
+    "materialsMaxScenes": 2
   },
   "voice": {
-    "zh": { "voice": "zh-CN-XiaoxiaoNeural", "rate": "+10%" },
-    "en": { "voice": "en-US-JennyNeural", "rate": "+10%" }
+    "zh": {
+      "voice": "zh-CN-XiaoxiaoNeural",
+      "rate": "+10%"
+    },
+    "en": {
+      "voice": "en-US-JennyNeural",
+      "rate": "+10%"
+    }
   },
   "telegram": {
     "parseMode": "HTML",
@@ -31,5 +42,12 @@
   "dailyLimit": {
     "videos": 2,
     "posts": 1
+  },
+  "content": {
+    "noPrice": true,
+    "noContact": true,
+    "noPromise": true,
+    "brandUrl": "",
+    "maskPromoCode": true
   }
 }

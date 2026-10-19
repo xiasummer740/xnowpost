@@ -1,3 +1,442 @@
+# 接力开发 — 新对话从这里开始
+
+> 更新：2026-10-19 11:37 ｜ 版本 **1.6.8**（已打包、已部署、已重启验证）
+
+## 1D. v1.6.8（2026-10-19 11:37）output 保留 15 天
+
+用户定口径：「15 天」。范围按之前说好的 —— **只清中间件和调试产物，成片/封面/文案一个不动**。
+
+- 新增 `src/output-retention.js`（纯函数 + `tests/unit/output-retention.test.js` 4 例）：
+  - `cutoffDate()` / `pickOldDateDirs()`：按**目录名里的日期**判断（不是 mtime，拷过的文件 mtime 不可信），
+    严格早于 cutoff 才进清理列表，边界当天保留；`days<=0` = 不清理。
+  - `isCleanable()`：只认 `expanded_debug.html` 和 `_video/**`，其它一律 false。
+    单测逐条钉住「video.mp4 / 封面.png / 文案.txt / 描述.txt / .published / JSON / 截图都不许动」。
+- 主进程启动时跑一次（和日志清理挨着），日志留痕：
+  `🧹 清理 15 天前的中间文件 230 个（22 天的目录），释放 136.0 MB（成片/封面/文案都保留）`
+- 实测：`output` **1323.2 MB / 2302 文件 → 1187.2 MB / 1945 文件**；
+  老目录里 `video.mp4` 242 个、`封面.png` 255 个全部还在；最近 15 天目录里
+  22 个 `expanded_debug.html` 原样未动（策略只碰老目录）。
+- **踩坑（第一版无效）**：遍历时对"不可清的目录"直接 `continue`，于是 `am_0830/` 根本没进去，
+  一个文件都没删、日志也空着 —— 看起来像策略没生效。必须继续往下递归。
+- `npm run verify` 335 条全绿；部署后 `src/output-retention.js` 与源码 SHA256 一致
+  （`F8A30B52AF3A1468`），`package.json` 1.6.8。
+
+
+## 1C. v1.6.7（2026-10-19 11:30）「未知弹窗」假告警 + 日志保留
+
+用户点的两件事：把今天 79 条警告里的「未知弹窗点了 not now」3 次收掉；顺带问日志占不占内存。
+
+### ① 那 3 次「未知弹窗」其实是认得的框
+真实现场（`output\2026-10-19\am_0845\publish.log`，08:47 那轮）：
+```
++ 13.6s  👁️ 未知浮层（不点，只记录）: 「Not now Discard」按钮=[Not now|Discard]
++ 16.9s~24.5s  👁️ 浮层「通用确认」出现 → 立刻点「Got it」 ×4   ← 白等 28 秒
++ 54.0s  🛑 弹窗「放弃作品确认」被拦下不点 / 弹窗文字: discard this post?
++ 54.0s  ⚠️ 未知弹窗 → 点了安全按钮「not now」（not now discard…）
+```
+同一个框被三层代码分别认成三种东西。根因：**标题块没进浮层集合**，浮层里只剩
+「Not now / Discard」两个按钮，而 `dialogs.js` 第二轮的兜底**只认文字签名** →
+判成"未知弹窗"。行为是对的（只点了 Not now，没丢作品），但日志骗人，复盘时最误导。
+
+修（只在放行条件上动手，安全边界不变）：
+- `dialogs.js` 第二轮兜底加**按钮组合识别**：浮层里同时有「取消类（Not now/Cancel/Stay）」+
+  「Discard」→ 就是「放弃作品确认」，记为 `rule: '放弃作品确认'`、`buttonOnly: true`，
+  日志写 `✅ 弹窗「放弃作品确认」→ 点了「not now」（标题块没进来，靠「取消类 + Discard」按钮组合认出来的）`。
+- `allowDiscard` 只从上层 `allowDiscardDraft` 透传（**只在"上传之前"为 true**），
+  其余场景这一层永远只点 Not now —— Discard 依旧拿不到。
+- 单测 +2（`tests/unit/dialogs.test.js`）：只有按钮时点 Not now 且**不许再报 unknown**；
+  带 `allowDiscardDraft` 时点 Discard。加上原有的反应器用例（`overlay-policy.test.js` 第 17 行
+  就是这组真实浮层），三层都有锁。
+
+### ② 日志占不占资源（用户提问，附实测）
+| 项 | 实测 | 结论 |
+|---|---|---|
+| 内存里的日志 | `logBuffer` 硬上限 **500 行** | 不涨，写到文件后不再驻留 |
+| 界面渲染 | 分组视图只渲染 **12 行**标题；全部行视图上限 2000 行 | 不卡 |
+| 日志磁盘 | 30 个文件 / **2.95 MB**（2026-06-17 起） | 极小，但**以前只写不清** |
+| output 目录 | **1323 MB / 2302 文件**（成片视频） | 真正占磁盘的是它 |
+| `expanded_debug.html` | 243 个 / **57.5 MB**（每次发布写一份） | 可清，但要先问用户 |
+
+于是加了保留策略 `electron/lib/log-prune.js`（纯函数 + 5 条单测）：
+启动时删 **30 天前**的 `app-<日期>.log` / `scheduler-<日期>.log`，其它文件一概不碰
+（`days<=0` 视为不清理，防止把刚写的日志删掉）。首次运行实测
+**30 个 → 6 个、释放 2.02 MB**，日志留痕 `🧹 清理 30 天前的日志 24 个，释放 2.02 MB`。
+
+`npm run verify` 331 条单测全绿；部署后 `app.asar` 11:24:53，`app.asar.unpacked\src\publisher\dialogs.js`
+与源码 SHA256 一致（publisher 走 `asarUnpack`，改完要核对**解包目录**而不是 asar 本体）。
+
+
+## 1B. v1.6.6（2026-10-19 11:35）运行日志改成「一轮任务一行」
+
+用户看完 v1.6.5 说「没看到」—— 新版确实在跑（截图可证：共 1374 行、有来源标签），
+但他看到的那一屏是**最后一次重启打的 11 个闹钟横幅**，观感跟以前一样「还是一堆废话」。
+统计一下：今天 1344 行里，重启横幅 172 行（13%），**关键节点只有 21 行**（1.6%）——
+真正要看的 21 行埋在 1300 行里，平铺视图解决不了。
+
+改法（用户选的就是这条）：
+- 新增 `src/renderer/lib/log-runs.js`（纯函数）：按 `🚀 … 任务开始` 切轮，
+  一轮一行显示 `结果 / 耗时 / 账号 / 环境 / 已发几个 / 花费 / 错误·警告数 / 行数`，
+  点开才是这一轮的原始行。界面默认就是分组视图，另有「📜 全部行」切回平铺。
+- 单测 `tests/unit/log-runs.test.js`（9 例）：切轮、耗时、环境、失败原因、筛选、边界。
+- 三个踩到的判定 bug（都已修 + 锁进单测）：
+  1. `🗣️ 先做配音（失败则一分钱不花在生图上）...` 只是句子里有"失败" → 10 轮全被标成 ❌ 失败；
+  2. `🚫 文案含敏感信息，重写中(1/2)` 被当错误 → 改成警告（它是重写前的拦截，之后成功了）；
+  3. **emoji 字符类没 `u` 标志**：`/^[🔶]/` 会拆成 `\uD83D\uDED6`，
+     于是所有 `\uD83D` 开头的 emoji（🗣📤📋…）全命中 → 判定串味。
+     另外 `''.includes('')` 恒为 true，空消息会被判成 warning。
+  修完今天真实错误数 = **0**（之前界面显示 11 条，全是假的）。
+- 耗时不能用"轮内最后一行"：下一轮的 `🔐 TKxx 已登录` 预检行会把 2 分半的一轮算成 45 分钟，
+  现在取明确的收尾行（`✅ … 完成` / `❌ … 失败`）。
+- 环境只认 `🌐 打开指纹环境 TKxx`（`🔐 已登录` 是全部账号的预检，会把 10 个环境都算进每一轮）。
+- 分组视图打开时滚到顶部（最新一轮在最上），全部行视图滚到底部（最新一行）。
+- 实测：08:30 那轮 `✅ 成功 · 2 分 37 秒 · 账号 01 · TK01 · 已发 1 · ¥0.043 · ⚠️ 6 · 93 行`，
+  09:15 那轮 `2 分 43 秒`，10:00 采集 `2 分 43 秒 · ⚠️ 12 · 259 行`。
+  截图 `output\shot-175-runs2.png`（分组）、`output\shot-177-expand.png`（点开 259 行细节）。
+- `npm run verify` 324 条单测全绿。
+
+
+## 1A. v1.6.5（2026-10-19 11:05）运行日志：从 18 行变成 1344 行
+
+用户问「运行日志只能看到这几行吗」。**不是**，一共只显示 18 行的真因有两层：
+
+1. 界面默认是「实时」= 主进程**内存里的 logBuffer**（上限 500 行、进程一重启就清零）→
+   应用 10:45 才启动，所以只有启动那十几行。
+2. 「历史日志」只读 `logs/app-<日期>.log`，**调度器日志 `scheduler-<日期>.log` 从来没人读**
+   —— 而真内容全在那里：今天那 1269 行里有 `🚀 任务开始`、`🔐 TK01 已登录`、`💰 token≈¥0.0038`、
+   `📅 会话目录`、`🚫 文案含敏感信息，重写中` 等等。
+
+改法：
+- 新增 `electron/lib/log-lines.js`（纯函数）：解析两种格式（app 带 `[INFO]`，调度器没有级别）、
+  按内容/emoji 判类型（❌→错误、⚠️→警告、✅→成功）、**丢掉 app 里回声调度器的 `⏰` 行**（否则每条两次）、
+  两份按时间合并排序。
+- `logs:get`（实时）→ 今天 app + 调度器合并后的尾部，**每 5 秒重读一次文件**
+  （调度器是另一个进程，主进程不会转发它每一行），并**自动滚到最新一行**。
+- `logs:history`（历史）→ 同一天两份合并，最多 6000 行；界面默认渲染最近 2000 行，
+  上面有「⬆️ 还有 N 行更早的」按钮，每次再展开 2000 行。
+- 界面加了 **来源标签**（`应用`/`调度`）+ **来源筛选** + **📂 打开文件夹**（直接看原始文件）。
+- 顺手修一个日期 bug：`writeLogToFile` / `logs:get` / 日志页默认日期都用的
+  `new Date().toISOString()`（**UTC**），北京时间 00:00–08:00 会把当天日志写进前一天的文件
+  （`autoBackup` 的目录名同病）。调度器早就按本地日期命名，现在两边一致（`localDateStr()` = `sv-SE`）。
+- 单测 `tests/unit/log-lines.test.js`（9 例），其中一条专门锁住
+  **`🚀 任务开始（超时预算 1800s）` 不许被判成错误**（裸「超时」当错误关键词会把每轮任务开头染红）。
+- 实测：10-19 合并 1344 行（调度 1269 + 应用 30 + …）；10-18 = 6342 行原始（应用 3195 / 调度 3147）、
+  其中 47 条错误；10-17 = 761 行。截图 `output\shot-172-logs.png`。
+
+> 本文件只写「现状 / 本轮做了什么 / 待办 / 怎么验证」；规则与踩坑原因全在 `CLAUDE.md`（442 行），改动前先读对应章节。
+
+## 0. 一句话现状
+
+TikTok 内容工厂：采集 → AI 生成（文案/图/视频）→ 多环境发布（FoxProfile + Camoufox）+ 闹钟调度。
+Electron 43 + Vue 3 桌面应用，10 个指纹环境 TK01–TK10 全部已登录可发布，窗口统一 1292x994 @ 0,0。
+
+- 开发：`npm run dev`｜打包：`npm run package`（产物 `release\win-unpacked`）｜自检：`npm run verify`
+- 部署：见第 4 节命令，别只改代码不部署就报「修好了」—— 用户跑的是 `E:\software\XNOWPost`
+- 数据：`%APPDATA%\xnowpost\`（`config\user.json`、`config\schedule.json`、`data\*`、`logs\*`）
+- 当前自检：check-leaks ✅ / windowsHide 24 处 ✅ / 单测 **302 全绿** / vite build ✅
+- ⚠️ **在仓库目录直接跑 CLI 必须带 `XNOWPOST_DATA_DIR`**：`src/paths.js` 在开发模式下把数据目录
+  解析成**仓库根**，会读到仓库里那份旧 `config\user.json`（比特时代的 UUID 环境名），
+  采集会报「FoxProfile 里没有名为 31bea5b1… 的环境」：
+  ```powershell
+  $env:XNOWPOST_DATA_DIR = "$env:APPDATA\xnowpost"; node src\collector\index.js --accounts 01,02
+  ```
+- ⚠️ **启动部署版应用前先清 `ELECTRON_RUN_AS_NODE`**：该变量存在时 `XNOWPost.exe` 会按 node 跑，
+  **秒退且退出码 0、日志一个字都不写**（2026-10-19 差点误判成"打包坏了"）：
+  ```powershell
+  Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue; Start-Process E:\software\XNOWPost\XNOWPost.exe
+  ```
+- ⚠️ **git 状态不干净**：HEAD 还停在 `1.2.18`（提交 `ce9737e`），工作区版本已到 `1.6.3`，
+  57 个已修改 + 86 个未跟踪文件。**接力时不要 `git checkout -- .` 或 `git stash`**，会丢一周的工作。
+
+## 1. v1.6.2 → v1.6.4（2026-10-19）采集"假成功"真凶 + 日报页看不懂 + 粉丝接入
+
+### 1.0 v1.6.4 追加（10:55）：粉丝接进来了 + 10 个号都列出来了
+用户两句话：「要接进来，另外只能看一个账号吗」。之前日报页只显示 1 个号，是因为
+`daily_stats` 那天只有账号 01 的行——页面只画"有数据的号"，没数据的号直接消失。
+
+1. **粉丝/关注/获赞接入采集**（`src/collector/scrapers/tiktok-profile.js`）：
+   分析页永远不给这三个数（Followers 页对 <100 粉的号也只给 0 + "达到 100 粉解锁"），
+   但账号主页资料卡一定给。采集器在同一个环境里**顺路打开 `https://www.tiktok.com/@<用户名>`** 读一遍，
+   不额外开窗口。指标键：`followers` / `following` / `total_likes`（主页的"获赞"是累计获赞，
+   和分析页的 `likes`（近 7 天视频点赞）不是一回事，**别混用同一个键**）。
+2. **只拿到主页数字也要入库并说明**：返回 `{ stats, partial:true }`，日志
+   `ℹ️ 0N: 只拿到主页的粉丝/关注/获赞，播放/点赞/评论 TikTok 仍是「--」`；
+   证据 JSON 多了 `partial` 字段；日报页顶部显示蓝色提示条（不是黄色失败条）。
+3. **日报页列出全部账号**：`report:daily` 多返回 `configAccounts`（配置里的 name/platform/username），
+   页面取「有天数据的号 ∪ 配置里的号」，**没采到的号也画一张卡片**写「这天没采到数据」+ 原因。
+4. **踩的坑（已写进 CLAUDE.md）**：资料卡是
+   `<strong title="Followers" data-e2e="followers-count">0</strong>` ——
+   **`title` 是"这是粉丝数"的标签，不是数字**。第一版读 title 拿到 `"Followers"` → 解析失败 →
+   三个数全 null → 因为代码只在 `gotProfile>0` 时打日志，所以**一个字都不打**，看着像没执行。
+   现在优先 `textContent`，并新增"元素读到了但解析不出数字"的告警（带原始值）。
+5. **真机结果**（10:48 那轮，10/10）：
+   ```
+   👥 主页资料: 粉丝 0 / 关注 0 / 获赞 0        ← 每个号都读到了
+   ✅ 01: {"followers":0,"following":0,"total_likes":0} (@ryloclyjdcf)
+   ℹ️ 01: 只拿到主页的粉丝/关注/获赞，播放/点赞/评论 TikTok 仍是「--」
+   ✅ 数据采集完成（10/10 个账号有数据）   EXITCODE=0
+   analytics.db 2026-10-19 = 30 行（10 号 × 3 指标）
+   证据 collect-1048.json: ok=true collected=10 insufficient=10 partial=10
+   ```
+   页面：`output\shot-167-report.png`（黄条变蓝条 + KPI 总粉丝 0 + 01/02/03… 多张卡片）、
+   `output\shot-168-scrolled.png`（滚到 04–07，证明 10 个号都在）。
+6. **TG 真相（顺手查清，没改）**：`electron/main.js:176` 已经会把配置里的 `tgBotToken` 写进
+   `process.env.TG_BOT_TOKEN`，配置页也有那一栏 —— 但**它是空的**，所以定时采集一直报"未配置"。
+   仓库 `.env` 里那个 `TG_BOT_TOKEN` 只有 14 个字符（真 token 是 `数字:AA…` 40+ 位），
+   CLI 跑采集时会读到它并报 `❌ 日报推送失败: TG 推送失败 404 Not Found`。
+   **打包版不读 `.env`**，所以真要推 TG：到「配置 → Telegram Bot Token」填真 token（不是改 .env）。
+
+### 1.1 现场：10:00 采集 10 个号全空，却报 ✅ 完成
+`10:00:00 → 10:02:43`（163 秒），10 个号每个都是：
+`📋 页面 44 行 … Video views | -- | 0 | (--)` → `📊 TikTok 数据: {}` → `✅ 0N: {"stats":null,"username":""}`
+→ 收尾 `✅ 数据采集完成` / `✅ 数据采集 + 日报 完成`，还覆盖了 `collect-meta.json` 的采集时间。
+但 `analytics.db` **当天 0 行**（最新 2026-10-18=4 行只有账号 01；最后一个完整日子是 2026-07-22=42 行）。
+
+### 1.2 真凶：空壳对象被当成有效数据（单测已锁死）
+`src/collector/index.js` 的 `normalizeResult()` 写的是
+`const stats = result && result.stats ? result.stats : result;`
+采集器返回 `{stats: null, username: ''}` 时 `result.stats` 为 null（falsy）→ **stats 退回成整个返回对象**
+→ `Object.keys().length === 2 > 0` → 判定"有数据"。后果链：每个号记 ✅ → 一个数字也没入库
+（值全是 null/''，被 `saveStats` 过滤）→ `allResults.length === 10` 骗过"全军覆没判断"
+→ 覆盖采集时间戳 → 日报拿空壳跑一遍 → 界面显示"今天已采集"。
+现在：先认包装对象，再要求**至少一个有限数字**（0 是有效数据），否则 null。抽成
+`src/collector/result.js`（纯函数）+ `tests/unit/collect-result.test.js`（10 例）。
+
+### 1.3 为什么是「--」：TikTok 真的没给数据，不是选择器坏了
+在 TK01 上实测（3 次、含重进页面 + 多等 20s）：指标一直 `--`；页内 `fetch`
+`/tiktok/v1/analytics/insights/`（带完整参数）→ insight 82 返回
+`{"article_links_ctr":{"message":{"status":9}}}`，类型 1–6 返回 `{}`，HTTP 200；
+Followers 页 `Total followers 0` + `Get more insights once you reach 100 followers`；
+Content 页 `No top posts`；`data/account-profiles.json` 里 TK01/TK02/TK08 全是
+`followers 0 / following 0 / likes 0`。→ 这些号**还没有可统计的数据**。
+所以新增 `looksInsufficient()`：五个 KPI 全是 `--` 判「数据不足」，日志分开说，
+不再一律报成「页面结构可能已变化」（两者处置完全不同：一个等数据，一个改选择器）。
+
+### 1.4 四个问题都修了
+1. **空采集不许报成功**：全空 → 抛错 + **退出码 2**（纯"数据不足"）；调度器 `runWithRetry`
+   见到 2 就 `❌ … 失败：数据不足（… 本轮不重试）` 并**不再重试**（否则白开 10 个浏览器窗口跑 2.5 分钟）。
+   行内同时含 `❌` 和 `失败`，因为界面「调度进度」用 `/❌\s*.+?失败/` 判断任务已结束。
+2. **不再覆盖「已采集」时间戳**：只有真采到数据才写 `collect-meta.json`；每轮都写证据
+   `output/<日期>/collect-HHMM.json`（`ok/total/collected/insufficient/failures`）。
+3. **username 不再靠抓页面**：Studio 分析页压根不显示 `@handle`（10 个号抓回全是空串），
+   新增 `resolveUsername()`：页面 > `data/env-accounts.json` > 配置 `accounts[].username`。
+4. **日报页说实话**（用户原话「我有点看不懂」）：
+   - 顶部黄条：`今天（2026-10-19）10:30:07 的采集没拿到数据：0/10 个账号有数据` +
+     `所以这一页显示的是 2026-10-18（最近一次有数据的一天）的记录`；
+   - KPI **「—」≠ 0**：以前没采到的指标也显示 0（总粉丝明明没采到却写 0），现在缺失显示 `—` 并加脚注；
+   - 趋势图例**带账号名**（`01 · 播放`）：旧图例是 `tiktok·播放`，8 个号渲染出一排一模一样的 chip；
+   - 趋势横轴改成**真实日历近 7 天**（`2026-10-13 ~ 2026-10-19`）+ 缺口断线：旧实现取"最后 7 个
+     有数据的日期"，把 07-22 和 10-18（隔 3 个月）等间距连成一条水平线，看着像"这 7 天都是 0"。
+5. **TG 没配 ≠ 推送失败**：`daily.js` 用 `isTelegramConfigured()` 分开报（`ℹ️ 只留本地日志`），
+   一个数字都没有时干脆不推空日报；主进程手动「推送日报」也不再在没配 token 时记
+   `✅ 已推送到 TG`（同一个假成功模式）。
+
+### 1.5 真机验证（v1.6.3，2026-10-19 10:30）
+```
+📊 采集账号: 01..10  →  每个都是  ℹ️ 数据不足：TikTok 分析页指标显示为「--」
+⚠️ 本轮没有任何数据入库，不更新「已采集」时间戳
+❌ 采集失败: 全部 10 个账号数据不足（TikTok 分析页只给「--」占位），未获得任何数据
+EXITCODE=2
+collect-meta 采集前/后 mtime 均 = 10/19/2026 10:02:43   ← 没被覆盖
+analytics.db: 2026-10-19 = 0 行，总数仍 729 行        ← 没写脏
+camoufox = 0（10 个环境全开全关）
+证据：%APPDATA%\xnowpost\output\2026-10-19\collect-1030.json（ok:false, total:10, collected:0, insufficient:10）
+截图：output\shot-166-report.png（黄条 + KPI 的「—」+ 带账号名的图例）
+```
+
+
+## 2. v1.6.1 → v1.6.2（2026-10-19）发布前旧草稿「真的丢弃」+ 弹窗误判修复
+
+### 2.1 现场：10 轮全发成功，但 3 轮各白等 28 秒
+- 08:30–09:15 每 5 分钟一轮 TK01→TK10，10/10 `.published` + 10/10「审查完成，视频已公开」，
+  账本 10 行，花费 $0.33，无 FAILED、无 WARN/ERROR。
+- 但 `am_0845 / am_0855 / am_0905` 三轮日志一模一样：点完草稿的「Discard」后
+  `Discard this post?` 确认框**没人收**，反应器把它认成「通用确认」→ 对 (1054,424)
+  盲点 4 次「Got it」全部落到遮罩上（`page-events.log` 记的点击目标是 `div.TUXModal-overlay`）
+  → 白等 27~28 秒，最后由 `handleDialogs` 的"未知弹窗"兜底点了 Not now。
+
+### 2.2 三个根因，都修了
+1. `tiktok.js` 点完草稿横幅的「放弃/Discard」后**没有任何后续处理** → 现在紧接着调
+   `handleDialogs` 把确认框当场收掉（v1.6.1 先点 Not now；v1.6.2 按用户口径改成点 Discard，
+   见 1.3）。
+2. `page-sense` 只按"整页浮层文字拼接"判策略，标题块偶尔不进浮层集合时判不出来 →
+   新增 `policyFromButtons()`：同一屏同时出现「取消类（Not now/Cancel/Stay）」+「Discard」
+   就直接按**放弃作品确认**处理，优先级高于文字判定（检查框是 Cancel+Turn on、AI 标注是
+   Not now+Turn on，都不会误入）。
+3. 反应器 4 次上限按 `policy.name` 计数 → 一次误判就把整类浮层封死整轮。改成按
+   `overlaySignature()`（策略 + 按钮文字）计数。
+- 顺带把 `DIALOG_RULES` 的「放弃作品确认」从 `click: [] + blocked`（一个都不点）改成
+  **点 Not now**：只记录不点的话遮罩一直挡着页面（CLAUDE.md 的策略表本来写的就是
+  Not now / Cancel / Stay，两层实现之前不一致）。`Discard` 依旧被 `DANGER_LABELS` 一票否决。
+- 单测：新增 `tests/unit/overlay-policy.test.js`（5 例），`dialogs.test.js` 改 2 例
+  （「点 Not now 收掉，Discard 绝不点」「只有 Discard 一个按钮时一个都不点」）。总单测 284 → **290 全绿**。
+
+### 2.3 v1.6.2：旧草稿必须**真丢掉**（用户口径，2026-10-19 09:50）
+- 用户原话：「你点 Not now，等于没丢弃呀，下次打开还是会出现呀」「发布的时候里面有草稿，
+  不应该是点击 Discard 吗」—— 对。v1.6.1 只解决了"框盖住页面"，草稿本体一直留着。
+- 证据（同一环境 TK08 连续两次探针）：只点过 Not now 之后，下次进上传页横幅还在，而且确认框
+  点名了上一次的内容 `Your video "发50条视频才87粉？问题不在内容 5..."`。
+- 改法：
+  1. `handleDialogs` 新增 `allowDiscardDraft` 选项 —— **只**把「放弃作品确认」这条规则的点法
+     换成 `discard/放弃`，并把这两个词从这一步的危险词里摘掉；其它规则、未知弹窗路径拿不到 Discard。
+  2. `tiktok.js` 在上传**之前**用它点 Discard（此刻页面上还没有我们的视频/文案，丢的是旧草稿）；
+     之后回读 `discard this post` 还在 → 退回 Not now 兜底，绝不把框留在页面上。
+  3. **反应器抢跑才是"每轮都弹"的真凶**：它认识这个框，每 500ms 一轮先点 Not now，等于把丢弃
+     取消掉。给 `startOverlayReactor` 加 `pause()/resume()/isPaused()`，`tiktok.js` 在草稿那一步
+     `pause()` → 自己点 Discard → `finally` 里 `resume()`。
+- 实测（`scripts/_probe-draft.mjs`，只开上传页不上传，跑完即删脚本）：
+  - 第 1 次：`hasBanner:true` → 点横幅 Discard → 确认框 `{"kind":"clicked","rule":"放弃作品确认","clicked":"discard"}`
+    → 页面回到 `Select video to upload…`
+  - 第 2 次（重新打开）：**`hasBanner:false`** —— 草稿真的没了。
+- 单测 +2：`allowDiscardDraft` 时 Discard 被点/Not now 一次都没点；放开开关也不能让
+  未知弹窗点到 Discard（仍只点 Got it）。
+
+### 2.4 真机验证（演练模式，不产生作品）
+- 复制 `am_0915` 的产物到探针会话 → `XNOWPOST_PUBLISH_DRY_RUN=1 node src/publisher/index.js --env TK08 --max 1`
+  （TK08 真有草稿横幅，正好命中现场）。关键 4 行 —— **1.6 秒收掉，不再有 4 次空点**：
+  ```
+  + 11.8s 🗑️ 丢弃未保存的草稿
+  + 12.3s 👁️ 浮层「放弃作品确认」出现 → 立刻点「Not now」
+  + 13.4s 🖱️ 点了「Not now」(714,489) → 已生效
+  + 13.4s 👁️ 浮层消失: div.TUXModal-overlay「Discard this post?…」
+  ```
+- 到 Post 前总耗时 **42.9s**；今早同一环境（am_0905）是 **76.7s**，差 **33.8 秒**
+  （省掉 27.3 秒空等 + 手机预览浮层被遮罩挡住的时间）。`page-events.log` 里只有一次 `Not now` 点击，
+  没有任何落到 `TUXModal-overlay` 上的废点击。
+- 演练停在「已到达发布按钮前，不点击」：**没有 `.published`、账本行数没变**，探针目录已删除
+  （留着会被下次「发布全部」捡走）；TK08 窗口已关，`camoufox` 0 个。
+
+### 2.5 顺手发现（没改，等排期）
+- **`publish:pending` 会把历史未发布会话全列出来**：APPDATA 数据目录里现有 **57 个**没有
+  `.published` 的会话（含 2026-10-18 的 15 个、6~7 月的测试内容）。Dashboard 若点「一键发布全部」，
+  这些老内容会真的发出去。建议加护栏：只认当天 / 跳过带 `FAILED` 的 / 老会话要显式 `--all`。
+
+## 3. v1.6.0（2026-10-19 凌晨）做完的 5 件事
+
+### 1B.1 账号页「最后发布」列（含历史回填）
+- 发布器点完 Post 写两处：会话目录 `.published` + `<数据目录>\data\publish-ledger.jsonl`（追加一行）。
+- `src/publish-history.js` 合并账本与老会话（老会话靠 `publish.log` 里的 `🌐 打开指纹环境 TKxx` 反推环境）；
+  `confirmed:false` 不算成功。
+- 即时刷新：主进程 `fs.watchFile` 盯账本 → `accounts:publishTimesUpdated`；界面另有 6 秒轮询兜底。
+- 回填脚本 `scripts/backfill-publish-ledger.mjs`，已回填 11 条（TK03 显示 `—` 是因为那天两轮都 FAILED，事实如此）。
+- 单测 `tests/unit/publish-history.test.js`（8 例）。
+
+### 1B.2 批量换头像「误报没保存」→ 改成反复读（延迟 ≠ 失败）
+- 事故：4 个号批量换头像，抽屉里 3 个报「头像地址没变（大概率没真正保存）」，其实**全成功了**——
+  点完 Save 立刻读主页，TikTok 还没刷新。
+- 现在 `src/avatar-verify.js` 定口径：4s/6s/8s 递增复查，最多 **45 秒**；读到变了才算 ✅，
+  超时只说「可能只是延迟，稍后核实」，**绝不把延迟说成失败**。`tests/unit/avatar-verify.test.js`（8 例）守这条。
+
+### 1B.3 改完资料界面缩略图还是灰的 → 存「线上那张」
+- `data/avatars/<环境>.jpg` 只由资料同步刷新，改资料成功后必须自己下载线上 `img[class*="ImgAvatar"]`
+  覆盖过去（TikTok 已裁成 200x200）；拷原图是下策，仅下载失败时回退。
+- 账号页缓存 key 改成 `avatarAt`，`avatarAt` 一变就重取；任务 `done` 时自动 `refresh()`，不用手点。
+
+### 1B.4 环境窗口标题带环境名（用户最在意的「分不清哪个是哪个」）
+- `scripts/env-title-watch.ps1`：常驻 PowerShell，主进程 `startEnvTitleWatcher()` 拉起
+  （`windowsHide: true`，`-ParentPid` 跟应用同生共死），每 2 秒给每个 camoufox 窗口
+  `SetWindowTextW` 校正成 `TK04 · TikTok Studio — Camoufox`。
+- **为什么不注入页面标题**：Firefox 窗口标题只跟**前台标签页**，而 `/page/evaluate` 打的是 FoxProfile 的
+  `_current`（≈`pages[-1]`）；TK04 有两个标签就踩到——注入打到个人主页，标题还是「TikTok Studio」。
+  强行 `select` 会切走用户正在看的标签，发布中也危险。
+- 实测：SetWindowText 后 9 秒内 Firefox 不覆盖，2 秒一轮足够。
+
+### 1B.5 「开两个窗口」不是 bug
+- **一个环境只开一个窗口**。用户看到的两个 = 同时开着 TK04 + TK05。
+- 认环境命令（也写进 CLAUDE.md）：
+  `Get-CimInstance Win32_Process -Filter "Name='camoufox.exe'"` → CommandLine 里有 `camoufox_data\TKxx` → 取 `MainWindowHandle` 那个。
+- 一个环境 `tabs.json` 里存多个 URL = **同一窗口多个标签**，不是多窗口。
+
+## 4. 待办（建议顺序）
+
+**P0 — 下一个对话先做这个**
+1. **明天 10:00 看采集任务的状态对不对**（v1.6.3 已把"假成功"改成退出码 2）：调度器日志应当出现
+   `❌ 数据采集 + 日报 失败：数据不足（TikTok 分析页只返回「--」占位，本轮不重试）`
+   **只出现一次**（不重试、不连开 3 遍浏览器），并且 `data\collect-meta.json` 的 mtime
+   **不再**变成当天时间；日报页顶部应显示黄条 + KPI 的「—」。
+2. **看下一轮真机发布是否不再卡**（v1.6.1/v1.6.2 修完）：明天 08:30 那轮
+   `publish.log` 里应当出现 `✅ 草稿确认框已处理（动作 N 个，点击 1 次）` +
+   `✅ 旧草稿已彻底丢弃（确认框点的是 Discard）`，
+   并且**不再出现** `浮层「通用确认」出现 → 立刻点「Got it」… 未见变化` 连续 4 次的行。
+   如有异常，抓 `page-events.log` + `publish.log`（今天 3 轮出问题的样本在
+   `%APPDATA%\xnowpost\output\2026-10-19\am_0845|am_0855|am_0905\`）。
+3. **真机回归一次改资料**（唯一「有单测、没真机」的项）：TK08 用一张本地头像跑一次
+   `node scripts/tk-profile-edit.mjs --only TK08 --avatar <任意本地 jpg>`（原来那个桌面路径已不存在），
+   确认日志出现 `✅ 头像已生效（第 n 次复查，用时 Ns）` + `🖼️ 头像缩略图已更新`，且账号页缩略图自动变新。
+4. **账号数据的根问题（不是代码能修的）**：10 个号 `followers 0 / following 0 / likes 0`，
+   TikTok Studio 分析页对它们只返回 `--`（<100 粉连粉丝画像都不给）。也就是说
+   **采集/日报在当前阶段只能验证"没数据也不撒谎"**，想真有数字得先让这些号跑出播放与粉丝。
+   顺便核对：`data/account-profiles.json` 的 0 粉和用户以为的"已经在涨粉"是否一致。
+
+**P1 — 清理与收尾**
+5. 删掉 24 个临时脚本（都是调试留的，`scripts/_*`）：`_check-login-state.mjs _check-posts.mjs _diag-edit-profile.mjs
+   _diag-save-button.mjs _diag.ps1 _eye-page.mjs _fixup-sense.mjs _grab-avatars.mjs _probe-analytics.mjs _probe-enum.ps1
+   _probe-env-title.mjs _probe-page.mjs _probe-sense.mjs _probe-sig.mjs _retry-one.mjs _run-norm.ps1 _sense.mjs
+   _timeline.mjs _verify-avatar.mjs _verify-check-gate.mjs _watch-edit-live.ps1 _watch-edit.ps1 _watch-publish.mjs _win-geo.mjs`
+   （删除前确认没有 README/CLAUDE.md 引用；`_probe-page.mjs`/`_sense.mjs` 在 CLAUDE.md 里被当排查工具提到，删了要同步改文档）
+6. 移除比特浏览器（BitBrowser）遗留代码：`src/collector/browser.js` 等，确认无引用后删除。
+   **注意**：仓库根那份旧 `config\user.json` 里还留着比特的 UUID 环境名，CLI 在开发模式下会读到它
+   （见第 0 节的 `XNOWPOST_DATA_DIR` 提醒），清理时一并处理。
+7. 轮换泄露过风险的凭据；`TG_BOT_TOKEN` 目前没配（Telegram 通知实际不工作，别以为它发了）。
+   配好后 `daily.js` 会自动改报 `✅ 日报已推送到 TG`。
+
+**P2 — 界面统一（用户看得出差别，但没催）**
+8. History / DailyReport / Logs 三个页面还是旧样式，没对齐 `src/renderer/styles/theme.css`
+   （`.x-card / .x-field / .x-btn …`，品牌色只有一个 `--brand: #FF2E5B`）。
+   DailyReport 的**信息表达**已在 v1.6.3 改清楚（黄条 / 「—」/ 带账号名图例 / 日历横轴），只剩观感。
+9. 图文（图片帖）**永远不发** —— 这是硬规则，别实现也别"顺手试一下"。
+
+## 5. 用户的行事方式（照做省时间）
+
+- 说「开始了，盯」= 让我全程盯浏览器 + 日志 + 截图，事后报过程细节、结果、问题。
+- 要真实证据：截图、日志行、文件 mtime、进程列表。**不要猜、不要"应该"**。
+- 回答要短、要有数字和时间；admit 不知道比编一个强。
+- 版本号必须动（`package.json` 是唯一来源，界面读 `app.getVersion()`）；"没改版本号就重新打包"会被他抓住。
+- 他自己会手动开关环境、手动拉资料 —— 事后核对说的是"我手动做了 X"，别当 bug 处理。
+
+## 6. 部署 + 验证（照抄）
+
+```powershell
+# 打包部署（四步缺一不可）
+Get-Process XNOWPost -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+npm run verify            # check-leaks + windowsHide + 284 单测 + vite build
+npm run package           # 产物 release\win-unpacked
+robocopy "release\win-unpacked" "E:\software\XNOWPost" /E /NFL /NDL /NJH /NJS /R:2 /W:1
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+Start-Process "E:\software\XNOWPost\XNOWPost.exe"
+
+# 界面验收（PrintWindow，Electron 不黑屏）
+powershell -ExecutionPolicy Bypass -File scripts\win-shot.ps1 -Out output\shot.png   # 不加 -ExecutionPolicy Bypass 会被「未签名」拦下
+powershell -ExecutionPolicy Bypass -File scripts\win-shot.ps1 -ClickX 120 -ClickY 240 -Out output\accounts.png   # 点导航再抓
+powershell -ExecutionPolicy Bypass -File scripts\win-shot.ps1 -ScrollX 800 -ScrollY 500 -Wheel -6 -Out output\scrolled.png
+
+# 发布链路演练（不产生真实作品）
+$env:XNOWPOST_PUBLISH_DRY_RUN = "1"
+node src/publisher/index.js --env TK01 --max 1
+
+# 环境窗口 ↔ 环境名
+Get-CimInstance Win32_Process -Filter "Name='camoufox.exe'" | ForEach-Object {
+  $e = if ($_.CommandLine -match 'camoufox_data\\(TK\d+)') { $Matches[1] } else { '?' }
+  $w = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+  if ($w.MainWindowHandle -ne 0) { "$e → $($w.MainWindowTitle)" }
+}
+```
+
+## 7. 环境速查
+
+| 项 | 值 |
+|---|---|
+| FoxProfile API | `http://127.0.0.1:8000/api/v1`（`launch` / `stop` / `browser` / `profiles` / `page/*`） |
+| 环境数据 | `E:\software\FoxProfile\camoufox_data\<TKxx>\`（`tabs.json`、`window.json`、`cookies.sqlite`） |
+| 正常进程形态 | `flet` 1 + `pythonw` 2（重启只能用 `scripts\restart-foxprofile.ps1`，直接杀会留孤儿 Flet 窗口） |
+| 账号资料缓存 | `%APPDATA%\xnowpost\data\account-profiles.json`（`avatarUrl` / `avatarFile` / `avatarAt`） |
+| 头像缩略图 | `%APPDATA%\xnowpost\data\avatars\<TKxx>.jpg`（200x200，来源是线上图） |
+| 发布账本 | `%APPDATA%\xnowpost\data\publish-ledger.jsonl`（当前 11 行） |
+| 会话产物 | `F:\summer\vs-code\xnowpost\output\<日期>\<am_HHMM\|pm_HHMM>\`（`video.mp4` / `文案.txt` / `描述.txt` / `封面.png` / `publish.log`） |
+| 打包版 spawn 路径 | `app.asar.unpacked\scripts\...`；`electron-builder.yml` 的 `files` 必须逐个列出可 spawn 的脚本 |
+
+---
+
 ## v1.1.2 发布 (2026-07-05)
 - 版本: 1.1.1 → 1.1.2（patch）
 - [v1.1.2 Release](https://github.com/xiasummer740/xnowpost/releases/tag/v1.1.2)

@@ -87,6 +87,10 @@ export class BrowserTracer {
     }
 
     step.duration = Date.now() - step.startedAt;
+
+    // 返回 step，便于调用方检查 step.success（关键步骤必须自行判断，
+    // 否则失败会被本方法的 try/catch 静默吞掉，导致"假成功"）
+    return step;
   }
 
   /**
@@ -145,8 +149,10 @@ export class BrowserTracer {
       }).catch(() => '[ERROR]');
 
       // Post 按钮状态
+      // ⚠️ 注意：这里是 document.querySelector（浏览器原生），
+      //    不能用 Playwright 专有的 :has-text()，否则永远返回 [ERROR]
       state.postButton = await this.page.evaluate(() => {
-        const btn = document.querySelector('[data-e2e="post_video_button"], button:has-text("Post")');
+        const btn = document.querySelector('[data-e2e="post_video_button"]');
         if (!btn) return { found: false };
         return {
           found: true,

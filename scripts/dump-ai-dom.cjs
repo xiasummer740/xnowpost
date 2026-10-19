@@ -1,7 +1,13 @@
 const { chromium } = require('playwright');
 const http = require('http');
 const fs = require('fs');
-const ENV = '24056554bc0e479784f054c161670a53';
+// ⚠️ 不要硬编码环境 ID —— 本仓库是公开的。用参数或环境变量传入：
+//    node scripts/dump-ai-dom.cjs <bitEnvId>
+const ENV = process.argv[2] || process.env.XNOWPOST_BIT_ENV_ID;
+if (!/^[0-9a-f]{32}$/i.test(ENV || '')) {
+  console.error('用法: node scripts/dump-ai-dom.cjs <32位比特环境ID>  (或设置 XNOWPOST_BIT_ENV_ID)');
+  process.exit(1);
+}
 
 function callAPI(path, body) {
   return new Promise((resolve) => {

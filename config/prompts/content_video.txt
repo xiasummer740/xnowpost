@@ -87,11 +87,21 @@
 - `camera_move`：运镜方式 — "static" 固定 | "push" 推进 | "pull" 拉远 | "pan" 平移 | "follow" 跟随 | "tilt_up" 上摇 | "tilt_down" 下摇
 - `transition`：转场方式 — "cut" 硬切 | "fade" 淡入淡出 | "zoom" 缩放 | "slide" 滑动 | "dissolve" 溶解
 - `mood`：情绪氛围 — "urgent" 紧迫 | "surprised" 惊讶 | "hopeful" 希望 | "trust" 信任 | "excited" 激动 | "curious" 好奇 | "inspired" 启发 | "shocked" 震惊
+- `broll_keywords`：**英文实拍素材检索词，3-5 个单词**，用于在图库（Pexels）里找真实拍摄的视频片段。
+  - 只写**镜头能拍到的具体画面**：人、物、地点、动作。例：`woman using smartphone`、`city traffic night`、`team meeting office`、`hands typing laptop`、`coffee shop working`
+  - **禁止**写抽象概念、情绪词、品牌名、数字（这些图库检索不到）：不要 `growth mindset`、`success`、`TikTok`、`90 percent`
+  - 要与 `image_desc` 的**画面主体**一致，这样实拍素材和 AI 图能互相替换而不跳戏
 
-### 分镜节奏指南（参考使用）
-- 第1-2镜：钩子期 — 根据所选风格定钩子，必须用 close_up 或 detail
-- 第3-4镜：展开期 — 讲清楚问题/机会/方法
-- 第5镜：行动期 — 强 CTA，情绪 trust 或 excited
+### 分镜节奏指南（共 {SCENE_COUNT} 个分镜，按阶段等比例分配）
+索引从 1 开始，各阶段占比与镜头选择如下：
+- **钩子期（前 ~22%）**：抛出冲突/反差/悬念，必须用 close_up 或 detail，情绪 curious / shocked
+- **展开期（~22%–55%）**：讲清楚问题、机会或方法，中景与细节交替，避免全程同一景别
+- **证明期（~55%–78%）**：给出证据——数据、前后对比、结果、步骤；可用 wide 展示场景全貌
+- **行动期（最后 ~22%）**：强 CTA，情绪 trust / excited / hopeful，镜头推进（push）
+
+对应关系举例：
+- 5 镜 = 第1-2镜钩子 / 第3-4镜展开+证明 / 第5镜 CTA
+- 9 镜 = 第1-2镜钩子 / 第3-5镜展开 / 第6-7镜证明 / 第8-9镜 CTA
 
 ## 输出格式要求
 你必须只输出一个合法的 JSON 对象，不要包含任何其他文字、代码块标记、或解释。
@@ -105,6 +115,7 @@
       "scene_text_zh": "你知道90%的新号为什么做不起来吗？不是内容不行。",
       "scene_text_en": "Why do 90% of new accounts fail? It's not the content.",
       "image_desc": "A frustrated young woman sitting on couch with iPhone showing TikTok with only 87 views, dim evening lighting, messy room background, photorealistic",
+      "broll_keywords": "frustrated woman smartphone couch",
       "duration": 6,
       "shot_type": "close_up",
       "camera_move": "push",

@@ -12,7 +12,7 @@ function sanitizeLogMessage(msg) {
 
 describe('sanitizeLogMessage', () => {
   it('隐藏完整 API Key', () => {
-    const r = sanitizeLogMessage('key=sk-a08e0962517c49ab9612e54b265822ee');
+    const r = sanitizeLogMessage('key=sk-FAKEKEYFORUNITTEST000000000000');   // leak-check-allow：合成夹具，非真实 Key
     assert.equal(r, 'key=sk-***');
   });
 

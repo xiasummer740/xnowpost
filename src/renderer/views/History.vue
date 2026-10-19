@@ -104,15 +104,23 @@ const detail = ref(null);
 
 async function load() {
   loading.value = true;
-  history.value = await window.xnowpost.getHistory();
-  loading.value = false;
-  // 异步加载缩略图
-  nextTick(() => loadThumbnails());
+  try {
+    history.value = await window.xnowpost.getHistory();
+    if (!Array.isArray(history.value)) history.value = [];
+    // 异步加载缩略图
+    nextTick(() => loadThumbnails());
+  } catch (e) {
+    // 失败必须复位 loading，否则骨架屏会永远转下去（P2-3 同型）
+    console.error('加载历史产出失败:', e);
+    history.value = [];
+  } finally {
+    loading.value = false;
+  }
 }
 
 function loadThumbnails() {
   for (const day of history.value) {
-    for (const item of day.items) {
+    for (const item of day.items || []) {
       if (item.dir) {
         window.xnowpost.getThumbnail(item.dir).then(url => {
           if (url) item.thumbnail = url;
@@ -125,7 +133,12 @@ function loadThumbnails() {
 async function selectSession(item) {
   if (selectedDir.value === item.dir) { closeDetail(); return; }
   selectedDir.value = item.dir;
-  detail.value = await window.xnowpost.readSession(item.dir);
+  try {
+    detail.value = await window.xnowpost.readSession(item.dir);
+  } catch (e) {
+    console.error('读取会话详情失败:', e);
+    detail.value = null;
+  }
 }
 
 function closeDetail() {

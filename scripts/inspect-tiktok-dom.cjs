@@ -6,7 +6,13 @@ const { chromium } = require('playwright');
 const http = require('http');
 
 const BIT_API = 'http://127.0.0.1:54345';
-const ENV_ID = '24056554bc0e479784f054c161670a53';
+// ⚠️ 不要硬编码环境 ID —— 本仓库是公开的。用参数或环境变量传入：
+//    node scripts/inspect-tiktok-dom.cjs <bitEnvId>
+const ENV_ID = process.argv[2] || process.env.XNOWPOST_BIT_ENV_ID;
+if (!/^[0-9a-f]{32}$/i.test(ENV_ID || '')) {
+  console.error('用法: node scripts/inspect-tiktok-dom.cjs <32位比特环境ID>  (或设置 XNOWPOST_BIT_ENV_ID)');
+  process.exit(1);
+}
 
 function callBitAPI(path, body) {
   return new Promise((resolve, reject) => {

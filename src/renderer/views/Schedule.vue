@@ -1,169 +1,195 @@
 <template>
-  <div class="schedule-page">
-    <div class="page-header">
-      <h2>⏰ 定时闹钟</h2>
-      <p class="subtitle">每天固定时间自动产出内容，保存后立即生效</p>
+  <div class="page">
+    <!-- 标题栏 -->
+    <div class="x-head">
+      <h1>定时</h1>
+      <span class="x-sub">
+        {{ jobs.filter(j => j.mode !== 'collect').length }} 个闹钟 · 已开启
+        {{ jobs.filter(j => j.mode !== 'collect' && j.enabled).length }} 个<template v-if="collectSchedActive"> · 采集 {{ collectTime }}</template>
+      </span>
+      <span class="x-spacer"></span>
+      <button class="x-btn" @click="toggleAll(true)">
+        <svg viewBox="0 0 24 24"><path d="m5 13 4 4L19 7" /></svg>
+        全部开启
+      </button>
+      <button class="x-btn" @click="toggleAll(false)">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m8 12 8 0" /></svg>
+        全部关闭
+      </button>
+      <button class="x-btn primary" :disabled="saving" @click="save">
+        <svg viewBox="0 0 24 24"><path d="M5 4h11l3 3v13H5z" /><path d="M9 4v5h6V4" /><path d="M9 15h6" /></svg>
+        {{ saving ? '保存中…' : '保存全部' }}
+      </button>
     </div>
 
-    <!-- 📊 采集面板（独立于闹钟） -->
-    <div class="collect-panel">
-      <div class="cp-header" @click="collectExpanded = !collectExpanded">
-        <span>📊 采集面板</span>
-        <span class="cp-toggle">{{ collectExpanded ? '收起 ▲' : '展开 ▼' }}</span>
+    <!-- 保存反馈 -->
+    <div v-if="saveError" class="x-tip warn" style="margin-bottom: 14px">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>
+      <span>{{ saveError }}</span>
+    </div>
+    <div v-else-if="saved" class="x-tip ok" style="margin-bottom: 14px">
+      <svg viewBox="0 0 24 24"><path d="m5 13 4 4L19 7" /></svg>
+      <span>已保存，调度器已重新加载（1 分钟内生效）</span>
+    </div>
+
+    <!-- 采集面板（独立于闹钟） -->
+    <div class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10" /><path d="m8 9 4 4 4-4" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></svg>
+        </span>
+        <h2>采集面板</h2>
+        <span class="x-hint">
+          已选 {{ collectSelection.length }} 个账号<template v-if="collectSchedActive"> · 每天 {{ collectTime }} 自动采集</template>
+        </span>
+        <span class="x-spacer"></span>
+        <button class="x-mini" @click="collectExpanded = !collectExpanded">
+          {{ collectExpanded ? '收起' : '展开' }}
+        </button>
       </div>
-      <div class="cp-body" v-if="collectExpanded">
-        <div class="cp-hint">勾选要采集的账号，点击「开始采集」立即执行</div>
-        <div class="cp-acc-list">
-          <label v-for="acc in uniqueAccounts" :key="acc.name" class="cp-acc-item">
+
+      <div v-if="collectExpanded" class="x-card-body">
+        <div class="acc-grid">
+          <label
+            v-for="acc in uniqueAccounts"
+            :key="acc.name"
+            class="acc-chip"
+            :class="{ on: collectSelection.includes(acc.name), bad: !acc.bitEnvId }"
+          >
             <input type="checkbox" :value="acc.name" v-model="collectSelection" />
-            <span class="cp-acc-name">{{ acc.name }}</span>
-            <span class="cp-acc-plat">{{ platformLabel(acc.platform) }}</span>
-            <span class="cp-acc-env" :class="acc.bitEnvId ? 'ok' : ''">{{ acc.bitEnvId ? '✅' : '⚠️ 未配置环境' }}</span>
+            <span class="an">{{ acc.name }}</span>
+            <span class="ap">{{ platformLabel(acc.platform) }}</span>
+            <i class="x-dot" :class="acc.bitEnvId ? 'ok' : 'warn'"></i>
           </label>
-          <div v-if="uniqueAccounts.length === 0" class="cp-empty">暂无账号，请先到配置页添加</div>
-        </div>
-        <div class="cp-actions">
-          <button class="btn btn-primary btn-sm" @click="selectAllCollect">全选</button>
-          <button class="btn btn-secondary btn-sm" @click="collectSelection = []">清空</button>
-          <button class="btn btn-collect btn-sm" @click="startCollect" :disabled="collectRunning || collectSelection.length === 0">
-            {{ collectRunning ? '⏳ 采集中...' : '🚀 开始采集' }}
-          </button>
-          <span v-if="collectDone" class="cp-done">✅ 采集完成</span>
+          <div v-if="uniqueAccounts.length === 0" class="acc-empty">暂无账号，请先到「配置」添加</div>
         </div>
 
-        <!-- 定时采集 -->
-        <div class="cp-schedule">
-          <span class="cp-sch-label">⏰ 定时采集</span>
+        <div class="crow">
+          <button class="x-mini" @click="selectAllCollect">全选</button>
+          <button class="x-mini" @click="collectSelection = []">清空</button>
+          <button class="x-btn primary sm" :disabled="collectRunning || collectSelection.length === 0" @click="startCollect">
+            <svg viewBox="0 0 24 24"><path d="M7 5l10 7-10 7z" /></svg>
+            {{ collectRunning ? '采集中…' : '开始采集' }}
+          </button>
+          <span v-if="collectDone" class="x-tag ok">采集完成</span>
+        </div>
+
+        <div class="crow top-line">
+          <span class="lbl">每日定时采集</span>
           <TimePicker v-model="collectTime" />
-          <button class="btn btn-primary btn-sm" @click="saveCollectSchedule" :disabled="!collectTime">
-            💾 保存
-          </button>
-          <span v-if="collectSchedSaved" class="cp-done">✅ 已保存</span>
-          <span v-if="collectSchedActive" class="cp-active">🟢 每天 {{ collectTime }} 自动执行</span>
+          <button class="x-btn sm" :disabled="!collectTime" @click="saveCollectSchedule">保存</button>
+          <span v-if="collectSchedSaved" class="x-tag ok">已保存</span>
+          <span v-if="collectSchedActive" class="x-tag brand">每天 {{ collectTime }} 执行</span>
+          <span v-else class="x-hint">设了时间才会每天自动采集 + 出日报</span>
         </div>
       </div>
     </div>
 
-    <!-- 一键开关 -->
-    <div class="toggle-all-bar">
-      <span class="toggle-all-label">批量操作</span>
-      <button class="toggle-all-btn toggle-all-on" @click="toggleAll(true)">✅ 全部开启</button>
-      <button class="toggle-all-btn toggle-all-off" @click="toggleAll(false)">⛔ 全部关闭</button>
-    </div>
-
-    <!-- 按账号分组循环 -->
-    <div v-for="(group, gIdx) in groupedJobs" :key="gIdx" class="alarm-group">
-      <div class="group-header" v-if="group.account">
-        <span class="group-avatar">👤</span>
-        <span class="group-name">{{ group.account === 'default' ? '默认账号' : group.account }}</span>
-        <span class="group-count">{{ group.jobs.length }} 个闹钟</span>
-      </div>
-      <div class="group-header" v-else>
-        <span class="group-avatar">📋</span>
-        <span class="group-name">未指定账号</span>
-        <span class="group-count">{{ group.jobs.length }} 个闹钟</span>
+    <!-- 按账号分组的闹钟 -->
+    <div v-for="(group, gIdx) in groupedJobs" :key="gIdx" class="x-card grp">
+      <div class="x-card-head">
+        <span v-if="group.account" class="gacc">{{ group.account }}</span>
+        <span v-else class="x-ic">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
+        </span>
+        <h2>{{ group.account ? '账号 ' + group.account : '未指定账号（仅生成，不发布）' }}</h2>
+        <span class="x-spacer"></span>
+        <span class="x-hint">{{ group.jobs.length }} 个闹钟</span>
       </div>
 
-      <div class="alarm-row">
+      <div class="x-card-body grid">
         <div
           v-for="(job, jIdx) in group.jobs"
-          :key="job.id"
-          class="alarm-card"
-          :class="{ disabled: !job.enabled }"
+          :key="`${job.id}::${gIdx}-${jIdx}`"
+          class="alarm"
+          :class="{ off: !job.enabled }"
         >
-          <div class="card-row">
-            <!-- 开关 -->
-            <label class="toggle-switch">
-              <input type="checkbox" v-model="job.enabled" />
-              <span class="toggle-slider"></span>
-            </label>
-
-            <!-- 时间 -->
+          <!-- 开关 + 时间 + 操作 -->
+          <div class="arow">
+            <button class="x-switch" :class="{ on: job.enabled }" :title="job.enabled ? '点击暂停' : '点击启用'" @click="job.enabled = !job.enabled">
+              <i></i>
+            </button>
             <TimePicker v-model="job.time" />
-
-            <!-- 删除 -->
-            <button class="btn-delete" @click="removeJob(globalIndex(group, jIdx))" title="删除闹钟">✕</button>
+            <span class="x-spacer"></span>
+            <button class="x-mini" title="复制这个闹钟" @click="cloneJob(globalIndex(group, jIdx))">
+              <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></svg>
+            </button>
+            <button class="x-mini danger" title="删除这个闹钟" @click="removeJob(globalIndex(group, jIdx))">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M6 7l1 13h10l1-13" /></svg>
+            </button>
           </div>
 
-          <!-- 模式标签 -->
-          <div class="mode-row">
-            <span
+          <!-- 模式 -->
+          <div class="seg">
+            <button
               v-for="opt in modeOptions"
               :key="opt.value"
-              class="mode-chip"
-              :class="{ active: job.mode === opt.value }"
+              class="segbtn"
+              :class="{ on: job.mode === opt.value }"
               @click="setMode(globalIndex(group, jIdx), opt.value)"
-              >{{ opt.label }}</span
             >
+              {{ opt.label }}
+            </button>
           </div>
 
-          <!-- 账号选择 -->
-          <div class="acc-row">
-            <div class="acc-picker" @click.stop>
+          <!-- 账号（选 = 生成后自动发布） -->
+          <div class="arow">
+            <div class="acc-picker">
               <input
-                class="acc-input"
+                class="x-input"
                 :value="displayAccountName(job.account)"
                 @input="onAccSearch($event, globalIndex(group, jIdx))"
-                @focus="onAccFocus(globalIndex(group, jIdx))"
+                @focus="onAccFocus(globalIndex(group, jIdx), $event.target)"
+                @click="onAccClick(globalIndex(group, jIdx), $event.target)"
                 @blur="onAccBlur(globalIndex(group, jIdx))"
                 @keydown.down.prevent="onAccArrow(globalIndex(group, jIdx), 1)"
                 @keydown.up.prevent="onAccArrow(globalIndex(group, jIdx), -1)"
                 @keydown.enter.prevent="onAccEnter(globalIndex(group, jIdx))"
-                placeholder="输入账号名搜索..."
+                placeholder="输入账号名搜索（留空 = 仅生成）"
               />
-              <div v-if="job._showDropdown" class="acc-dropdown">
-                <div
-                  v-for="(acc, ai) in filteredAccs(globalIndex(group, jIdx))"
-                  :key="acc.name"
-                  class="acc-opt"
-                  :class="{ 'acc-opt-active': ai === job._highlightIdx }"
-                  @mousedown.prevent="selectAcc(globalIndex(group, jIdx), acc.name)"
-                >
-                  <span class="acc-opt-name">{{ acc.name }}</span>
-                  <span class="acc-opt-env" v-if="!acc.bitEnvId">⚠️ 未配置</span>
-                  <span class="acc-opt-env ok" v-else>✅</span>
+              <!-- 下拉挂到 body 上（卡片 overflow 会把它裁掉），fixed 定位跟着输入框 -->
+              <Teleport to="body">
+                <div v-if="job._showDropdown" class="acc-drop" :style="job._dropStyle || {}">
+                  <div
+                    v-for="(acc, ai) in filteredAccs(globalIndex(group, jIdx))"
+                    :key="acc.name"
+                    class="acc-opt"
+                    :class="{ hi: ai === job._highlightIdx }"
+                    @mousedown.prevent="selectAcc(globalIndex(group, jIdx), acc.name)"
+                  >
+                    <span class="an">{{ acc.name }}</span>
+                    <span class="env" :class="{ bad: !acc.bitEnvId }">{{ acc.bitEnvId || '未配置环境' }}</span>
+                  </div>
+                  <div v-if="filteredAccs(globalIndex(group, jIdx)).length === 0" class="acc-opt empty">无匹配账号</div>
                 </div>
-                <div v-if="filteredAccs(globalIndex(group, jIdx)).length === 0" class="acc-opt acc-opt-empty">无匹配账号</div>
-              </div>
+              </Teleport>
             </div>
-            <span
-              v-if="job.account"
-              class="acc-badge"
-              :style="{ background: accountColor(job.account) }"
-            >{{ job.account }}</span>
-            <span class="acc-hint" v-if="job.account">→ 发布</span>
-            <button class="btn-clone" @click="cloneJob(globalIndex(group, jIdx))" title="复制此闹钟">📋</button>
+            <span v-if="job.account" class="x-tag brand">自动发布</span>
           </div>
 
           <!-- 名称 -->
-          <input v-model="job.label" class="label-input" placeholder="闹钟名称（如：早间内容）" />
+          <input v-model="job.label" class="x-input name" placeholder="闹钟名称（如：早间视频）" />
         </div>
       </div>
     </div>
 
-    <button class="btn btn-add" @click="addJob">➕ 添加闹钟</button>
+    <button class="add-alarm" @click="addJob">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+      添加闹钟
+    </button>
 
-    <div class="save-bar">
-      <button class="btn btn-primary" @click="save" :disabled="saving">
-        {{ saving ? '保存中...' : '💾 保存全部' }}
-      </button>
-      <span v-if="saved" class="saved-hint">✅ 已保存</span>
-      <span v-if="saveError" class="error-banner">{{ saveError }}</span>
-    </div>
-
-    <div class="tips">
-      <span class="tips-icon">💡</span>
-      <div>
-        <p>关闭开关 = 暂停闹钟，配置保留</p>
-        <p>选择「账号」= 生成后自动发布到此账号，不选 = 仅生成</p>
-        <p>桌面版启动后调度器自动在后台运行</p>
-      </div>
+    <div class="x-tip">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>
+      <span>
+        关闭开关 = 暂停（配置保留）· 选了账号 = 生成后自动发布到该账号，不选 = 仅生成内容 ·
+        定时由后台调度器执行，应用需要保持运行；出发前会先查登录态，账号掉登录会跳过这一轮并写日志。
+      </span>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 import TimePicker from '../components/TimePicker.vue'
 import { MODE_OPTIONS as modeOptions, MODE_LABEL_MAP as modeLabelMap } from '../constants.js'
@@ -174,6 +200,44 @@ const saving = ref(false)
 const saved = ref(false)
 const saveError = ref('')
 const searchTexts = ref({})  // 每个闹钟的账号搜索文本
+
+// ===== 闹钟 id 分配（P1-2）=====
+// 旧实现是模块级 `let nextId = 100`，每次组件挂载都重置，且 load() 不与磁盘数据对账，
+// 于是每次会话都重新发 100/101…，config/schedule.json 里出现了 2,101,101 这样的重复 id。
+// 现在：load() 时先对账/去重，idSeq 只在首次对齐后单调递增。
+let idSeq = 0
+
+// 保证 id 唯一：保留首次出现的合法 id，重复/非法的重新分配一个更大的 id；
+// 返回当前最大 id，供后续 addJob/cloneJob 继续发号
+function reconcileJobIds(list) {
+  let max = 0
+  for (const job of list) {
+    const id = Number(job.id)
+    if (Number.isFinite(id) && id > 0) max = Math.max(max, id)
+  }
+  const seen = new Set()
+  for (const job of list) {
+    const id = Number(job.id)
+    if (Number.isFinite(id) && id > 0 && !seen.has(id)) {
+      seen.add(id)
+    } else {
+      job.id = ++max
+      seen.add(job.id)
+    }
+  }
+  return max
+}
+
+// 下一个安全的自增 id（永远大于当前所有 id）
+function nextJobId() {
+  let max = idSeq
+  for (const job of jobs.value) {
+    const id = Number(job.id)
+    if (Number.isFinite(id) && id > max) max = id
+  }
+  idSeq = max + 1
+  return idSeq
+}
 
 // 采集面板
 const collectExpanded = ref(false)
@@ -226,20 +290,26 @@ async function saveCollectSchedule() {
     const schedules = await window.xnowpost.getSchedules()
     // 移除旧的 collect 定时任务
     const filtered = schedules.filter(j => j.mode !== 'collect')
-    filtered.push({
-      id: Date.now(),
+    // 内存里可能已有 collect 条目，复用它的 id，避免重复发号
+    const localCollect = jobs.value.find(j => j.mode === 'collect')
+    const collectJob = {
+      id: (localCollect && Number(localCollect.id)) || nextJobId(),
       time: collectTime.value,
       mode: 'collect',
       label: '数据采集 + 日报',
       enabled: true,
       collectAccounts: collectSelection.value.join(','),
-    })
+    }
+    filtered.push(collectJob)
     const result = await window.xnowpost.saveSchedules(filtered)
     if (result && result.ok) {
       collectSchedSaved.value = true
       collectSchedActive.value = true
-      // 同步本地数组，防止后面点"保存全部"用旧数据覆盖新数据
-      jobs.value = filtered
+      // ⚠️ 只更新本地的 collect 条目，绝不能再用磁盘数据整体替换 jobs.value：
+      // 那会丢弃用户所有未保存的闹钟编辑（P2-4）
+      const idx = jobs.value.findIndex(j => j.mode === 'collect')
+      if (idx >= 0) jobs.value.splice(idx, 1, collectJob)
+      else jobs.value.push(collectJob)
       setTimeout(() => { collectSchedSaved.value = false }, 3000)
     }
   } catch (e) {
@@ -249,18 +319,44 @@ async function saveCollectSchedule() {
 
 // 加载时检查是否有 collect 的定时任务
 onMounted(async () => {
-  await load()
-  // 检测现有 collect 定时任务
-  const sched = await window.xnowpost.getSchedules()
-  const collectJob = (sched || []).find(j => j.mode === 'collect')
-  if (collectJob) {
-    collectTime.value = collectJob.time || '21:00'
-    collectSchedActive.value = collectJob.enabled !== false
-    // 恢复上一次勾选的账号
-    if (collectJob.collectAccounts) {
-      collectSelection.value = collectJob.collectAccounts.split(',').filter(Boolean)
-    }
+  // 首个 await 抛错不能阻断后面的初始化（P2-3）
+  try {
+    await load()
+  } catch (e) {
+    console.error('加载闹钟失败:', e)
   }
+  // 检测现有 collect 定时任务（失败不影响闹钟卡片本身）
+  try {
+    const sched = await window.xnowpost.getSchedules()
+    const collectJob = (sched || []).find(j => j.mode === 'collect')
+    if (collectJob) {
+      collectTime.value = collectJob.time || '21:00'
+      collectSchedActive.value = collectJob.enabled !== false
+      // 恢复上一次勾选的账号
+      if (collectJob.collectAccounts) {
+        collectSelection.value = collectJob.collectAccounts.split(',').filter(Boolean)
+      }
+    }
+  } catch (e) {
+    console.error('读取采集定时任务失败:', e)
+  }
+  // 下拉是 fixed 定位，滚动/改窗口大小就收起来，免得飘在错位置
+  window.addEventListener('scroll', hideAllDrops, true)
+  window.addEventListener('resize', hideAllDrops)
+})
+
+function hideAllDrops(e) {
+  // 下拉自己内部滚动（10 个账号放不下要滚）不能把下拉关掉
+  const t = e && e.target
+  if (t && t.closest && t.closest('.acc-drop')) return
+  for (const job of jobs.value) {
+    if (job && job._showDropdown) job._showDropdown = false
+  }
+}
+
+onUnmounted(() => {
+  window.removeEventListener('scroll', hideAllDrops, true)
+  window.removeEventListener('resize', hideAllDrops)
 })
 
 // modeOptions imported from constants.js
@@ -300,6 +396,17 @@ function onAccSearch(e, i) {
   searchTexts.value[i] = e.target.value
   jobs.value[i]._showDropdown = true
   jobs.value[i]._highlightIdx = 0
+  placeDrop(i, e.target)
+}
+
+// 点击输入框：下拉若被滚动/ resize 收起过，输入框仍然有焦点，
+// 不会再触发 focus 事件 → 必须靠 click 兜底重新打开
+function onAccClick(i, el) {
+  if (!jobs.value[i]._showDropdown) {
+    jobs.value[i]._showDropdown = true
+    jobs.value[i]._highlightIdx = 0
+  }
+  placeDrop(i, el)
 }
 
 // 聚焦→显示下拉
@@ -307,6 +414,28 @@ function onAccFocus(i) {
   searchTexts.value[i] = ''
   jobs.value[i]._showDropdown = true
   jobs.value[i]._highlightIdx = 0
+  placeDrop(i, arguments[1])
+}
+
+// 下拉浮层的定位：挂到 body 后要用 fixed 坐标跟着输入框走，
+// 空间不够时往上翻（否则列表底部那几个账号还是看不到）
+function placeDrop(i, el) {
+  if (!el || typeof el.getBoundingClientRect !== 'function') return
+  const r = el.getBoundingClientRect()
+  const width = Math.max(r.width, 190)
+  const count = Math.max(filteredAccs(i).length, 1)
+  const height = Math.min(232, count * 30 + 10)
+  const below = window.innerHeight - r.bottom
+  const flipUp = below < height + 14 && r.top > height + 14
+  const top = flipUp ? r.top - height - 4 : r.bottom + 4
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8))
+  jobs.value[i]._dropStyle = {
+    position: 'fixed',
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(Math.max(8, top))}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.round(height)}px`,
+  }
 }
 
 // 失焦→隐藏下拉（延迟给点击选项留时间）
@@ -338,8 +467,16 @@ function selectAcc(i, name) {
 // ===== 闹钟管理 =====
 
 async function load() {
-  jobs.value = await window.xnowpost.getSchedules()
+  try {
+    jobs.value = await window.xnowpost.getSchedules()
+  } catch (e) {
+    console.error('读取定时任务失败:', e)
+    jobs.value = []
+  }
+  if (!Array.isArray(jobs.value)) jobs.value = []
   if (!jobs.value.length) resetDefaults()
+  // 与磁盘数据对账：修复历史遗留的重复 id，并把发号器对齐到当前最大 id
+  idSeq = reconcileJobIds(jobs.value)
   // 同步旧标签：确保标签与模式一致（"早间内容"→"视频+图文"等）
   for (const job of jobs.value) {
     if (modeLabelMap[job.mode] && job.label !== modeLabelMap[job.mode]) {
@@ -360,10 +497,9 @@ function resetDefaults() {
   ]
 }
 
-let nextId = 100
 function addJob() {
   jobs.value.push({
-    id: nextId++,
+    id: nextJobId(),
     time: '12:00',
     mode: 'auto',
     label: '视频+图文',
@@ -386,15 +522,16 @@ function cloneJob(i) {
   const orig = jobs.value[i]
   jobs.value.splice(i + 1, 0, {
     ...JSON.parse(JSON.stringify(orig)),
-    id: nextId++,
+    id: nextJobId(),
     label: orig.label + ' (复制)',
   })
 }
 
 function removeJob(i) {
   jobs.value.splice(i, 1)
-  // 清理已删除闹钟的搜索文本缓存
-  delete searchTexts.value[i]
+  // searchTexts 是按全局下标存的，删除后下标整体前移，必须清空重建，
+  // 否则会把上一个闹钟的搜索词套到错误的下一个闹钟上
+  searchTexts.value = {}
 }
 
 function toggleAll(enabled) {
@@ -426,10 +563,24 @@ function globalIndex(group, jIdx) {
 async function save() {
   saving.value = true
   try {
-    const raw = structuredClone(jobs.value.map(j => {
-      const { _showDropdown, _highlightIdx, ...rest } = j
-      return rest
-    }))
+    // ⚠️ 送进 IPC 的必须是能结构化克隆的纯数据：
+    //    ① 以 _ 开头的都是界面临时字段（_showDropdown / _highlightIdx / _dropStyle…），
+    //       其中 _dropStyle 是响应式对象，直接传会报
+    //       "Failed to execute 'structuredClone' on 'Window': #<Object> could not be cloned."
+    //    ② Vue 的响应式代理本身也克隆不了 → 统一走一遍 JSON 往返拿纯对象。
+    //    按前缀过滤而不是白名单，避免以后新增的调度字段被悄悄丢掉。
+    const raw = JSON.parse(
+      JSON.stringify(
+        jobs.value.map((j) => {
+          const plain = {}
+          for (const [k, v] of Object.entries(j)) {
+            if (k.startsWith('_')) continue
+            plain[k] = v
+          }
+          return plain
+        }),
+      ),
+    )
     const result = await window.xnowpost.saveSchedules(raw)
     if (!result || !result.ok) {
       saveError.value = result?.message || '保存失败'
@@ -448,479 +599,271 @@ async function save() {
 </script>
 
 <style scoped>
-.schedule-page {
-  max-width: none;
-  margin: 0 auto;
+.page {
+  padding-bottom: 8px;
 }
 
-.page-header {
-  margin-bottom: 20px;
-}
-h2 {
-  font-size: 22px;
-  margin: 0 0 4px;
-}
-.subtitle {
-  font-size: 14px;
-  color: #94a3b8;
-  margin: 0;
+.x-tip.ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: rgba(45, 212, 167, 0.3);
 }
 
-/* 按账号分组 */
-.alarm-group {
-  margin-bottom: 16px;
+/* ── 采集面板 ── */
+.x-card + .x-card,
+.x-card + .grp {
+  margin-top: 12px;
 }
-.group-header {
+
+.acc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 7px;
+  padding: 10px 0 4px;
+}
+
+.acc-chip {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  padding: 6px 12px;
-  background: #1e293b;
-  border-radius: 8px;
-  border: 1px solid #334155;
-}
-.group-avatar { font-size: 14px; }
-.group-name { font-size: 13px; font-weight: 700; color: #60a5fa; }
-.group-count {
-  margin-left: auto;
-  font-size: 11px;
-  color: #64748b;
-  background: #0f172a;
-  padding: 2px 8px;
-  border-radius: 10px;
-}
-
-/* 同一账号的闹钟排在一行，自动折行 */
-.alarm-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.alarm-row > .alarm-card {
-  flex: 1 1 280px;
-  min-width: 0;
-}
-
-/* 一键开关栏 */
-.toggle-all-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  background: #1e293b;
-  border-radius: 8px;
-  border: 1px solid #334155;
-}
-.toggle-all-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  margin-right: 4px;
-}
-.toggle-all-btn {
-  padding: 5px 12px;
-  border-radius: 6px;
-  border: none;
-  font-size: 12px;
-  font-weight: 600;
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg1);
+  border: 1px solid var(--stroke);
   cursor: pointer;
-  transition: all 0.15s;
+  font-size: 12px;
+  color: var(--text-2);
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
-.toggle-all-btn:hover {
-  transform: translateY(-1px);
+.acc-chip:hover {
+  border-color: var(--stroke-2);
+  color: var(--text);
 }
-.toggle-all-on {
-  background: #22c55e22;
-  color: #22c55e;
-  border: 1px solid #22c55e44;
+.acc-chip.on {
+  border-color: rgba(255, 46, 91, 0.55);
+  background: var(--brand-soft);
+  color: var(--text);
 }
-.toggle-all-on:hover {
-  background: #22c55e44;
-}
-.toggle-all-off {
-  background: #ef444422;
-  color: #ef4444;
-  border: 1px solid #ef444444;
-}
-.toggle-all-off:hover {
-  background: #ef444444;
-}
-
-/* 闹钟卡片 */
-.alarm-card {
-  background: #2a3a4e;
-  border: 1px solid #3b4f66;
-  border-radius: 10px;
-  padding: 14px;
-  transition: all 0.2s;
-}
-.alarm-card:hover {
-  border-color: #475569;
-}
-.alarm-card.disabled {
-  opacity: 0.4;
-}
-
-/* 顶部行：开关 + 时间 + 删除 */
-.card-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-/* 开关 */
-.toggle-switch {
-  position: relative;
-  display: inline-block;
-  width: 40px;
-  height: 22px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.toggle-switch input {
+.acc-chip input {
   display: none;
 }
-.toggle-slider {
-  position: absolute;
-  inset: 0;
-  background: #475569;
-  border-radius: 11px;
-  transition: 0.25s;
+.acc-chip .an {
+  font-weight: 640;
+  font-family: var(--font-mono);
+  color: var(--text);
 }
-.toggle-slider::before {
-  content: '';
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  top: 3px;
-  left: 3px;
-  transition: 0.25s;
+.acc-chip .ap {
+  font-size: 10.5px;
+  color: var(--text-3);
 }
-.toggle-switch input:checked + .toggle-slider {
-  background: #22c55e;
+.acc-chip .x-dot {
+  margin-left: auto;
 }
-.toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(18px);
+.acc-empty {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 6px 2px;
 }
 
-/* 删除 */
-.btn-delete {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: #64748b;
-  cursor: pointer;
-  font-size: 14px;
+.crow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+}
+.crow.top-line {
+  margin-top: 10px;
+  border-top: 1px dashed var(--stroke);
+}
+.crow .lbl {
+  font-size: 12px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.x-btn.sm {
+  padding: 5px 11px;
+  font-size: 12px;
+}
+
+/* ── 闹钟分组 ── */
+.gacc {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  border-radius: 8px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  border: 1px solid rgba(255, 46, 91, 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: 0.2s;
-  flex-shrink: 0;
-}
-.btn-delete:hover {
-  background: #7f1d1d44;
-  color: #ef4444;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
 }
 
-/* 模式标签行 */
-.mode-row {
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(292px, 1fr));
+  gap: 10px;
+  padding-top: 12px;
+}
+
+/* 单个闹钟卡片 */
+.alarm {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 10px;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 12px;
+  border-radius: var(--r-md);
+  background: var(--bg1);
+  border: 1px solid var(--stroke);
+  transition: border-color 0.15s, opacity 0.15s;
 }
-.mode-chip {
-  padding: 4px 10px;
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  background: #1e293b;
-  color: #94a3b8;
-  border: 1px solid #334155;
-  cursor: pointer;
-  transition: all 0.15s;
-  user-select: none;
+.alarm:hover {
+  border-color: var(--stroke-2);
 }
-.mode-chip:hover {
-  color: #cbd5e1;
-  border-color: #475569;
-}
-.mode-chip.active {
-  background: #f59e0b;
-  color: #0f172a;
-  border-color: #f59e0b;
+.alarm.off {
+  opacity: 0.55;
 }
 
-/* 账号选择行 */
-.acc-row {
+.arow {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  min-width: 0;
 }
 
-/* 账号搜索选择器 */
+/* 模式分段控件 */
+.seg {
+  display: flex;
+  gap: 4px;
+  background: var(--bg2);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-sm);
+  padding: 3px;
+}
+.segbtn {
+  flex: 1;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.segbtn:hover {
+  color: var(--text);
+  background: var(--bg3);
+}
+.segbtn.on {
+  background: var(--brand);
+  color: #fff;
+}
+
+/* 账号选择器 */
 .acc-picker {
   position: relative;
   flex: 1;
   min-width: 0;
 }
-.acc-input {
-  width: 100%;
-  padding: 4px 8px;
-  border-radius: 5px;
+.acc-picker .x-input {
+  height: 30px;
   font-size: 12px;
-  font-weight: 600;
-  background: #1e293b;
-  color: #cbd5e1;
-  border: 1px solid #3b4f66;
-  outline: none;
-  box-sizing: border-box;
 }
-.acc-input:focus {
-  border-color: #f59e0b;
-  color: #f1f5f9;
-}
-.acc-input::placeholder {
-  color: #64748b;
-  font-weight: 400;
-}
-.acc-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  z-index: 100;
-  max-height: 240px;
+/* 下拉挂到 body 上：fixed 定位 + 高 z-index，卡片 overflow 裁不到它 */
+.acc-drop {
+  position: fixed;
+  z-index: 900;
   overflow-y: auto;
-  background: #2a3a4e;
-  border: 1px solid #475569;
-  border-radius: 6px;
-  margin-top: 2px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  background: var(--bg2);
+  border: 1px solid var(--stroke-2);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+  padding: 4px;
 }
 .acc-opt {
-  padding: 6px 10px;
-  font-size: 12px;
-  color: #cbd5e1;
-  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
 }
 .acc-opt:hover,
-.acc-opt-active {
-  background: #3b4f66;
-  color: #f1f5f9;
+.acc-opt.hi {
+  background: var(--bg3);
+  color: var(--text);
 }
-.acc-opt-name {
-  flex: 1;
+.acc-opt .an {
+  font-family: var(--font-mono);
+  font-weight: 640;
+  color: var(--text);
 }
-.acc-opt-env {
-  font-size: 10px;
-  color: #ef4444;
+.acc-opt .env {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--ok);
+  font-family: var(--font-mono);
 }
-.acc-opt-env.ok {
-  color: #22c55e;
+.acc-opt .env.bad {
+  color: var(--warn);
 }
-.acc-opt-empty {
-  color: #64748b;
+.acc-opt.empty {
+  color: var(--text-3);
   cursor: default;
+  font-size: 11.5px;
 }
 
-/* 账号彩色标签 */
-.acc-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  color: #0f172a;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.acc-hint {
-  font-size: 11px;
-  color: #22c55e;
-  white-space: nowrap;
-}
-
-/* 复制按钮 */
-.btn-clone {
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: none;
-  background: transparent;
-  color: #64748b;
-  cursor: pointer;
-  font-size: 14px;
-  flex-shrink: 0;
-  transition: 0.15s;
-}
-.btn-clone:hover {
-  color: #f59e0b;
-  background: #f59e0b22;
-}
-
-/* 名称 */
-.label-input {
-  width: 100%;
-  padding: 6px 0;
-  background: transparent;
-  border: none;
-  border-top: 1px solid #334155;
-  color: #cbd5e1;
-  font-size: 13px;
-  outline: none;
-  box-sizing: border-box;
-}
-.label-input:focus {
-  color: #f1f5f9;
-  border-top-color: #475569;
-}
-.label-input::placeholder {
-  color: #64748b;
-}
-
-/* 添加按钮 */
-.btn-add {
-  width: 100%;
-  padding: 12px;
-  border: 2px dashed #334155;
-  border-radius: 10px;
-  background: transparent;
-  color: #64748b;
-  font-size: 14px;
-  cursor: pointer;
-  margin-bottom: 20px;
-  transition: 0.2s;
-}
-.btn-add:hover {
-  border-color: #f59e0b44;
-  color: #f59e0b;
-}
-
-/* 保存栏 */
-.save-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-.btn {
-  padding: 10px 24px;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn-primary {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
-  color: #0f172a;
-}
-.btn-primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
-}
-.saved-hint {
-  font-size: 13px;
-  color: #22c55e;
-}
-.error-banner {
-  font-size: 13px;
-  color: #ef4444;
-  background: #7f1d1d44;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid #7f1d1d;
-}
-
-/* 提示 */
-.tips {
-  display: flex;
-  gap: 10px;
-  background: #1e293b;
-  border-radius: 8px;
-  padding: 12px 14px;
-}
-.tips-icon {
-  font-size: 15px;
-  line-height: 1.6;
-}
-.tips p {
-  margin: 0;
+.name {
+  height: 30px;
   font-size: 12px;
-  color: #64748b;
-  line-height: 1.8;
-}
-.tips p + p {
-  margin-top: 2px;
 }
 
-/* 采集面板 */
-.collect-panel {
-  background: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 10px;
-  margin-bottom: 16px;
-  overflow: hidden;
-}
-.cp-header {
+/* 添加闹钟 */
+.add-alarm {
+  width: 100%;
+  margin-top: 12px;
+  padding: 11px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 10px 14px;
+  justify-content: center;
+  gap: 7px;
+  border: 1px dashed var(--stroke-2);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: var(--font-ui);
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 700;
-  color: #22c55e;
-  user-select: none;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
-.cp-header:hover { background: #33415533; }
-.cp-toggle { font-size: 11px; color: #64748b; font-weight: 400; }
-.cp-body { padding: 0 14px 14px; border-top: 1px solid #334155; }
-.cp-hint { font-size: 12px; color: #64748b; margin: 10px 0; }
-.cp-acc-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
-.cp-acc-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 6px 8px; border-radius: 6px;
-  cursor: pointer; font-size: 13px;
-  transition: background 0.15s;
+.add-alarm svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
 }
-.cp-acc-item:hover { background: #33415566; }
-.cp-acc-item input[type="checkbox"] { accent-color: #22c55e; }
-.cp-acc-name { font-weight: 600; color: #e2e8f0; }
-.cp-acc-plat { font-size: 11px; color: #64748b; }
-.cp-acc-env { margin-left: auto; font-size: 11px; color: #ef4444; }
-.cp-acc-env.ok { color: #22c55e; }
-.cp-empty { font-size: 12px; color: #64748b; padding: 10px 0; text-align: center; }
-.cp-actions { display: flex; gap: 8px; align-items: center; }
-.btn-sm { padding: 6px 14px; font-size: 12px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
-.btn-collect { background: #22c55e; color: #0f172a; }
-.btn-collect:hover:not(:disabled) { background: #16a34a; }
-.btn-collect:disabled { opacity: 0.5; cursor: not-allowed; }
-.cp-done { font-size: 12px; font-weight: 600; color: #22c55e; }
+.add-alarm:hover {
+  color: var(--brand);
+  border-color: rgba(255, 46, 91, 0.5);
+  background: var(--brand-soft);
+}
 
-/* 定时采集 */
-.cp-schedule {
-  display: flex; align-items: center; gap: 10px;
-  margin-top: 12px; padding-top: 12px;
-  border-top: 1px solid #334155;
+.x-tip {
+  margin-top: 14px;
 }
-.cp-sch-label { font-size: 13px; font-weight: 600; color: #94a3b8; white-space: nowrap; }
-.cp-active { font-size: 11px; color: #22c55e; font-weight: 600; }
-
 </style>

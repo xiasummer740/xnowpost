@@ -2,11 +2,63 @@ import axios from 'axios';
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import fs from 'fs-extra';
 import path from 'path';
+import { trackKolors } from './cost.js';
+import { getImageConfig } from './config.js';
+import { writeFileAtomic } from '../fs-atomic.js';
+import { registerCjkFont, FONT } from './fonts.js';
 
-try { GlobalFonts.registerFromPath('C:\\Windows\\Fonts\\msyh.ttc', 'Microsoft YaHei'); } catch (e) { console.warn('⚠️ 字体注册失败，中文可能显示异常'); }
+// 中文字体回退链在 fonts.js 里（P2-27）：
+// 注册失败会明确报错，调用方可用 getFontStatus() 感知"中文会变方块"
+registerCjkFont((fontPath, alias) => GlobalFonts.registerFromPath(fontPath, alias));
 
-const FONT = '"Microsoft YaHei", "SimHei", "Arial", sans-serif';
-const FONT_EN = '"Arial", "Helvetica Neue", sans-serif';
+/**
+ * 质量统计：本次运行有多少张图降级成了纯 Canvas 占位图。
+ *
+ * 降级是为了"不让整段视频失败"，但**必须让用户知道成片画面被降级了** ——
+ * 否则他花了钱、拿到片、却不知道画面是空白占位。
+ */
+export const imageQuality = { canvasFallbacks: 0 };
+
+/** 从错误里判断 HTTP 状态码（axios 的消息形如 "Request failed with status code 429"） */
+function httpStatusOf(err) {
+  const msg = String(err?.message || '');
+  const m = msg.match(/status code (\d{3})/i) || msg.match(/\b(429|5\d\d)\b/);
+  return m ? Number(m[1]) : 0;
+}
+
+/** 读取 Retry-After（秒数或 HTTP 日期），拿不到返回 0 */
+function retryAfterMsOf(err) {
+  const h = err?.response?.headers || err?.headers || {};
+  const raw = h['retry-after'] ?? h['Retry-After'];
+  if (raw === undefined || raw === null || raw === '') return 0;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(String(raw));
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : 0;
+}
+
+/**
+ * 计算本次重试该等多久。
+ *
+ * 旧实现固定等 `image.retryDelay`（2 秒），对 429 限流毫无意义 ——
+ * 实测 3 次重试全在同一秒内撞墙，最后白白降级成占位图。
+ * 这里：429 用指数退避并尊重 Retry-After；5xx 也退避；其它错误用基础延迟。
+ */
+export function retryWaitMs(err, attempt, baseDelay = 2000) {
+  const status = httpStatusOf(err);
+  const retryAfter = retryAfterMsOf(err);
+
+  if (status === 429) {
+    const backoff = 5000 * Math.pow(2, attempt);          // 5s → 10s → 20s
+    return Math.min(Math.max(retryAfter, backoff), 45_000);
+  }
+  if (status >= 500) {
+    return Math.min(baseDelay * Math.pow(2, attempt), 30_000);
+  }
+  return Number.isFinite(baseDelay) && baseDelay > 0 ? baseDelay : 2000;
+}
+
+export { httpStatusOf, retryAfterMsOf };
 
 // 品牌色系统一
 const BRAND = {
@@ -92,6 +144,10 @@ async function fetchAIImage(prompt, kolorsSize, layout, shotType, cameraMove, mo
   }, { headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 });
   const url = resp.data?.images?.[0]?.url || resp.data?.data?.[0]?.url;
   if (!url) throw new Error('no url');
+  // ⚠️ 拿到 URL 就说明服务端已经生成并计费（P1-6：此前 trackKolors 零调用点，
+  //    cost.json / 控制台汇总的 Kolors 恒为 ¥0.00，费用一直低报）。
+  //    放在这里而不是下载成功之后：下载失败也已经被计费了。
+  trackKolors(1);
   const r = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000 });
   return Buffer.from(r.data);
 }
@@ -361,13 +417,40 @@ export async function generateImage({ prompt, width=1080, height=1920, seed, ind
   const enhancedPrompt = title
     ? `${prompt}, the scene visually reflects the text concept: "${title.substring(0, 60)}"`
     : prompt;
+
+  // 底图最多试 cfg.retries 次（config/default.json 的 image.retries/retryDelay，
+  // 此前这两个字段无人读取）。注意：重试只包住"取底图"这一步 ——
+  // 文字叠加失败不会重新调用 AI，避免重复计费。
+  const cfg = getImageConfig();
+  let base = null;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= cfg.retries && !base; attempt++) {
+    try {
+      if (attempt === 0) console.log(`  🤖 底图(${kolorsSize}): ${(enhancedPrompt||'').substring(0,40)}...`);
+      else console.log(`  🔁 底图重试 ${attempt}/${cfg.retries}...`);
+      base = await fetchAIImage(enhancedPrompt, kolorsSize, layout, shotType, cameraMove, mood);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < cfg.retries) {
+        const wait = retryWaitMs(err, attempt, cfg.retryDelay);
+        const status = httpStatusOf(err);
+        console.log(`  ⏳ ${status === 429 ? '限流(429)' : status ? `${status}` : '暂时性错误'}，${(wait / 1000).toFixed(1)}s 后重试`);
+        await new Promise(r => setTimeout(r, wait));
+      }
+    }
+  }
+
+  if (!base) {
+    imageQuality.canvasFallbacks++;
+    console.log(`  ⚠️ AI(${lastErr ? lastErr.message : 'unknown'}), 回退纯 Canvas（该张为占位图，画面降级）`);
+    return generateWithCanvas({ width, height, title, subtitle, tags, index, points });
+  }
+
   try {
-    console.log(`  🤖 底图(${kolorsSize}): ${(enhancedPrompt||'').substring(0,40)}...`);
-    const base = await fetchAIImage(enhancedPrompt, kolorsSize, layout, shotType, cameraMove, mood);
     console.log(`  ✍️ 叠加...`);
     return await overlayText(base, { width, height, title, subtitle, tags, index, points });
   } catch (err) {
-    console.log(`  ⚠️ AI(${err.message}), 回退`);
+    console.log(`  ⚠️ 文字叠加失败(${err.message})，改用纯 Canvas`);
     return generateWithCanvas({ width, height, title, subtitle, tags, index, points });
   }
 }
@@ -375,7 +458,23 @@ export async function generateImage({ prompt, width=1080, height=1920, seed, ind
 export async function generateImageToFile(opts) {
   const buf = await generateImage(opts);
   await fs.ensureDir(path.dirname(opts.filepath));
-  await fs.writeFile(opts.filepath, buf);
+  // 原子写：进程被杀不会留下半截 PNG（半截图会让 FFmpeg 合成直接失败）
+  await writeFileAtomic(opts.filepath, buf);
   console.log(`  ✅ ${opts.filepath} (${(buf.length/1024).toFixed(0)}KB)`);
+  return opts.filepath;
+}
+
+/**
+ * 生成"纯 Canvas 占位图"并落盘 —— 不调用 AI、不产生费用。
+ * 用途：某个分镜图缺失时补齐画面，保证 concat 列表与配音时间轴仍然一一对应
+ * （P2-1：缺一张图就整段视频合成失败，或时间轴错位）。
+ */
+export async function generatePlaceholderToFile(opts = {}) {
+  const width = opts.width || 1080;
+  const height = opts.height || 1920;
+  const buf = generateWithCanvas({ ...opts, width, height });
+  await fs.ensureDir(path.dirname(opts.filepath));
+  await writeFileAtomic(opts.filepath, buf);
+  console.log(`  🧩 占位图已生成: ${opts.filepath}`);
   return opts.filepath;
 }

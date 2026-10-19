@@ -148,7 +148,18 @@ interface XnowpostAPI {
   onEngineStatusPush(callback: (status: EngineStatus) => void): () => void
 
   getSchedules(): Promise<Array<Record<string, unknown>>>
-  saveSchedules(jobs: Array<Record<string, unknown>>): Promise<ApiResult>
+saveSchedules(jobs: Array<Record<string, unknown>>): Promise<ApiResult>
+  getScheduleProgress(): Promise<{
+    schedulerRunning: boolean
+    active: boolean
+    current: { label: string; startedAt: string; elapsedSec: number } | null
+    next: Array<{ time: string; label: string; account: string; mode: string; inMinutes: number }>
+    tail: string[]
+    sessionDir: string
+    stage: string
+    stageText: string
+    lastRun: string
+  }>
 
   runPublish(): Promise<ApiResult>
   exportCsv(content: string, name?: string): Promise<ApiResult>
@@ -157,6 +168,71 @@ interface XnowpostAPI {
     type: string; title: string; time: string
   }>>
   restartApp(): void
+
+  // 账号页（批量登录）
+  listAccounts(): Promise<{
+    ok: boolean
+    message?: string
+    base?: string
+    inbox?: string
+    list: Array<{
+      env: string
+      username: string
+      nickname: string
+      email: string
+      password: string
+      emailPassword: string
+      region: string
+      followers: string
+      following: string
+      likes: string
+      verified: boolean
+      createTime: string
+      profileAt: string
+      avatarAt: string
+      hasAvatar: boolean
+      proxy: string
+      exists: boolean
+      running: boolean
+      loggedIn: boolean | null
+      cookies: number
+      lastActive: string
+      note: string
+    }>
+  }>
+  pickAccountFile(): Promise<string | null>
+  openAccountInbox(): Promise<{ ok: boolean; inbox: string }>
+  runAccountLogin(opts?: {
+    file?: string
+    dryRun?: boolean
+    force?: boolean
+    only?: string
+    gap?: number
+    captchaWait?: number
+  }): Promise<{ ok: boolean; code?: number; message?: string }>
+  syncAccountProfiles(opts?: {
+    only?: string
+    stale?: number
+    gap?: number
+  }): Promise<{ ok: boolean; code?: number; message?: string }>
+  getAccountAvatar(env: string): Promise<string | null>
+  importAccountFile(file: string): Promise<{ ok: boolean; count?: number; mapping?: Array<{ env: string; username: string }>; message?: string }>
+  copyText(text: string): Promise<{ ok: boolean; message?: string }>
+  pickAccountImage(): Promise<{ ok: boolean; path?: string; name?: string; canceled?: boolean; message?: string }>
+  previewAccountImage(file: string): Promise<{ ok: boolean; uri?: string; name?: string; size?: number; message?: string }>
+  editAccountProfiles(opts: {
+    jobs: Array<{ env: string; name?: string; bio?: string; newUsername?: string; avatar?: string }>
+    dryRun?: boolean
+    gap?: number
+  }): Promise<{ ok: boolean; code?: number; message?: string }>
+  cancelAccountLogin(): Promise<{ ok: boolean; message?: string }>
+  backupAccountCookies(envs?: string[]): Promise<{
+    ok: boolean
+    dir: string
+    out: Array<{ env: string; ok: boolean; count?: number; message?: string }>
+  }>
+  launchAccountEnv(env: string, action?: 'launch' | 'stop'): Promise<ApiResult>
+  onAccountProgress(callback: (payload: { type: 'start' | 'line' | 'done'; text: string }) => void): () => void
 }
 
 export {}

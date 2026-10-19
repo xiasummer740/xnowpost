@@ -14,6 +14,15 @@
       </div>
     </div>
 
+    <!-- 采集结果提示：这一页显示的是"某天的数据"，当天到底采到没有必须说清楚 -->
+    <div v-if="collectWarn" class="collect-warn" :class="collectWarn.tone">
+      <span class="cw-icon">{{ collectWarn.tone === 'bad' ? '⚠️' : 'ℹ️' }}</span>
+      <div class="cw-body">
+        <span class="cw-title">{{ collectWarn.title }}</span>
+        <span v-if="collectWarn.hint" class="cw-hint">{{ collectWarn.hint }}</span>
+      </div>
+    </div>
+
     <div v-if="loading" class="loading-box">
       <span class="loading-spinner"></span>
       <span>加载中...</span>
@@ -32,24 +41,32 @@
           <span class="kpi-icon">{{ k.icon }}</span>
           <div class="kpi-body">
             <span class="kpi-label">{{ k.label }}</span>
-            <span class="kpi-val">{{ fmt(k.today) }}</span>
+            <span class="kpi-val" :class="{ 'is-empty': k.today === null }">{{ kpiText(k.today) }}</span>
             <span v-if="k.showDiff" class="kpi-diff" :class="k.today >= k.yesterday ? 'up' : 'dn'">
-              {{ k.yesterday !== undefined ? diffStr(k.today, k.yesterday) : '-' }}
+              {{ k.yesterday !== null ? diffStr(k.today, k.yesterday) : '-' }}
             </span>
           </div>
         </div>
       </div>
+      <p class="kpi-note">「—」= 这天没采到这项指标（不是 0）。粉丝/关注/获赞来自账号主页，播放/点赞/评论来自 TikTok 分析页。</p>
 
       <!-- ===== 账号卡片 ===== -->
+      <!-- 账号列表 = 这天有数据的号 ∪ 配置里的全部号：没采到的也要显示出来，
+           否则用户只看到 1 个号，会以为「这软件只能看一个账号」 -->
       <div v-for="accName in accountNames" :key="accName" class="ac-card">
         <div class="ac-hd">
           <span class="ac-avatar">👤</span>
           <span class="ac-name">{{ displayName(accName) }}</span>
           <span v-if="accountMeta(accName)?.username" class="ac-username" @click="openProfile(accName)">{{ accountMeta(accName).username }}</span>
-          <span class="ac-meta">{{ Object.keys(data.accounts[accName]).length }} 个平台</span>
+          <span v-if="hasData(accName)" class="ac-meta">{{ Object.keys(data.accounts[accName]).length }} 个平台</span>
+          <span v-else class="ac-meta ac-meta-empty">这天没采到数据</span>
         </div>
 
-        <div v-for="(pd, platform) in data.accounts[accName]" :key="platform" class="pl-card">
+        <div v-if="!hasData(accName)" class="pl-empty">
+          {{ emptyReason(accName) }}
+        </div>
+
+        <div v-for="(pd, platform) in (data.accounts[accName] || {})" :key="platform" class="pl-card">
           <div class="pl-hd">
             <span class="pl-emoji">{{ platformEmoji[platform] || '📡' }}</span>
             <span class="pl-name">{{ platformNames[platform] || platform }}</span>
@@ -75,12 +92,19 @@
       </div>
 
       <!-- ===== 趋势图表 ===== -->
-      <div v-if="trendData && trendKeys.length > 0" class="trend-section">
-        <h3 class="trend-title">📈 趋势（近 {{ trendDays }} 天）</h3>
+      <div v-if="trendData && trendOptions.length > 0" class="trend-section">
+        <h3 class="trend-title">
+          📈 趋势（近 {{ trendDays }} 天<span v-if="trendRange">：{{ trendRange }}</span>）
+        </h3>
+        <p class="trend-note">
+          图例带账号名，点一下切换指标。
+          <span v-if="trendLatest">这条线最近有数据的一天是 {{ trendLatest }}。</span>
+          <span v-else>这个指标在窗口内没有任何数据。</span>
+        </p>
         <div class="trend-tabs">
-          <span v-for="k in trendKeys" :key="k" class="trend-chip"
-                :class="{ active: activeTrend === k }" @click="activeTrend = k">
-            {{ k.split('|')[1] }} · {{ metricLabel(k.split('|')[2]) }}
+          <span v-for="o in trendOptions" :key="o.key" class="trend-chip"
+                :class="{ active: activeTrend === o.key }" @click="activeTrend = o.key">
+            {{ o.label }}
           </span>
         </div>
         <div class="trend-chart" v-if="activeTrend && trendData[activeTrend]">
@@ -88,7 +112,8 @@
             <line v-for="gi in 4" :key="'g'+gi" :x1="padL" :y1="padT + (chartH-padT-padB)/4*gi"
                   :x2="chartW-padR" :y2="padT + (chartH-padT-padB)/4*gi"
                   stroke="#334155" stroke-width="1" />
-            <polyline :points="trendPoints" fill="none" stroke="#f59e0b" stroke-width="2"
+            <polyline v-for="(seg, si) in trendSegments" :key="'s'+si" :points="seg"
+                      fill="none" stroke="#f59e0b" stroke-width="2"
                       stroke-linejoin="round" stroke-linecap="round" />
             <circle v-for="(pt, pi) in trendPointCoords" :key="'p'+pi"
                     :cx="pt.x" :cy="pt.y" r="3" fill="#f59e0b" />
@@ -131,23 +156,50 @@ function diffStr(c, p) {
 }
 
 // --- KPI 汇总计算 ---
+// ⚠️ 「这天没采到这项指标」和「真的是 0」必须能分开（2026-10-19 用户反馈"看不懂"）：
+// 旧实现 today 从 0 开始累加，没数据的指标也显示 0 —— 总粉丝明明是"没采到"，却显示成 0 粉。
+// 现在没有任何一个平台有这项指标时返回 null，界面显示「—」。
 const kpiList = computed(() => {
   if (!data.value?.accounts) return []
   const accs = data.value.accounts
   return kpiDefs.map(def => {
-    let today = 0, yesterday = 0, hasYst = false
+    let today = 0, yesterday = 0, hasYst = false, seen = false
     for (const platCards of Object.values(accs)) {
       for (const pd of Object.values(platCards)) {
-        if (pd.stats[def.key] !== undefined) today += pd.stats[def.key]
+        if (pd.stats[def.key] !== undefined) { today += pd.stats[def.key]; seen = true }
         if (pd.yesterday[def.key] !== undefined) { yesterday += pd.yesterday[def.key]; hasYst = true }
       }
     }
-    return { ...def, today, yesterday, showDiff: hasYst }
+    return { ...def, today: seen ? today : null, yesterday: hasYst ? yesterday : null, showDiff: hasYst && seen }
   })
 })
 
+// KPI 数值显示：null（没这项数据）显示 —，不冒充 0
+function kpiText(v) { return v === null || v === undefined ? '—' : fmt(v) }
+
 // --- 账号相关 ---
-const accountNames = computed(() => data.value?.accounts ? Object.keys(data.value.accounts) : [])
+// 这天有数据的账号 + 配置里的全部账号（并集、按名字排序）：
+// 只有把"没采到的号"也列出来，用户才知道 10 个号里谁有数据、谁没有
+const accountNames = computed(() => {
+  if (!data.value) return []
+  const set = new Set(Object.keys(data.value.accounts || {}))
+  for (const a of (data.value.configAccounts || [])) {
+    if (a && a.name) set.add(a.name)
+  }
+  return [...set].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN', { numeric: true }))
+})
+
+function hasData(acc) {
+  const platforms = data.value?.accounts?.[acc]
+  return !!platforms && Object.keys(platforms).length > 0
+}
+
+function emptyReason(acc) {
+  const e = data.value?.collect || data.value?.collectToday
+  if (!e) return '这天没有这个账号的采集记录（可能那天没跑采集）。'
+  if (e.insufficient) return '这天这个账号没采到数据：TikTok 分析页只返回「--」占位（还没有可统计的播放/粉丝）。'
+  return `这天这个账号没采到数据（${e.reason || '未解析到指标'}）。`
+}
 
 function accountMeta(acc) {
   return data.value?.accountMeta?.[acc] || null
@@ -193,6 +245,58 @@ function barPct(val, max) {
 
 function dCls(c, p) { return c >= p ? 'up' : 'dn' }
 
+// --- 采集状态提示 ---
+// 为什么要这段：2026-10-19 那轮采集 10 个号全部只拿到「--」，界面却仍显示上一版数据 +
+// 今天的时间戳，看起来像"今天的数据"。现在把"这天到底采到没有"直接写在页面上。
+const collectWarn = computed(() => {
+  const d = data.value
+  if (!d) return null
+  const day = d.date || ''
+  const c = d.collect
+  const today = d.collectToday
+  const isLatest = (d.availableDates || []).length ? d.availableDates[0] === day : true
+
+  // ① 这一天的采集自己有记录：直说
+  if (c) {
+    if (!c.ok) {
+      const none = !c.total ? '没有可采集的账号' : `${c.collected}/${c.total} 个账号有数据`
+      return {
+        tone: 'bad',
+        title: `${day} 采集没拿到数据（${none}）`,
+        hint: c.insufficient
+          ? 'TikTok 分析页只返回「--」占位：这些账号还没有可统计的播放/粉丝数据，不是采集器坏了。下方展示的是这天已有的记录。'
+          : `原因：${c.reason || '未解析到指标'}。下方展示的是这天已有的记录。`,
+      }
+    }
+    if (c.total && c.collected < c.total) {
+      return {
+        tone: 'info',
+        title: `${day} 采集完成 ${c.collected}/${c.total} 个账号${c.at ? `（${c.at}）` : ''}`,
+        hint: `没采到的：${c.reason || '部分账号无数据'}`,
+      }
+    }
+    // 全部入库了，但只有主页数字（分析页仍是「--」）也要说，否则用户以为播放/点赞真的是 0
+    if (c.insufficient > 0) {
+      return {
+        tone: 'info',
+        title: `${day} 采集完成 ${c.collected}/${c.total} 个账号${c.at ? `（${c.at}）` : ''}`,
+        hint: `其中 ${c.insufficient} 个号只拿到主页的粉丝/关注/获赞；播放、点赞、评论 TikTok 仍返回「--」（这些号还没有播放数据）。`,
+      }
+    }
+    return null
+  }
+
+  // ② 看的是历史日期（这页没有当天采集记录），但今天那轮采集失败了：这最容易被误读成"今天的数据"
+  if (today && !today.ok && isLatest) {
+    return {
+      tone: 'bad',
+      title: `今天（${d.today || '今天'}）${today.at ? today.at.slice(-8) : ''} 的采集没拿到数据：${today.collected}/${today.total} 个账号有数据`,
+      hint: `所以这一页显示的是 ${day}（最近一次有数据的一天）的记录。${today.insufficient ? 'TikTok 分析页只返回「--」占位，这些账号还没有可统计的数据。' : `原因：${today.reason || '未解析到指标'}。`}`,
+    }
+  }
+  return null
+})
+
 // --- 趋势 ---
 const trendData = ref(null)
 const activeTrend = ref('')
@@ -203,35 +307,88 @@ const trendKeys = computed(() => trendData.value ? Object.keys(trendData.value) 
 
 function metricLabel(m) { return metricLabels[m] || m }
 
-const trendPoints = computed(() => {
+/**
+ * 图例只列「当前这份日报里的账号」的指标，并且必须带账号名前缀。
+ * 旧的图例文字是 `平台·指标`（如 `tiktok·播放`），8 个号 × 多个指标会渲染出一排
+ * 长得一模一样的 chip，用户根本分不清点的是哪个号（2026-10-19 用户反馈"看不懂"）。
+ */
+const trendOptions = computed(() => {
+  const t = trendData.value
+  if (!t) return []
+  const accs = new Set(Object.keys(data.value?.accounts || {}))
+  return Object.keys(t)
+    .map((key) => {
+      const s = t[key]
+      return { key, account: s.account, platform: s.platform, metric: s.metric }
+    })
+    .filter((o) => !accs.size || accs.has(o.account))
+    .map((o) => ({ ...o, label: `${o.account} · ${metricLabel(o.metric)}` }))
+    .sort((a, b) => a.account.localeCompare(b.account) || a.metric.localeCompare(b.metric))
+})
+
+// 横轴范围（真实日历天，取自接口返回的 dates）
+const trendRange = computed(() => {
+  const s = trendData.value?.[activeTrend.value]
+  if (!s || !s.dates?.length) return ''
+  const a = s.dates[0], b = s.dates[s.dates.length - 1]
+  return a === b ? a : `${a} ~ ${b}`
+})
+
+// 最近一个"有数字"的日期（横轴右端是今天，今天没数据时要说明白）
+const trendLatest = computed(() => {
   const s = trendData.value?.[activeTrend.value]
   if (!s) return ''
+  for (let i = s.values.length - 1; i >= 0; i--) {
+    if (s.values[i] !== null) return s.dates[i]
+  }
+  return ''
+})
+
+function trendXY(s) {
   const vals = s.values
-  const max = Math.max(...vals.filter(v => v !== null), 1)
-  const min = Math.min(...vals.filter(v => v !== null), 0)
+  const defined = vals.filter((v) => v !== null)
+  const max = Math.max(...defined, 1)
+  const min = Math.min(...defined, 0)
   const range = max - min || 1
   const stepX = (chartW - padL - padR) / Math.max(vals.length - 1, 1)
-  return vals.map((v, i) => {
-    if (v === null) return ''
-    const x = padL + i * stepX
-    const y = padT + (chartH - padT - padB) * (1 - (v - min) / range)
-    return `${x},${y}`
-  }).filter(Boolean).join(' ')
+  return (v, i) => ({
+    x: padL + i * stepX,
+    y: padT + (chartH - padT - padB) * (1 - (v - min) / range),
+  })
+}
+
+/**
+ * 折线要按「连续有数据的天」分段：旧实现把 null 过滤掉再连成一条线，
+ * 于是 2026-07-22 和 2026-10-18（中间隔了 3 个月）被连成一条水平线，
+ * 看着像"这 7 天都是 0"（用户实际就是这么误解的）。
+ */
+const trendSegments = computed(() => {
+  const s = trendData.value?.[activeTrend.value]
+  if (!s) return []
+  const xy = trendXY(s)
+  const segs = []
+  let cur = []
+  s.values.forEach((v, i) => {
+    if (v === null) {
+      if (cur.length > 1) segs.push(cur.join(' '))
+      cur = []
+      return
+    }
+    const p = xy(v, i)
+    cur.push(`${p.x},${p.y}`)
+  })
+  if (cur.length > 1) segs.push(cur.join(' '))
+  return segs
 })
 
 const trendPointCoords = computed(() => {
   const s = trendData.value?.[activeTrend.value]
   if (!s) return []
-  const vals = s.values
-  const max = Math.max(...vals.filter(v => v !== null), 1)
-  const min = Math.min(...vals.filter(v => v !== null), 0)
-  const range = max - min || 1
-  const stepX = (chartW - padL - padR) / Math.max(vals.length - 1, 1)
-  return vals.map((v, i) => {
+  const xy = trendXY(s)
+  return s.values.map((v, i) => {
     if (v === null) return null
-    const x = padL + i * stepX
-    const y = padT + (chartH - padT - padB) * (1 - (v - min) / range)
-    return { x, y, label: s.dates[i], value: v }
+    const p = xy(v, i)
+    return { x: p.x, y: p.y, label: s.dates[i], value: v }
   }).filter(Boolean)
 })
 
@@ -245,18 +402,25 @@ const trendLastVal = computed(() => {
 async function loadTrend(days) {
   try {
     trendData.value = await window.xnowpost.getTrend(days || 7)
-    if (trendKeys.value.length) activeTrend.value = trendKeys.value[0]
+    // 默认选中「当前日报里第一个账号的第一项」，不是 blindly 取第一个 key
+    if (trendOptions.value.length) activeTrend.value = trendOptions.value[0].key
   } catch (_) {}
 }
 
 // --- 日报缓存 ---
 const reportCache = new Map()
 
-async function load(date) {
+async function load(date, force = false) {
   loading.value = true
   try {
     const cacheKey = date || '__latest'
-    if (reportCache.has(cacheKey)) {
+    // force = 用户点了「刷新」：必须先清掉缓存，否则会直接命中旧数据返回（P2-7 空操作）
+    if (force) {
+      reportCache.delete(cacheKey)
+      reportCache.delete('__latest')
+      if (date) reportCache.delete(date)
+    }
+    if (!force && reportCache.has(cacheKey)) {
       data.value = reportCache.get(cacheKey)
       if (data.value) {
         curIdx.value = data.value.availableDates.indexOf(data.value.date)
@@ -287,7 +451,8 @@ function nextDate() {
   if (!data.value || curIdx.value >= data.value.availableDates.length - 1) return
   load(data.value.availableDates[curIdx.value + 1])
 }
-function handleRefresh() { if (data.value) load(data.value.date) }
+// 刷新：强制绕过缓存重新拉取当前日期
+function handleRefresh() { if (data.value) load(data.value.date, true) }
 async function handlePush() {
   if (!data.value) return
   pushing.value = true
@@ -314,7 +479,11 @@ async function handleExport() {
   } catch (e) { console.error('导出失败:', e) }
 }
 
-onMounted(() => load())
+// 初始化：日报 + 趋势（趋势原先定义了 loadTrend 却从未调用，图表永远不显示）
+onMounted(() => {
+  load()
+  loadTrend(trendDays.value)
+})
 </script>
 
 <style scoped>
@@ -359,6 +528,36 @@ onMounted(() => load())
 @keyframes spin { to { transform: rotate(360deg); } }
 .empty-icon { font-size: 40px; }
 .empty-hint { font-size: 12px; color: #475569; }
+
+/* ---- 采集状态提示条 ---- */
+.collect-warn {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-bottom: 16px; padding: 12px 14px;
+  border-radius: 12px; border: 1px solid;
+  font-size: 13px; line-height: 1.55;
+}
+.collect-warn.bad  { background: rgba(245, 158, 11, .10); border-color: rgba(245, 158, 11, .38); }
+.collect-warn.info { background: rgba(56, 189, 248, .10); border-color: rgba(56, 189, 248, .32); }
+.cw-icon { font-size: 15px; line-height: 1.3; }
+.cw-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.collect-warn.bad  .cw-title { color: #fbbf24; font-weight: 600; }
+.collect-warn.info .cw-title { color: #7dd3fc; font-weight: 600; }
+.cw-hint { color: #94a3b8; font-size: 12px; }
+
+/* ---- KPI 说明（「—」= 没采到，不是 0）---- */
+.kpi-note { margin: -4px 0 14px; color: #64748b; font-size: 12px; }
+.kpi-val.is-empty { color: #475569; }
+
+/* ---- 没采到数据的账号卡片 ---- */
+.ac-meta-empty { color: #f59e0b !important; }
+.pl-empty {
+  margin: 8px 0 0 34px; padding: 12px 14px;
+  border: 1px dashed #334155; border-radius: 10px;
+  color: #64748b; font-size: 12px; line-height: 1.5;
+}
+
+/* ---- 趋势说明 ---- */
+.trend-note { margin: -6px 0 10px; color: #64748b; font-size: 12px; line-height: 1.5; }
 
 /* ===== KPI 汇总行 ===== */
 .kpi-row {

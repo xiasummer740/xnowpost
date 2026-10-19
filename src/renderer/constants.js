@@ -30,10 +30,11 @@ export const METRIC_LABELS = {
   profile_views: '主页访问',
   following: '关注',
   new_followers: '新增粉丝',
+  total_likes: '总获赞',
 }
 
 export const METRICS_ORDER = [
-  'followers', 'new_followers', 'following', 'views',
+  'followers', 'new_followers', 'following', 'total_likes', 'views',
   'profile_views', 'likes', 'comments', 'shares',
   'saves', 'reach', 'engagement',
 ]

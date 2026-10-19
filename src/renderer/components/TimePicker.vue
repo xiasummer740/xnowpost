@@ -153,38 +153,43 @@ watch(show, async (v) => {
 </script>
 
 <style scoped>
-/* ===== 触发按钮 ===== */
+/* ===== 触发按钮：跟定时页其它控件同一套尺寸/配色 ===== */
 .tp-trigger {
-  flex: 1;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 8px 12px;
-  border: 2px solid #475569;
-  border-radius: 8px;
-  background: #0f172a;
-  color: #f8fafc;
-  font-size: 24px;
+  gap: 5px;
+  padding: 5px 9px;
+  min-width: 84px;
+  border: 1px solid var(--stroke-2);
+  border-radius: var(--r-sm);
+  background: var(--bg1);
+  color: var(--text);
+  font-size: 15px;
   font-weight: 700;
-  font-family: inherit;
+  font-family: var(--font-mono);
+  letter-spacing: 0.6px;
   cursor: pointer;
-  transition: border-color 0.2s;
+  transition: border-color 0.15s, background 0.15s;
   min-width: 0;
 }
 .tp-trigger:hover {
-  border-color: #f59e0b;
+  border-color: rgba(255, 46, 91, 0.55);
+  background: var(--bg3);
 }
 .tp-chevron {
-  color: #64748b;
+  color: var(--text-3);
   flex-shrink: 0;
+  width: 13px;
+  height: 13px;
 }
 
 /* ===== 遮罩 ===== */
 .tp-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(4, 8, 13, 0.66);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -193,53 +198,53 @@ watch(show, async (v) => {
 
 /* ===== 弹窗 ===== */
 .tp-modal {
-  background: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 14px;
-  width: 320px;
+  background: var(--bg2);
+  border: 1px solid var(--stroke-2);
+  border-radius: var(--r-lg);
+  width: 300px;
   max-width: 90vw;
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-2);
 }
 
-/* 头部 */
 .tp-hd {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid #334155;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--stroke);
 }
 .tp-btn {
   background: none;
-  border: none;
-  color: #94a3b8;
-  font-size: 14px;
+  border: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  font-family: var(--font-ui);
   cursor: pointer;
-  padding: 4px 0;
+  padding: 3px 2px;
   transition: color 0.15s;
 }
 .tp-btn:hover {
-  color: #e2e8f0;
+  color: var(--text);
 }
 .tp-done {
-  color: #f59e0b;
-  font-weight: 600;
+  color: var(--brand);
+  font-weight: 700;
 }
 .tp-done:hover {
-  color: #fbbf24;
+  color: var(--brand-hover);
 }
 .tp-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 640;
+  color: var(--text);
 }
 
 /* ===== 选择器 ===== */
 .tp-body {
   display: flex;
   align-items: stretch;
-  padding: 16px 0;
+  padding: 14px 0;
   position: relative;
 }
 
@@ -247,7 +252,6 @@ watch(show, async (v) => {
   flex: 1;
   position: relative;
   overflow: hidden;
-  /* 渐变遮罩 */
   --mask-h: 16px;
 }
 .tp-col::before,
@@ -262,14 +266,13 @@ watch(show, async (v) => {
 }
 .tp-col::before {
   top: 0;
-  background: linear-gradient(to bottom, #1e293b, transparent);
+  background: linear-gradient(to bottom, var(--bg2), transparent);
 }
 .tp-col::after {
   bottom: 0;
-  background: linear-gradient(to top, #1e293b, transparent);
+  background: linear-gradient(to top, var(--bg2), transparent);
 }
 
-/* 选中指示器（横条） */
 .tp-bar {
   position: absolute;
   top: 50%;
@@ -277,15 +280,15 @@ watch(show, async (v) => {
   right: 10%;
   height: 36px;
   transform: translateY(-50%);
-  background: #33415566;
-  border-radius: 6px;
+  background: var(--bg3);
+  border: 1px solid var(--stroke-2);
+  border-radius: var(--r-sm);
   z-index: 0;
   pointer-events: none;
 }
 
-/* 滚动容器 */
 .tp-scroll {
-  height: 180px; /* 5 visible items */
+  height: 180px;
   overflow-y: auto;
   scrollbar-width: none;
   position: relative;
@@ -295,43 +298,42 @@ watch(show, async (v) => {
   display: none;
 }
 
-/* 间距块 */
 .tp-spacer {
-  height: 72px; /* (总高 - cell高) / 2 = (180-36)/2 = 72 */
+  height: 72px;
   pointer-events: none;
 }
 
-/* 选项单元 */
 .tp-cell {
   height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 500;
-  color: #475569;
+  font-family: var(--font-mono);
+  color: var(--text-3);
   cursor: pointer;
-  transition: all 0.12s;
+  transition: color 0.12s, font-size 0.12s;
   user-select: none;
 }
 .tp-cell:hover {
-  color: #94a3b8;
+  color: var(--text-2);
 }
 .tp-cell.on {
-  color: #f8fafc;
-  font-size: 22px;
+  color: var(--text);
+  font-size: 20px;
   font-weight: 700;
 }
 
-/* 冒号分隔符 */
 .tp-colon {
   display: flex;
   align-items: center;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
-  color: #f8fafc;
+  font-family: var(--font-mono);
+  color: var(--text);
   padding: 0 2px;
-  margin-top: -6px; /* offset spacer */
+  margin-top: -6px;
 }
 
 /* ===== 过渡动画 ===== */

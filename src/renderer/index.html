@@ -3,7 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'none'; connect-src 'self' https://* ws://localhost:*;">
+  <!--
+    CSP（P1-8 S2 收紧）：
+    - script-src 去掉 'unsafe-inline'：已核对 `npm run build` 产物 dist/index.html，
+      只有 <script type="module" src="./assets/index-*.js"> 一个外链脚本，没有任何 inline script。
+    - connect-src 从 'https://*'（任意主机外发通道）收紧为 'self' + 本地回环 ws
+      （仅开发模式 Vite HMR 需要；渲染进程的网络请求全部经 IPC 走主进程）。
+    - 补 object-src / base-uri / frame-ancestors / form-action。
+      注意：meta 形式下 frame-ancestors 会被浏览器忽略，真正的防嵌套需要主进程发响应头。
+    - style-src 保留 'unsafe-inline'：Vite 客户端与动态注入样式依赖它。
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'none'; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none';">
   <title>XNOWPost</title>
 </head>
 <body>

@@ -1,18 +1,10 @@
 node_modules/
 output/
-data/*.db
 logs/
 .env
-config/user.json
-config/schedule.json
 backups/
 storage/
 resource/
-*.mp4
-*.mp3
-*.png
-!assets/**/*.png
-!assets/**/*.mp3
 dist/
 release/
 .firecrawl/
@@ -20,3 +12,34 @@ release/
 XNOWPost-Setup-*.exe
 XNOWPost-Setup-*.exe.blockmap
 latest.yml
+
+# === 个人配置（含 API Key / 账号环境 ID）===
+# 本仓库是 PUBLIC 的，这些文件绝不能进版本库，也不该进安装包
+config/user.json
+config/schedule.json
+config/window-state.json
+**/window-state.json
+
+# === 数据库与转储 ===
+# 注意：曾误提交过 BitBrowser 的 db.sqlite 副本（根目录 tmp.db，含浏览器/账号 ID）
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+# db.js 检出损坏库时的备份文件名（<name>.db.corrupt-<时间戳>）
+*.db.corrupt-*
+
+# === 产出物 ===
+*.mp4
+*.mp3
+*.png
+!assets/**/*.png
+!assets/**/*.mp3
+
+# 本地冒烟测试临时产物（不提交）
+.smoke-userdata/
+screenshot.png
+
+# === 导入的账号文件（含密码 / 2FA 密钥，绝不能进版本库）===
+import/

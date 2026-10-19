@@ -1,3 +1,22 @@
+import { readDashboard, extractMetrics } from './common.js';
+
+/**
+ * Facebook Creator Studio 指标
+ *
+ * 修正（P2-14）：原实现把 '赞 / Likes / Reactions' 也归到 followers，
+ * 结果"点赞数"被当成粉丝数上报。这里把点赞类指标全部归到 likes，
+ * followers 只保留真正的粉丝口径（Page followers / 粉丝）。
+ */
+const METRICS = {
+  followers: ['粉丝', '粉丝数', '关注者', 'Page followers', 'Followers'],
+  likes: ['点赞', '获赞', '主页获赞', 'Page likes', 'Likes', 'Reactions', '赞'],
+  reach: ['触达', '覆盖人数', '覆盖', 'People reached', 'Reach'],
+  engagement: ['互动次数', '互动', 'Engagement'],
+  views: ['视频播放', '播放', '观看', 'Video views', 'Views'],
+  comments: ['评论', 'Comments'],
+  shares: ['分享', '转发', 'Shares'],
+};
+
 export async function scrapeFacebook(page) {
   try {
     await page.goto('https://business.facebook.com/creatorstudio/', {
@@ -11,84 +30,23 @@ export async function scrapeFacebook(page) {
 
   await page.waitForTimeout(5000);
 
+  // 未登录会跳到 facebook.com/login → 明确抛错
+  const raw = await readDashboard(page, 'Facebook');
+
+  const data = extractMetrics({ lines: raw.lines, metrics: METRICS, platform: 'Facebook' });
+
   const stats = {};
+  if (data.followers !== undefined) stats.followers = data.followers;
+  if (data.reach !== undefined) stats.reach = data.reach;
+  if (data.engagement !== undefined) stats.engagement = data.engagement;
+  if (data.views !== undefined) stats.views = data.views;
+  if (data.likes !== undefined) stats.likes = data.likes;
+  if (data.comments !== undefined) stats.comments = data.comments;
+  if (data.shares !== undefined) stats.shares = data.shares;
 
-  try {
-    const data = await page.evaluate(() => {
-      const text = document.body.innerText;
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-      const found = {};
-      const metrics = {
-        followers: ['粉丝', '粉丝数', '关注者', 'Followers', 'Page followers', 'Likes', '赞'],
-        reach: ['触达', '覆盖', '覆盖人数', 'Reach', 'People reached'],
-        engagement: ['互动', 'Engagement', '互动次数'],
-        views: ['播放', '观看', '视频播放', 'Views', 'Video views'],
-        likes: ['点赞', 'Likes', 'Reactions'],
-        comments: ['评论', 'Comments'],
-        shares: ['分享', 'Shares', '转发'],
-      };
-
-      function getMatchedKeyword(line) {
-        const lc = line.toLowerCase();
-        for (const [key, keywords] of Object.entries(metrics)) {
-          if (keywords.some(kw => lc.includes(kw.toLowerCase()))) return key;
-        }
-        return null;
-      }
-
-      let numFirstCount = 0, labelFirstCount = 0;
-      for (let i = 1; i < lines.length; i++) {
-        if (extractNum(lines[i - 1]) !== null && getMatchedKeyword(lines[i]) !== null) numFirstCount++;
-        if (getMatchedKeyword(lines[i - 1]) !== null && extractNum(lines[i]) !== null) labelFirstCount++;
-      }
-      const useNumFirst = numFirstCount >= labelFirstCount;
-
-      for (let i = 0; i < lines.length; i++) {
-        const numVal = extractNum(lines[i]);
-        if (numVal === null) continue;
-
-        const sameLineKw = getMatchedKeyword(lines[i]);
-        if (sameLineKw) {
-          found[sameLineKw] = found[sameLineKw] !== undefined ? Math.max(found[sameLineKw], numVal) : numVal;
-          continue;
-        }
-
-        const adjIdx = useNumFirst ? i + 1 : i - 1;
-        if (adjIdx >= 0 && adjIdx < lines.length) {
-          const adjKw = getMatchedKeyword(lines[adjIdx]);
-          if (adjKw) {
-            found[adjKw] = found[adjKw] !== undefined ? Math.max(found[adjKw], numVal) : numVal;
-          }
-        }
-      }
-
-      return found;
-
-      function extractNum(str) {
-        const m = str.match(/(-?[\d,]+\.?\d*)\s*([KkMmB万]?)/);
-        if (!m) return null;
-        let num = parseFloat(m[1].replace(/,/g, ''));
-        const suffix = m[2];
-        if (suffix === 'K' || suffix === 'k') num *= 1000;
-        else if (suffix === 'M' || suffix === 'm') num *= 1000000;
-        else if (suffix === 'B' || suffix === 'b') num *= 1000000000;
-        else if (suffix === '万') num *= 10000;
-        return Math.round(num);
-      }
-    });
-
-    if (data.followers !== undefined) stats.followers = data.followers;
-    if (data.reach !== undefined) stats.reach = data.reach;
-    if (data.engagement !== undefined) stats.engagement = data.engagement;
-    if (data.views !== undefined) stats.views = data.views;
-    if (data.likes !== undefined) stats.likes = data.likes;
-    if (data.comments !== undefined) stats.comments = data.comments;
-    if (data.shares !== undefined) stats.shares = data.shares;
-
-    console.log(`  📊 Facebook 数据: ${JSON.stringify(stats)}`);
-  } catch (e) {
-    console.log('  ⚠️ Facebook 数据提取失败:', e.message);
+  console.log(`  📊 Facebook 数据: ${JSON.stringify(stats)}`);
+  if (Object.keys(stats).length === 0) {
+    console.log('  ⚠️ 未提取到有效数据（页面结构可能已变化），不返回任何猜测值');
   }
 
   return Object.keys(stats).length > 0 ? stats : null;

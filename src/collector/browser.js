@@ -32,8 +32,9 @@ export async function openBitProfile(envId, apiKey) {
 /**
  * 关闭当前浏览器窗口并调用比特 API 关闭环境
  * @param {string} [envId] - 比特环境 ID，传此参数会额外调 API 关闭浏览器窗口
+ * @param {string} [apiKey] - 比特 API 密钥（设置了密钥的比特必须带上，否则关闭请求会被拒绝）
  */
-export async function closeBitProfile(envId) {
+export async function closeBitProfile(envId, apiKey = '') {
   if (browser) {
     try { await browser.close(); } catch (_) {}
     browser = null;
@@ -41,9 +42,12 @@ export async function closeBitProfile(envId) {
   }
   // 调用比特 API 关闭浏览器窗口，防止多个闹钟累积窗口
   if (envId) {
+    const key = apiKey || process.env.BIT_API_KEY || '';
     try {
-      await callBitAPI('/browser/close', { id: String(envId) }, '', false);
-      console.log(`  ✅ 比特环境 ${envId} 窗口已关闭`);
+      const ok = await callBitAPI('/browser/close', { id: String(envId) }, key, false);
+      // 原实现不看返回值就打印"已关闭"：API 拒绝时窗口其实还在，日志却在说谎
+      if (ok) console.log(`  ✅ 比特环境 ${envId} 窗口已关闭`);
+      else console.warn(`  ⚠️ 比特环境 ${envId} 关闭请求未确认（窗口可能仍在，请检查比特客户端）`);
     } catch (e) {
       console.warn(`  ⚠️ 关闭比特环境 ${envId} 失败: ${e.message}`);
     }
@@ -66,8 +70,9 @@ export async function closeAllBitProfiles(apiKey) {
   const key = apiKey || process.env.BIT_API_KEY || '';
   try {
     // 先尝试 /browser/closeAll（如果比特支持）
-    await callBitAPI('/browser/closeAll', {}, key, false);
-    console.log('  ✅ 已请求关闭所有比特窗口');
+    const ok = await callBitAPI('/browser/closeAll', {}, key, false);
+    if (ok) console.log('  ✅ 已请求关闭所有比特窗口');
+    else throw new Error('closeAll 未确认');
   } catch (_) {
     // /browser/closeAll 可能不存在，尝试 /browser/list 获取窗口列表
     try {

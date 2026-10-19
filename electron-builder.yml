@@ -5,24 +5,47 @@ directories:
 files:
   - electron/**/*
   - dist/**/*
-  - src/index.js
-  - src/notifier.js
-  - src/organizer.js
-  - src/scheduler.js
-  - src/db.js
+  # ⚠️ 必须是 src/*.js（不能逐个列具体文件）：
+  # db.js / index.js / notifier.js / organizer.js / scheduler.js
+  # + 共享模块 paths.js / fs-atomic.js
+  # 历史上就因为漏列 src/publisher 导致打包后 MODULE_NOT_FOUND（提交 518db10）。
+  # asarUnpack 只会「解包已包含的文件」，不会把漏掉的文件补进来。
+  - src/*.js
   - src/engine/**/*
   - src/platforms/**/*
   - src/collector/**/*
   - src/analyzer/**/*
   - src/publisher/**/*
+  # 账号页的两个脚本：界面是 spawn 它们来跑的，必须是真实磁盘文件（asar 里无法 spawn）
+  - scripts/tk-login-batch.mjs
+  - scripts/tk-profile-sync.mjs
+  - scripts/tk-profile-edit.mjs
+  # 环境窗口标题看护（主进程 spawn 的常驻 PowerShell，给窗口标题打 TKxx 前缀）
+  - scripts/env-title-watch.ps1
   - assets/**/*
   - package.json
 extraResources:
+  # ⚠️ 只发布「模板」配置，绝不能把开发机的个人配置打进安装包
+  # user.json 含真实 API Key、schedule.json 是个人闹钟、window-state.json 是窗口位置
   - from: config
     to: app.asar.unpacked/config
+    filter:
+      - "**/*"
+      - "!user.json"
+      - "!schedule.json"
+      - "!window-state.json"
+      - "!*.log"
+# 打包后校验：安装包里不允许出现任何 API Key（防再次泄露）
+afterPack: scripts/verify-no-secrets.cjs
 asarUnpack:
   - "**/*.node"
   - "src/**"
+  # 登录脚本要能被 spawn（asar 内部路径不能直接给 node 执行）
+  - "scripts/**"
+  # assets 必须解包：引擎子进程的 cwd 是 app.asar.unpacked，
+  # 它按 <cwd>/assets/bgm 找配乐。若 assets 只留在 app.asar 内部，
+  # 安装版会「静默无配乐」—— 不报错，只是成片没有背景音乐。
+  - "assets/**"
   - "package.json"
   - "node_modules/**"
 win:

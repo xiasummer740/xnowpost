@@ -1,168 +1,490 @@
 <template>
-  <div class="dashboard">
-    <h2>🏠 控制台</h2>
+  <div class="dashboard-page">
+    <!-- ===== 顶栏 ===== -->
+    <div class="x-head">
+      <h1>控制台</h1>
+      <span class="x-sub">
+        {{ store.status.running ? '引擎运行中' : store.status.schedulerActive ? '调度器执行中' : '引擎空闲' }} · {{ store.status.configured ? '已配置' : '未配置' }}
+      </span>
+      <span class="x-spacer"></span>
+      <button class="x-btn primary" @click="runAuto" :disabled="store.status.running || !store.status.configured">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.5 3 5.5 13.5H11l-.7 7.5L18.5 10H13z" />
+        </svg>
+        <span>立即生成（{{ isMorning ? '1视频+1图文' : '1视频' }}）</span>
+      </button>
+    </div>
 
-    <div class="status-bar">
-      <span>{{ statusText }}</span>
-      <div class="status-badges">
-        <span v-if="store.status.running" class="badge badge-engine">⏳ 引擎运行中</span>
-        <span v-else-if="store.status.schedulerActive" class="badge badge-scheduler">⏰ 调度器执行中</span>
-        <span v-else class="badge badge-idle">⚪ 空闲</span>
-        <span v-if="store.status.schedulerLastRun" class="badge badge-lastrun">🕐 {{ store.status.schedulerLastRun }}</span>
-      </div>
+    <!-- ===== 状态条 ===== -->
+    <div class="x-tip status-strip" :class="{ warn: !store.status.configured }">
+      <span
+        class="x-dot"
+        :class="store.status.configured ? (store.status.running || store.status.schedulerActive ? 'warn' : 'ok') : 'off'"
+      ></span>
+      <span class="status-text">
+        {{ !store.status.configured ? '还需要配置 API Key 才能开始工作' : store.status.running ? '引擎运行中…' : store.status.schedulerActive ? '调度器执行中' : '一切就绪' }}
+      </span>
+      <span class="status-badges">
+        <span v-if="store.status.running" class="x-tag brand">引擎运行中</span>
+        <span v-else-if="store.status.schedulerActive" class="x-tag warn">调度器执行中</span>
+        <span v-else class="x-tag mute">空闲</span>
+        <span v-if="store.status.schedulerLastRun" class="x-tag mute">{{ store.status.schedulerLastRun }}</span>
+      </span>
     </div>
 
     <!-- 未配置引导 -->
-    <div v-if="!store.status.configured" class="welcome-banner">
-      <h3>👋 欢迎使用 XNOWPost！</h3>
-      <p>需要先配置 API Key 才能开始生成内容：</p>
-      <ol>
-        <li><strong>DeepSeek</strong> — AI 生成文案（注册送额度）</li>
-        <li><strong>硅基流动</strong> — AI 生成图片（注册送 14 元）</li>
-        <li><strong>Telegram Bot</strong> — 可选，推送到频道</li>
-      </ol>
-      <p class="welcome-hint">👉 <router-link to="/config" class="welcome-link">去配置页填写</router-link></p>
-    </div>
-
-    <!-- 快捷生成（仅空闲时显示，引擎/调度器运行时隐藏） -->
-    <div v-if="store.status.configured && !store.status.running && !store.status.schedulerActive" class="quick-bar">
-      <div class="qb-main">
-        <input v-model="quickTopic" placeholder="输入主题（留空让 AI 自由发挥）..."
-               class="quick-input" @keyup.enter="quickGenerate" :disabled="batchMode" />
-        <button class="btn btn-primary quick-btn" @click="quickGenerate" :disabled="batchMode">
-          ⚡ 生成
-        </button>
-      </div>
-      <div class="qb-mode">
-        <span class="qb-toggle" :class="{ on: batchMode }" @click="batchMode = !batchMode">
-          📋 批量
+    <div v-if="!store.status.configured" class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3.2 14.4 9l6.3.5-4.8 4.1 1.5 6.2L12 16.6 6.6 19.8l1.5-6.2L3.3 9.5 9.6 9z" />
+          </svg>
         </span>
+        <h2>欢迎使用 XNOWPost</h2>
+        <span class="x-hint">还差一步就能开始生成</span>
+        <div class="x-spacer"></div>
+        <router-link to="/config" class="x-btn primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+          <span>去配置页填写</span>
+        </router-link>
       </div>
-    </div>
-
-    <!-- 批量生成面板 -->
-    <div v-if="batchMode && !store.status.running" class="batch-panel">
-      <div class="bp-hint">每行一个主题，按顺序依次生成</div>
-      <textarea v-model="batchTopics" class="bp-textarea" rows="4" placeholder="AI 视频创作技巧&#10;今日科技新闻&#10;产品使用教程"></textarea>
-      <div class="bp-actions">
-        <button class="btn btn-primary btn-sm" @click="runBatch" :disabled="!batchTopics.trim()">🚀 批量生成 ({{ topicCount }})</button>
-        <button class="btn btn-secondary btn-sm" @click="batchMode = false">取消</button>
-      </div>
-    </div>
-
-    <!-- 进度面板（引擎运行时显示） -->
-    <div v-if="store.status.running" class="progress-panel">
-      <div class="progress-header">
-        <span>{{ batchTotal > 0 ? `📋 批量生成 ${batchDone}/${batchTotal}` : '⏳ 正在生成...' }}</span>
-        <button class="btn btn-cancel" @click="handleCancel" :disabled="cancelling">
-          {{ cancelling ? '取消中...' : '✕ 取消' }}
-        </button>
-      </div>
-      <div class="progress-step-label">{{ currentStep.label }}</div>
-      <div class="progress-bar">
-        <div class="progress-fill" :style="{ width: currentStep.percent + '%' }"></div>
-      </div>
-      <div class="progress-log">
-        <div v-for="(log, i) in recentLogs" :key="i" class="progress-line" :class="log.type">
-          <span class="progress-line-time">{{ log.time.slice(-8) }}</span>
-          <span class="progress-line-msg">{{ log.message }}</span>
+      <div class="x-card-body">
+        <div class="x-tip warn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7.5v5.5M12 16.5h.01" />
+          </svg>
+          <span>
+            需要先配置 API Key 才能开始生成内容：<br />
+            <b>DeepSeek</b> — AI 生成文案（注册送额度）<br />
+            <b>硅基流动</b> — AI 生成图片（注册送 14 元）<br />
+            <b>Telegram Bot</b> — 可选，推送到频道
+          </span>
         </div>
       </div>
     </div>
 
-    <div class="actions">
-      <button class="btn btn-primary" @click="runAuto" :disabled="store.status.running || !store.status.configured">
-        🚀 立即生成（{{ isMorning ? '1视频+1图文' : '1视频' }}）
-      </button>
-      <button class="btn btn-secondary" @click="runVideo" :disabled="store.status.running || !store.status.configured">
-        🎬 仅视频
-      </button>
-      <button class="btn btn-secondary" @click="runPost" :disabled="store.status.running || !store.status.configured">
-        🟢 仅图文
-      </button>
-      <button class="btn btn-collect" @click="handleCollect" :disabled="collecting">
-        {{ collecting ? '⏳ 采集中...' : '📊 采集' }}
-      </button>
-      <button class="btn btn-publish" @click="handlePublish" :disabled="publishing">
-        {{ publishing ? '⏳ 发布中...' : '📤 发布' }}
-      </button>
+    <!-- 内容生成：本次生成的临时参数，不动持久设置；整张卡片就是截图拖拽区 -->
+    <div
+      class="x-card gen-card"
+      :class="{ dragging }"
+      @dragover.prevent="dragging = true"
+      @dragleave.prevent="dragging = false"
+      @drop.prevent="onDrop"
+    >
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z" />
+            <path d="m14 6 4 4" />
+          </svg>
+        </span>
+        <h2>内容生成</h2>
+        <span class="x-hint">只影响这一次生成</span>
+        <div class="x-spacer"></div>
+        <span v-if="gen.images.length" class="x-tag brand">截图 {{ gen.images.length }} 张</span>
+      </div>
+      <div class="x-card-body">
+        <!-- 主题 / 批量（仅已配置且空闲时可填） -->
+        <template v-if="store.status.configured && !store.status.running && !store.status.schedulerActive">
+          <div class="x-field gen-row">
+            <span class="x-label"><b>主题</b></span>
+            <input
+              v-model="quickTopic"
+              placeholder="输入主题（留空让 AI 自由发挥）…"
+              class="x-input"
+              @keyup.enter="quickGenerate"
+              :disabled="batchMode"
+            />
+            <div class="x-actions">
+              <button class="x-btn" @click="quickGenerate" :disabled="batchMode">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M13.5 3 5.5 13.5H11l-.7 7.5L18.5 10H13z" />
+                </svg>
+                <span>生成</span>
+              </button>
+              <button class="x-btn" :class="{ on: batchMode }" @click="batchMode = !batchMode">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9 6h11M9 12h11M9 18h11" />
+                  <circle cx="5" cy="6" r="1" />
+                  <circle cx="5" cy="12" r="1" />
+                  <circle cx="5" cy="18" r="1" />
+                </svg>
+                <span>批量</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 批量主题 -->
+          <div v-if="batchMode && !store.status.running" class="x-field gen-row">
+            <span class="x-label">
+              <b>批量主题</b>
+              <span class="x-tag mute">{{ topicCount }} 条</span>
+            </span>
+            <div class="stack">
+              <textarea v-model="batchTopics" class="x-textarea" rows="4" placeholder="AI 视频创作技巧&#10;今日科技新闻&#10;产品使用教程"></textarea>
+              <span class="res-line">每行一个主题，按顺序依次生成</span>
+            </div>
+            <div class="x-actions act-col">
+              <button class="x-btn" @click="runBatch" :disabled="!batchTopics.trim()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m8 5 11 7-11 7z" />
+                </svg>
+                <span>批量生成 ({{ topicCount }})</span>
+              </button>
+              <button class="x-btn" @click="batchMode = false"><span>取消</span></button>
+            </div>
+          </div>
+        </template>
+
+        <!-- 进度（引擎运行时显示） -->
+        <div v-if="store.status.running" class="progress-box">
+          <div class="progress-top">
+            <span class="spin"></span>
+            <span class="progress-title">{{ batchTotal > 0 ? `批量生成 ${batchDone}/${batchTotal}` : '正在生成…' }}</span>
+            <button class="x-btn danger" @click="handleCancel" :disabled="cancelling">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 6l12 12M18 6 6 18" />
+              </svg>
+              <span>{{ cancelling ? '取消中…' : '取消' }}</span>
+            </button>
+          </div>
+          <div class="progress-step-label">{{ currentStep.label }}</div>
+          <div class="progress-bar">
+            <div class="progress-fill" :style="{ width: currentStep.percent + '%' }"></div>
+          </div>
+          <div class="progress-log">
+            <div v-for="(log, i) in recentLogs" :key="i" class="progress-line" :class="log.type">
+              <span class="progress-line-time">{{ log.time.slice(-8) }}</span>
+              <span class="progress-line-msg">{{ log.message }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 配音语言 -->
+        <div class="x-field">
+          <span class="x-label"><b>配音</b></span>
+          <div class="seg">
+            <button class="seg-btn" :class="{ active: gen.voiceLang === 'zh' }" @click="gen.voiceLang = 'zh'">中文</button>
+            <button class="seg-btn" :class="{ active: gen.voiceLang === 'en' }" @click="gen.voiceLang = 'en'">English</button>
+            <button class="seg-btn" :class="{ active: gen.voiceLang === 'auto' }" @click="gen.voiceLang = 'auto'">跟随设置</button>
+          </div>
+        </div>
+
+        <!-- 画面（上传截图） -->
+        <div class="x-field gen-row">
+          <span class="x-label"><b>画面</b></span>
+          <div class="stack">
+            <span v-if="gen.images.length" class="res-line ok">
+              已选 {{ gen.images.length }} 张
+              <a class="link" @click="gen.images = []">清除</a>
+            </span>
+            <span v-else class="res-line">不上传 → 自动用免费实拍素材</span>
+          </div>
+          <div class="x-actions">
+            <button class="x-btn" @click="pickShots" :disabled="store.status.running">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+                <circle cx="9" cy="10" r="1.6" />
+                <path d="m4.5 17 4.6-4.4 3.2 3 2.6-2.4 4.1 4" />
+              </svg>
+              <span>{{ gen.images.length ? '继续添加' : '上传截图' }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="x-tip drop-tip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5.5M12 7.6h.01" />
+          </svg>
+          <span>可以直接把图片<b>拖进来</b>，或按 <b>Ctrl+V</b> 粘贴剪贴板里的截图{{ dragging ? ' —— 松手即可加入' : '' }}</span>
+        </div>
+
+        <!-- 主操作：同一行 .x-btn，只有「立即生成」是主按钮 -->
+        <div class="gen-actions">
+          <button class="x-btn primary" @click="runAuto" :disabled="store.status.running || !store.status.configured">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13.5 3 5.5 13.5H11l-.7 7.5L18.5 10H13z" />
+            </svg>
+            <span>立即生成（{{ isMorning ? '1视频+1图文' : '1视频' }}）</span>
+          </button>
+          <button class="x-btn" @click="runVideo" :disabled="store.status.running || !store.status.configured">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
+              <path d="m16 10.5 5-2.8v8.6l-5-2.8z" />
+            </svg>
+            <span>仅视频</span>
+          </button>
+          <button class="x-btn" @click="runPost" :disabled="store.status.running || !store.status.configured">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+              <circle cx="9" cy="10" r="1.6" />
+              <path d="m4.5 17 4.6-4.4 3.2 3 2.6-2.4 4.1 4" />
+            </svg>
+            <span>仅图文</span>
+          </button>
+          <button class="x-btn" @click="handleCollect" :disabled="collecting">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19V5M4 19h16" />
+              <path d="M8 16v-4M12.5 16V8M17 16v-2.5" />
+            </svg>
+            <span>{{ collecting ? '采集中…' : '采集' }}</span>
+          </button>
+          <button class="x-btn" @click="handlePublish" :disabled="publishing">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+              <path d="m9.5 13.5 4.2-4.2" />
+            </svg>
+            <span>{{ publishing ? '发布中…' : '发布' }}</span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 完成通知横幅 -->
-    <div v-if="showCompletionBanner" class="completion-banner">
-      <span class="cb-icon">✅</span>
-      <span class="cb-text">内容已生成完成！</span>
-      <button class="btn btn-publish btn-sm" @click="handlePublish" :disabled="publishing">
-        {{ publishing ? '⏳ 发布中...' : '📤 立即发布' }}
-      </button>
-      <button class="cb-close" @click="showCompletionBanner = false">✕</button>
+    <div v-if="showCompletionBanner" class="x-card done-banner">
+      <div class="done-inner">
+        <span class="done-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="m8.4 12.4 2.6 2.6 4.6-5.2" />
+          </svg>
+        </span>
+        <span class="done-text">内容已生成完成！</span>
+        <button class="x-btn primary" @click="handlePublish" :disabled="publishing">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+            <path d="m9.5 13.5 4.2-4.2" />
+          </svg>
+          <span>{{ publishing ? '发布中…' : '立即发布' }}</span>
+        </button>
+        <button class="x-mini" @click="showCompletionBanner = false" aria-label="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- 内容预览 -->
-    <div v-if="previewData" class="preview-card">
-      <div class="pc-hd">
-        <span>📄 最新生成内容</span>
-        <button class="cb-close" @click="previewData = null">✕</button>
+    <div v-if="previewData" class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 3.5h7l5 5v12H6z" />
+            <path d="M13 3.5v5h5" />
+          </svg>
+        </span>
+        <h2>最新生成内容</h2>
+        <div class="x-spacer"></div>
+        <button class="x-mini" @click="previewData = null" aria-label="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
       </div>
-      <div v-if="previewData.text" class="preview-text">{{ previewData.text.slice(0, 300) }}{{ previewData.text.length > 300 ? '...' : '' }}</div>
-      <div v-if="previewData.images?.length" class="preview-imgs">
-        <img v-for="(img, ii) in previewData.images.slice(0, 3)" :key="ii" :src="img.data" class="preview-img" />
+      <div class="x-card-body">
+        <div v-if="previewData.text" class="preview-text">{{ previewData.text.slice(0, 300) }}{{ previewData.text.length > 300 ? '...' : '' }}</div>
+        <div v-if="previewData.images?.length" class="preview-imgs">
+          <img v-for="(img, ii) in previewData.images.slice(0, 3)" :key="ii" :src="img.data" class="preview-img" />
+        </div>
       </div>
     </div>
 
-    <!-- 系统状态卡 -->
-    <div class="health-card">
-      <div class="hc-title">🖥️ 系统状态</div>
-      <div class="hc-grid">
-        <div class="hc-item">
-          <span class="hc-dot" :class="store.status.running ? 'hc-on' : 'hc-off'"></span>
-          <span class="hc-label">引擎</span>
-          <span class="hc-val">{{ store.status.running ? '运行中' : '空闲' }}</span>
+    <!-- 系统状态 -->
+    <div class="kpis">
+      <div class="kpi" :class="{ on: store.status.running }">
+        <div class="k">
+          <span class="x-dot" :class="store.status.running ? 'ok' : 'off'"></span>引擎
         </div>
-        <div class="hc-item">
-          <span class="hc-dot" :class="store.status.schedulerRunning ? 'hc-on' : 'hc-off'"></span>
-          <span class="hc-label">调度器</span>
-          <span class="hc-val">{{ store.status.schedulerRunning ? '运行中' : '已停止' }}</span>
+        <div class="v">
+          {{ store.status.running ? '运行中' : '空闲' }}
+          <span class="x-tag" :class="store.status.running ? 'brand' : 'mute'">{{ store.status.running ? '生成中' : '待命' }}</span>
         </div>
-        <div class="hc-item">
-          <span class="hc-dot" :class="store.status.recentErrors > 0 ? 'hc-err' : 'hc-on'"></span>
-          <span class="hc-label">错误</span>
-          <span class="hc-val">{{ store.status.recentErrors || 0 }} 条</span>
+      </div>
+      <div class="kpi" :class="{ on: store.status.schedulerRunning }">
+        <div class="k">
+          <span class="x-dot" :class="store.status.schedulerRunning ? 'ok' : 'off'"></span>调度器
         </div>
-        <div class="hc-item">
-          <span class="hc-dot" :class="store.status.configured ? 'hc-on' : 'hc-off'"></span>
-          <span class="hc-label">配置</span>
-          <span class="hc-val">{{ store.status.configured ? '已配置' : '未配置' }}</span>
+        <div class="v">
+          {{ store.status.schedulerRunning ? '运行中' : '已停止' }}
+          <small>{{ store.status.schedulerLastRun ? `上次 ${store.status.schedulerLastRun}` : '未执行' }}</small>
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          <span class="x-dot" :class="store.status.recentErrors > 0 ? 'warn' : 'ok'"></span>错误
+        </div>
+        <div class="v" :class="{ err: store.status.recentErrors > 0 }">
+          {{ store.status.recentErrors || 0 }} 条
+          <span class="x-tag" :class="store.status.recentErrors > 0 ? 'danger' : 'ok'">{{ store.status.recentErrors > 0 ? '需处理' : '无异常' }}</span>
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          <span class="x-dot" :class="store.status.configured ? 'ok' : 'warn'"></span>配置
+        </div>
+        <div class="v">
+          {{ store.status.configured ? '已配置' : '未配置' }}
+          <span class="x-tag" :class="store.status.configured ? 'ok' : 'warn'">{{ store.status.configured ? '就绪' : '缺 Key' }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 调度执行进度 -->
+    <div class="x-card sched-progress">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M12 7.5V12l3 2" />
+          </svg>
+        </span>
+        <h2>调度进度</h2>
+        <span class="x-hint">
+          <template v-if="sched.active">正在执行 · {{ sched.current?.label }} · 已用 {{ fmtElapsed(sched.current?.elapsedSec) }}</template>
+          <template v-else-if="sched.schedulerRunning">空闲 · 等下一个闹钟</template>
+          <template v-else>调度器未运行</template>
+        </span>
+        <div class="x-spacer"></div>
+        <span v-if="sched.active" class="x-tag brand">执行中</span>
+        <span v-else class="x-tag mute">待命</span>
+        <button class="x-mini" @click="refreshProgress" title="刷新">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 12a8 8 0 1 1-2.3-5.6" /><path d="M20 4v4.5h-4.5" />
+          </svg>
+        </button>
+      </div>
+      <div class="x-card-body">
+        <!-- 当前任务 + 阶段 -->
+        <template v-if="sched.active">
+          <div class="sp-row">
+            <div class="sp-stage" :class="sched.stage">
+              <span class="x-dot" :class="sched.stage === 'failed' ? 'warn' : sched.stage === 'published' ? 'ok' : 'ok'"></span>
+              <b>{{ sched.stageText || '已启动' }}</b>
+              <span v-if="sched.sessionDir" class="sp-dir">{{ sched.sessionDir }}</span>
+            </div>
+            <span class="x-spacer"></span>
+            <span class="sp-time" v-if="sched.current?.startedAt">开始 {{ sched.current.startedAt.slice(11) }}</span>
+            <span class="sp-time mono">{{ fmtElapsed(sched.current?.elapsedSec) }}</span>
+          </div>
+          <div class="sp-bar"><i></i></div>
+          <!-- 阶段线路 -->
+          <div class="sp-steps">
+            <span v-for="(st, i) in SCHED_STEPS" :key="st.key" class="sp-step" :class="{ on: stepReached(i), cur: stepCurrent(i) }">
+              {{ st.text }}
+            </span>
+          </div>
+        </template>
+
+        <!-- 空闲：接下来跑什么 -->
+        <template v-else>
+          <div v-if="sched.next.length" class="sp-next">
+            <div v-for="n in sched.next" :key="n.time + n.account" class="sp-next-item">
+              <span class="sp-t mono">{{ n.time }}</span>
+              <span class="sp-n">{{ n.label || n.mode }}</span>
+              <span v-if="n.account" class="x-tag mute">账号 {{ n.account }}</span>
+              <span class="x-spacer"></span>
+              <span class="sp-in">{{ fmtIn(n.inMinutes) }}</span>
+            </div>
+          </div>
+          <div v-else class="x-hint">没有启用的闹钟 —— 去「定时」页加一个</div>
+          <div v-if="sched.lastRun" class="sp-last">上次执行：{{ sched.lastRun }}</div>
+        </template>
+
+        <!-- 日志尾 -->
+        <div v-if="sched.tail.length" class="sp-log">
+          <div v-for="(l, i) in sched.tail.slice(-6)" :key="i" class="sp-line">{{ l }}</div>
         </div>
       </div>
     </div>
 
     <!-- 引擎连续失败警告 -->
-    <div v-if="consecutiveFailures >= 2" class="fail-warning">
-      <span>⚠️ 引擎已连续 {{ consecutiveFailures }} 次执行失败</span>
-      <button class="btn btn-secondary btn-sm" @click="dismissWarning">知道了</button>
+    <div v-if="consecutiveFailures >= 2" class="x-tip warn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.3 4.3 2.8 17.5A1.7 1.7 0 0 0 4.3 20h15.4a1.7 1.7 0 0 0 1.5-2.5L13.7 4.3a1.9 1.9 0 0 0-3.4 0z" />
+        <path d="M12 9.5v4M12 16.6h.01" />
+      </svg>
+      <span>引擎已连续 {{ consecutiveFailures }} 次执行失败</span>
+      <button class="x-mini" @click="dismissWarning">知道了</button>
     </div>
 
     <!-- 待发布卡片 -->
-    <div v-if="pendingItems.length > 0" class="publish-card">
-      <div class="pc-header">
-        <span>📤 待发布内容</span>
-        <span class="pc-count">{{ pendingItems.length }} 项</span>
+    <div v-if="pendingItems.length > 0" class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+            <path d="m9.5 13.5 4.2-4.2" />
+          </svg>
+        </span>
+        <h2>待发布内容</h2>
+        <span class="x-hint">{{ pendingItems.length }} 项</span>
+        <div class="x-spacer"></div>
+        <button v-if="pendingItems.length > PENDING_LIMIT" class="x-mini" @click="pendingExpanded = !pendingExpanded">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path v-if="pendingExpanded" d="m6 15 6-6 6 6" />
+            <path v-else d="m6 9 6 6 6-6" />
+          </svg>
+          <span>{{ pendingExpanded ? '只看最近' : `展开全部` }}</span>
+        </button>
+        <button class="x-mini" @click="openDir">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h9A1.5 1.5 0 0 1 21.5 10v8A1.5 1.5 0 0 1 20 19.5H4.5A1.5 1.5 0 0 1 3 18z" />
+          </svg>
+          <span>打开文件夹</span>
+        </button>
       </div>
-      <div v-for="(item, i) in pendingItems" :key="i" class="pc-row">
-        <span class="pc-type">{{ item.type === 'video' ? '🎬' : '🟢' }}</span>
-        <span class="pc-title">{{ item.title }}</span>
-        <span class="pc-date">{{ item.date }} {{ item.time }}</span>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 78px">类型</th>
+            <th>标题</th>
+            <th style="width: 168px; text-align: right">生成时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(item, i) in shownPending" :key="i">
+            <td>
+              <span v-if="item.type === 'video'" class="x-tag brand">视频</span>
+              <span v-else class="x-tag mute">图文</span>
+            </td>
+            <td><span class="pc-title">{{ item.title }}</span></td>
+            <td class="num">{{ item.date }} {{ item.time }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="!pendingExpanded && pendingItems.length > PENDING_LIMIT" class="pc-hint">
+        还有 {{ pendingItems.length - PENDING_LIMIT }} 项未显示
       </div>
-      <button class="btn btn-publish btn-sm pc-btn" @click="handlePublish" :disabled="publishing">
-        {{ publishing ? '⏳ 发布中...' : '📤 发布全部' }}
-      </button>
+      <div class="card-foot">
+        <button class="x-btn" @click="handlePublish" :disabled="publishing">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+            <path d="m9.5 13.5 4.2-4.2" />
+          </svg>
+          <span>{{ publishing ? '发布中…' : '发布全部' }}</span>
+        </button>
+      </div>
     </div>
 
-    <!-- 费用概览 -->
-    <div v-if="store.latestCost" class="cost-card">
-      <span class="cost-label">💰 最近费用</span>
-      <div class="cost-items">
+    <!-- 最近费用 -->
+    <div v-if="store.latestCost" class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="6" width="18" height="12" rx="2.2" />
+            <path d="M3 10h18" />
+          </svg>
+        </span>
+        <h2>最近费用</h2>
+        <span class="x-hint">本条内容的模型消耗</span>
+        <div class="x-spacer"></div>
+      </div>
+      <div class="cost-body">
         <div class="cost-item">
           <span class="cost-metric">DeepSeek</span>
           <span class="cost-value">¥{{ store.latestCost.deepseek?.toFixed(4) || '0' }}</span>
@@ -179,71 +501,132 @@
     </div>
 
     <!-- 采集数据概览 -->
-    <div v-if="collectData" class="collect-card">
-      <div class="collect-header">
-        <span>📊 数据概览</span>
-        <span class="collect-date">{{ collectData.date }}</span>
+    <div v-if="collectData" class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19V5M4 19h16" />
+            <path d="M8 16v-4M12.5 16V8M17 16v-2.5" />
+          </svg>
+        </span>
+        <h2>数据概览</h2>
+        <span class="x-hint">{{ collectData.date }}</span>
+        <div class="x-spacer"></div>
       </div>
-      <div class="collect-grid">
-        <div v-for="(stats, platform) in collectData.platforms" :key="platform" class="platform-card">
-          <div class="platform-name">{{ platformNames[platform] || platform }}</div>
-          <div class="platform-stats">
-            <div v-for="(val, key) in stats" :key="key" class="stat-item">
-              <span class="stat-label">{{ metricLabels[key] || key }}</span>
-              <span class="stat-value">{{ formatNum(val) }}</span>
+      <div class="x-card-body">
+        <div class="plat-grid">
+          <div v-for="(stats, platform) in collectData.platforms" :key="platform" class="plat-card">
+            <div class="plat-name">{{ platformNames[platform] || platform }}</div>
+            <div class="plat-stats">
+              <div v-for="(val, key) in stats" :key="key" class="stat-item">
+                <span class="stat-label">{{ metricLabels[key] || key }}</span>
+                <span class="stat-value">{{ formatNum(val) }}</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 今日产出（缩略图卡片） -->
-    <div class="today-preview" v-if="store.status.todayDir">
-      <div class="section-header">
-        <h3>📅 今日产出 {{ store.status.todayDir }}</h3>
-        <button class="btn btn-small" @click="openDir">📂 打开目录</button>
+    <!-- 今日产出 -->
+    <div class="x-card" v-if="store.status.todayDir">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3.5" y="5" width="17" height="15" rx="2.2" />
+            <path d="M3.5 10h17M8 3.5v3M16 3.5v3" />
+          </svg>
+        </span>
+        <h2>今日产出</h2>
+        <span class="x-hint">
+          {{ store.status.todayDir }}<template v-if="todayItems.length"> · {{ todayItems.length }} 条</template>
+        </span>
+        <div class="x-spacer"></div>
+        <button v-if="todayItems.length > TODAY_LIMIT" class="x-mini" @click="todayExpanded = !todayExpanded">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path v-if="todayExpanded" d="m6 15 6-6 6 6" />
+            <path v-else d="m6 9 6 6 6-6" />
+          </svg>
+          <span>{{ todayExpanded ? '收起' : `显示全部 ${todayItems.length} 条` }}</span>
+        </button>
+        <button class="x-mini" @click="openDir">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h9A1.5 1.5 0 0 1 21.5 10v8A1.5 1.5 0 0 1 20 19.5H4.5A1.5 1.5 0 0 1 3 18z" />
+          </svg>
+          <span>打开目录</span>
+        </button>
       </div>
-
-      <!-- 骨架屏：加载中 -->
-      <div v-if="todayLoading" class="skeleton-list">
-        <div v-for="n in 2" :key="n" class="skeleton-card">
-          <div class="skeleton-thumb"></div>
-          <div class="skeleton-lines">
-            <div class="skeleton-line w-60"></div>
-            <div class="skeleton-line w-30"></div>
+      <div class="x-card-body">
+        <!-- 骨架屏：加载中 -->
+        <div v-if="todayLoading" class="skeleton-list">
+          <div v-for="n in 2" :key="n" class="skeleton-card">
+            <div class="skeleton-thumb"></div>
+            <div class="skeleton-lines">
+              <div class="skeleton-line w-60"></div>
+              <div class="skeleton-line w-30"></div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div v-else-if="todayItems.length === 0" class="empty-box">
-        <span class="empty-icon">📭</span>
-        <span>还没有产出，点「立即生成」开始</span>
-      </div>
-
-      <div v-else v-for="item in todayItems" :key="item.id" class="item-card">
-        <div class="item-thumb">
-          <img v-if="item.thumbnail" :src="item.thumbnail" class="thumb-img" />
-          <span v-else class="thumb-placeholder">{{ item.type === 'video' ? '🎬' : '🟢' }}</span>
+        <div v-else-if="todayItems.length === 0" class="x-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.5 12.5 6 5.5h12l2.5 7v5.5a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z" />
+            <path d="M3.5 12.5H9l1 2.5h4l1-2.5h5.5" />
+          </svg>
+          <span>还没有产出，点「立即生成」开始</span>
         </div>
-        <div class="item-body">
-          <div class="item-title">{{ item.title_zh }}</div>
-          <div class="item-meta">
-            {{ item.type === 'video' ? '🎬 视频' : '🟢 图文' }}
-            <span v-if="item.time" class="item-time">· {{ item.time }}</span>
-            <span class="item-status">· {{ item.status === 'ready' ? '✅ 完成' : '⏳ 待合成' }}</span>
+
+        <div v-else class="today-list">
+          <div v-for="item in shownToday" :key="item.id" class="item-card">
+            <div class="item-thumb">
+              <img v-if="item.thumbnail" :src="item.thumbnail" class="thumb-img" />
+              <span v-else class="thumb-ph">
+                <svg v-if="item.type === 'video'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
+                  <path d="m16 10.5 5-2.8v8.6l-5-2.8z" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+                  <circle cx="9" cy="10" r="1.6" />
+                  <path d="m4.5 17 4.6-4.4 3.2 3 2.6-2.4 4.1 4" />
+                </svg>
+              </span>
+            </div>
+            <div class="item-body">
+              <div class="item-title">{{ item.title_zh }}</div>
+              <div class="item-meta">
+                <span>{{ item.type === 'video' ? '视频' : '图文' }}</span>
+                <span v-if="item.time">· {{ item.time }}</span>
+                <span class="item-status" :class="item.status === 'ready' ? 'ok' : 'warn'">· {{ item.status === 'ready' ? '完成' : '待合成' }}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
     <!-- 日志区域（非运行状态折叠） -->
-    <div class="logs-section">
-      <div class="section-header" @click="logExpanded = !logExpanded" style="cursor:pointer;">
-        <h3>📜 最近日志</h3>
-        <span class="log-toggle">{{ logExpanded || store.status.running ? '收起' : '展开' }} {{ logExpanded || store.status.running ? '▲' : '▼' }}</span>
+    <div class="x-card">
+      <div class="x-card-head log-head" @click="logExpanded = !logExpanded">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4.5" width="18" height="15" rx="2.2" />
+            <path d="m7.5 10 2.5 2.5-2.5 2.5M13 15.5h4" />
+          </svg>
+        </span>
+        <h2>最近日志</h2>
+        <span class="x-hint">{{ store.logs.length }} 条</span>
+        <div class="x-spacer"></div>
+        <span class="x-mini">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path v-if="logExpanded || store.status.running" d="m6 15 6-6 6 6" />
+            <path v-else d="m6 9 6 6 6-6" />
+          </svg>
+          <span>{{ logExpanded || store.status.running ? '收起' : '展开' }}</span>
+        </span>
       </div>
       <div v-if="logExpanded || store.status.running || store.logs.length > 0" class="log-container" :class="{ collapsed: !logExpanded && !store.status.running }">
-        <div v-if="store.logs.length === 0 && !store.status.running" class="empty-log">
+        <div v-if="store.logs.length === 0 && !store.status.running" class="x-empty">
           暂无日志，触发「立即生成」后会显示在这里
         </div>
         <template v-else>
@@ -259,9 +642,77 @@
 
 <script setup>
 import { useAppStore } from '../stores/app.js';
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
 
 const store = useAppStore();
+
+// 本次生成的临时选项：只影响这一条，不写进配置
+const gen = reactive({
+  voiceLang: 'auto',   // 'auto' | 'zh' | 'en'
+  images: [],          // 当场选的截图绝对路径
+});
+const dragging = ref(false);
+
+// ⚠️ 必须转成纯数据再交给 IPC。
+// gen 是 reactive，gen.images 是 Proxy；ipcRenderer.invoke 用结构化克隆，
+// 克隆 Proxy 会直接抛 "An object could not be cloned"，请求根本发不出去 ——
+// 现象就是"点立即生成毫无反应"（已踩过，别再直接传 gen.images）。
+function genOptions() {
+  return { voiceLang: String(gen.voiceLang || 'auto'), images: Array.from(gen.images || [], String) };
+}
+
+// 统一的加入入口：去重，避免同一张图重复用
+function addShots(paths) {
+  const list = (paths || []).filter(p => typeof p === 'string' && p.trim());
+  if (!list.length) return;
+  gen.images = [...new Set([...gen.images, ...list])];
+}
+
+// 拖拽：Electron 32+ 的 File 已无 .path，必须走 webUtils
+function onDrop(e) {
+  dragging.value = false;
+  const files = [...(e.dataTransfer?.files || [])];
+  const paths = files
+    .map(f => { try { return window.xnowpost.getPathForFile(f); } catch (_) { return ''; } })
+    .filter(p => p && /\.(png|jpe?g|webp|bmp)$/i.test(p));
+  if (!paths.length) {
+    store.addLog('warning', '拖进来的文件里没有可用的图片（png/jpg/webp/bmp）');
+    return;
+  }
+  addShots(paths);
+  store.addLog('info', `📎 已加入 ${paths.length} 张截图`);
+}
+
+// 粘贴：剪贴板图片没有路径，交给主进程落盘后返回路径
+async function onPaste(e) {
+  const items = [...(e.clipboardData?.items || [])];
+  const item = items.find(it => it.kind === 'file' && String(it.type).startsWith('image/'));
+  if (!item) return;
+  const file = item.getAsFile();
+  if (!file) return;
+  try {
+    const buf = await file.arrayBuffer();
+    const ext = (String(file.type).split('/')[1] || 'png').replace('jpeg', 'jpg');
+    const r = await window.xnowpost.savePastedImage(buf, ext);
+    if (r && r.ok && r.path) {
+      addShots([r.path]);
+      store.addLog('info', '📋 已粘贴 1 张截图');
+    } else {
+      store.addLog('error', '粘贴截图失败: ' + (r && r.message ? r.message : '未知错误'));
+    }
+  } catch (err) {
+    store.addLog('error', '粘贴截图失败: ' + ((err && err.message) || err));
+  }
+}
+
+async function pickShots() {
+  try {
+    const r = await window.xnowpost.pickImages();
+    if (r && r.ok && Array.isArray(r.paths) && r.paths.length) addShots(r.paths);
+  } catch (e) {
+    store.addLog('error', '选择截图失败: ' + ((e && e.message) || e));
+  }
+}
 const todayItems = ref([]);
 const todayLoading = ref(true);
 const isMorning = new Date().getHours() < 12;
@@ -279,6 +730,79 @@ const showCompletionBanner = ref(false);
 const previewData = ref(null);
 const pendingItems = ref([]);
 const consecutiveFailures = ref(0);
+
+// 列表默认只显示最近几条 —— 一屏塞 55 条谁都不想翻。
+// 想看全部就展开，或者直接点「打开文件夹」。
+const PENDING_LIMIT = 5;
+const TODAY_LIMIT = 4;
+const pendingExpanded = ref(false);
+const todayExpanded = ref(false);
+
+// ── 调度执行进度（控制台「调度进度」卡片）──
+const sched = ref({
+  schedulerRunning: false,
+  active: false,
+  current: null,
+  next: [],
+  tail: [],
+  sessionDir: '',
+  stage: '',
+  stageText: '',
+  lastRun: '',
+});
+const SCHED_STEPS = [
+  { key: 'generating', text: '生成内容' },
+  { key: 'publishing', text: '上传发布' },
+  { key: 'published', text: '完成' },
+];
+let schedTimer = null;
+
+function fmtElapsed(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m < 60) return r ? `${m} 分 ${r} 秒` : `${m} 分`;
+  return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+}
+function fmtIn(min) {
+  const m = Math.max(0, Number(min) || 0);
+  if (m < 1) return '马上';
+  if (m < 60) return `${m} 分钟后`;
+  return `${Math.floor(m / 60)} 小时 ${m % 60} 分后`;
+}
+function stepIndex() {
+  const i = SCHED_STEPS.findIndex((s) => s.key === sched.value.stage);
+  if (i >= 0) return i;
+  return sched.value.stage === 'failed' ? 1 : 0;
+}
+function stepReached(i) {
+  return i <= stepIndex();
+}
+function stepCurrent(i) {
+  return i === stepIndex() && sched.value.stage !== 'failed';
+}
+async function refreshProgress() {
+  try {
+    if (!window.xnowpost.getScheduleProgress) return;
+    const r = await window.xnowpost.getScheduleProgress();
+    if (r) sched.value = r;
+  } catch (_) {
+    /* 单次失败忽略 */
+  }
+}
+
+// 待发布按「日期 + 场次」倒序（主进程返回的是目录顺序，不保证时间先后）
+const sortedPending = computed(() => [...pendingItems.value].sort(
+  (a, b) => `${b.date}-${b.session}`.localeCompare(`${a.date}-${a.session}`),
+));
+const shownPending = computed(() => pendingExpanded.value
+  ? sortedPending.value
+  : sortedPending.value.slice(0, PENDING_LIMIT));
+
+const shownToday = computed(() => todayExpanded.value
+  ? todayItems.value
+  : todayItems.value.slice(0, TODAY_LIMIT));
 
 function dismissWarning() { consecutiveFailures.value = 0; }
 let refreshTimer = null;
@@ -328,11 +852,18 @@ async function loadThumbnails(items) {
 
 async function refreshToday() {
   todayLoading.value = true;
-  const history = await window.xnowpost.getHistory();
-  const today = history.find(h => h.date === store.status.todayDir);
-  todayItems.value = today ? today.items : [];
-  todayLoading.value = false;
-  if (todayItems.value.length) loadThumbnails(todayItems.value);
+  try {
+    const history = await window.xnowpost.getHistory();
+    const today = history.find(h => h.date === store.status.todayDir);
+    todayItems.value = today ? today.items : [];
+    if (todayItems.value.length) loadThumbnails(todayItems.value);
+  } catch (e) {
+    // 读取失败时保留已有列表，不把界面清空；这里不用 addLog，
+    // 因为 15s 轮询也会调用它，失败时会刷屏
+    console.error('读取今日产出失败:', e);
+  } finally {
+    todayLoading.value = false;
+  }
 }
 
 async function handleCancel() {
@@ -345,12 +876,12 @@ function quickGenerate() {
   const topic = quickTopic.value?.trim() || '';
   store.addLog('info', topic ? `📝 主题: ${topic}` : '📝 未指定主题，AI 自由发挥');
   store.addLog('info', '🚀 开始生成...');
-  store.runEngine('auto', topic);
+  store.runEngine('auto', topic, genOptions());
 }
 
-async function runAuto() { await store.runEngine('auto'); await refreshToday(); }
-async function runVideo() { await store.runEngine('video'); await refreshToday(); }
-async function runPost() { await store.runEngine('post'); await refreshToday(); }
+async function runAuto() { await store.runEngine('auto', '', genOptions()); await refreshToday(); }
+async function runVideo() { await store.runEngine('video', '', genOptions()); await refreshToday(); }
+async function runPost() { await store.runEngine('post', '', genOptions()); await refreshToday(); }
 
 const topicCount = computed(() => batchTopics.value.trim() ? batchTopics.value.trim().split('\n').filter(Boolean).length : 0)
 
@@ -364,11 +895,16 @@ async function runBatch() {
   for (let i = 0; i < topics.length; i++) {
     const topic = topics[i].trim()
     store.addLog('info', `📋 [${i+1}/${topics.length}] ${topic}`)
-    await store.runEngine('auto', topic)
+    // 用 runEngine 返回的显式 cancelled 标记判断是否中断；
+    // 绝不能再用 store.status.running —— 它在 runEngine 的 finally 里必然为 false，
+    // 会让任何 ≥2 条的批量任务都在第 1 条后 break（P1-1）
+    const result = await store.runEngine('auto', topic, genOptions())
     batchDone.value = i + 1
     await refreshToday()
-    // 检查是否被取消
-    if (!store.status.running && i < topics.length - 1) break
+    if (result?.cancelled) {
+      store.addLog('warning', `批量生成已取消（已完成 ${batchDone.value}/${topics.length}）`)
+      break
+    }
   }
   batchTotal.value = 0
   batchDone.value = 0
@@ -438,314 +974,424 @@ async function refreshStatus() {
 }
 
 onMounted(async () => {
-  await refreshToday();
-  store.loadCost();
-  await refreshCollectData();
-  loadPendingItems();
+  // ⚠️ 初始化必须整体隔离异常：一旦这里抛出，后面的定时器与订阅就全都不会注册，
+  // Dashboard 的实时更新会被永久禁用（P2-3）
+  try {
+    await refreshToday();
+    store.loadCost();
+    await refreshCollectData();
+    loadPendingItems();
+  } catch (e) {
+    store.addLog('error', '控制台初始化失败: ' + ((e && e.message) || e));
+  }
+
+  // 调度进度：5 秒一刷（当前任务 / 阶段 / 日志尾）
+  refreshProgress();
+  schedTimer = setInterval(() => {
+    if (document.hidden) return;
+    refreshProgress();
+  }, 5000);
+
   prevRunning = store.status.running;
+  // 轮询：单次异常只跳过本轮，不能打断后续轮询
   refreshTimer = setInterval(async () => {
     if (document.hidden) return;
-    tickCount++;
+    try {
+      tickCount++;
 
-    // light status check each tick
-    const status = await window.xnowpost.getEngineStatus().catch(() => null);
-    if (!status) return;
-    const wasRunning = prevRunning;
-    prevRunning = status.running;
-    Object.assign(store.status, status);
-    // load consecutive failure count
-    window.xnowpost.getFailureCount().then(c => { consecutiveFailures.value = c }).catch(() => {})
+      // light status check each tick
+      const status = await window.xnowpost.getEngineStatus().catch(() => null);
+      if (!status) return;
+      const wasRunning = prevRunning;
+      prevRunning = status.running;
+      Object.assign(store.status, status);
+      // load consecutive failure count
+      window.xnowpost.getFailureCount().then(c => { consecutiveFailures.value = c }).catch(() => {})
 
-    // engine just finished -> refresh output + cost + show banner
-    if (wasRunning && !status.running) {
-      refreshToday();
-      store.loadCost();
-      showCompletionBanner.value = true;
-      loadPendingItems();
-      loadLatestPreview();
-    }
+      // engine just finished -> refresh output + cost + show banner
+      if (wasRunning && !status.running) {
+        refreshToday();
+        store.loadCost();
+        showCompletionBanner.value = true;
+        loadPendingItems();
+        loadLatestPreview();
+      }
 
-    // refresh output/collect every 60s (4th tick)
-    if (tickCount % 4 === 0) {
-      if (!status.running) refreshToday();
-      refreshCollectData();
+      // refresh output/collect every 60s (4th tick)
+      if (tickCount % 4 === 0) {
+        if (!status.running) refreshToday();
+        refreshCollectData();
+      }
+    } catch (_) {
+      // 单次轮询失败忽略
     }
   }, 15000);
 
   // 监听引擎结构化进度
-  cleanupProgress = window.xnowpost.onProgress((p) => {
-    currentStep.value = { label: p.label, percent: p.percent };
-  });
+  try {
+    cleanupProgress = window.xnowpost.onProgress((p) => {
+      if (!p) return;
+      currentStep.value = { label: p.label, percent: p.percent };
+    });
+  } catch (e) {
+    store.addLog('warning', '进度订阅注册失败: ' + ((e && e.message) || e));
+  }
 
   // 监听调度器状态即时推送（不依赖 15s 轮询）
-  cleanupStatusPush = window.xnowpost.onEngineStatusPush((status) => {
-    const wasRunning = prevRunning;
-    prevRunning = status.running;
-    Object.assign(store.status, status);
-    if (wasRunning && !status.running) {
-      refreshToday();
-      store.loadCost();
-      loadPendingItems();
-    }
-  });
+  try {
+    cleanupStatusPush = window.xnowpost.onEngineStatusPush((status) => {
+      if (!status) return;
+      const wasRunning = prevRunning;
+      prevRunning = status.running;
+      Object.assign(store.status, status);
+      if (wasRunning && !status.running) {
+        refreshToday();
+        store.loadCost();
+        loadPendingItems();
+      }
+    });
+  } catch (e) {
+    store.addLog('warning', '调度器状态订阅注册失败: ' + ((e && e.message) || e));
+  }
 });
 
 onUnmounted(() => {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
   if (cleanupProgress) { cleanupProgress(); cleanupProgress = null; }
   if (cleanupStatusPush) { cleanupStatusPush(); cleanupStatusPush = null; }
+  window.removeEventListener('paste', onPaste);
 });
+
+// Ctrl+V 粘贴截图：只在有图片内容时生效，普通文字粘贴不受影响
+window.addEventListener('paste', onPaste);
 </script>
 
 <style scoped>
-h2 { font-size: 24px; margin-bottom: 20px; }
-h3 { font-size: 16px; color: #94a3b8; margin: 0; }
-.section-header { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 12px; }
-.btn-small { padding: 6px 14px; background: #334155; color: #e2e8f0; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; }
-.btn-small:hover { background: #475569; }
+/* ── 页面骨架 ── */
+.dashboard-page { display: flex; flex-direction: column; gap: 14px; }
 
-.status-bar {
-  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
-  padding: 12px 16px; background: #1e293b; border-radius: 8px; margin-bottom: 20px; font-size: 14px;
-}
-.status-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
-.badge {
-  font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 5px;
-  white-space: nowrap;
-}
-.badge-engine { color: #f59e0b; background: #f59e0b15; animation: pulse 1.5s infinite; }
-.badge-idle { color: #64748b; background: #33415533; }
-.badge-scheduler { color: #60a5fa; background: #2563eb15; animation: pulse 1.5s infinite; }
-.badge-lastrun { color: #94a3b8; background: #33415533; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+/* 顶栏里当按钮用的 router-link */
+a.x-btn { text-decoration: none; }
 
-.actions { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
-.btn {
-  padding: 12px 24px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
-  cursor: pointer; transition: all 0.2s;
-}
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-primary { background: linear-gradient(135deg, #f59e0b, #d97706); color: #0f172a; }
-.btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(245,158,11,0.3); }
-.btn-secondary { background: #334155; color: #e2e8f0; }
-.btn-secondary:hover:not(:disabled) { background: #475569; }
-.btn-publish { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
-.btn-publish:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
-.btn-publish { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; display: inline-flex; align-items: center; gap: 6px; }
-.btn-publish:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
-.btn-collect { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
-.btn-collect:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
+/* ── 状态条 ── */
+.status-strip { align-items: center; }
+.status-strip .x-dot { flex: 0 0 7px; }
+.status-strip .x-dot.warn { animation: pulse 1.5s infinite; }
+.status-text { flex: 1; min-width: 0; }
+.status-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.status-badges .x-tag.mute { font-family: var(--font-mono); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-/* 进度面板 */
-.progress-panel {
-  background: #1e293b; border: 1px solid #f59e0b44; border-radius: 12px;
-  padding: 20px; margin-bottom: 20px; animation: fadeIn 0.3s ease;
+/* ── KPI 小卡（系统状态） ── */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.kpi {
+  background: var(--bg2);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  padding: 13px 15px;
+  min-width: 0;
 }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
-.progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #f59e0b; }
-.btn-cancel { padding: 6px 16px; background: #ef4444; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; display: flex; align-items: center; gap: 6px; }
-.btn-cancel:hover:not(:disabled) { background: #dc2626; }
-.btn-cancel:disabled { opacity: 0.7; cursor: not-allowed; }
-.btn-cancel:disabled::before { content: ''; width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: cancel-spin 0.6s linear infinite; display: inline-block; }
-@keyframes cancel-spin { to { transform: rotate(360deg); } }
+.kpi .k { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-3); }
+.kpi .v {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 6px; font-size: 20px; font-weight: 680; letter-spacing: 0.3px;
+  color: var(--text); min-width: 0;
+}
+.kpi .v small {
+  font-size: 11px; font-weight: 500; color: var(--text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.kpi .v .x-tag { flex: 0 0 auto; }
+.kpi.on .v { color: var(--ok); }
+.kpi .v.err { color: var(--danger); }
+.x-card-head .x-tag { flex: 0 0 auto; }
 
-.progress-step-label { font-size: 13px; color: #94a3b8; margin-bottom: 8px; }
-.progress-bar { height: 6px; background: #334155; border-radius: 3px; margin-bottom: 12px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, #f59e0b, #ef4444); border-radius: 3px; transition: width 0.5s ease; min-width: 2%; }
-.progress-log { max-height: 120px; overflow-y: auto; background: #0f172a; border-radius: 6px; padding: 8px 10px; }
-.progress-line { display: flex; gap: 8px; font-size: 11px; font-family: monospace; padding: 2px 0; }
-.progress-line-time { color: #475569; min-width: 60px; }
-.progress-line-msg { color: #64748b; }
-.progress-line.success .progress-line-msg { color: #22c55e; }
-.progress-line.error .progress-line-msg { color: #ef4444; }
-.progress-line.warning .progress-line-msg { color: #f59e0b; }
+/* ── 字段行：操作列放宽（生成 / 批量、上传截图） ── */
+.x-field.gen-row { grid-template-columns: 150px minmax(0, 1fr) 186px; }
+.x-actions.act-col { flex-direction: column; align-items: stretch; }
+.stack { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.res-line { font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+.res-line.ok { color: var(--ok); }
+.res-line .link { margin-left: 6px; color: var(--text-2); text-decoration: underline; cursor: pointer; }
+.res-line .link:hover { color: var(--brand); }
 
-/* 欢迎引导 */
-.welcome-banner {
-  background: linear-gradient(135deg, #f59e0b15, #ef444415);
-  border: 1px solid #f59e0b44; border-radius: 12px;
-  padding: 24px; margin-bottom: 20px; animation: fadeIn 0.3s ease;
+/* ── 分段选择（配音语言） ── */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--stroke-2);
+  border-radius: var(--r-sm);
+  overflow: hidden;
 }
-.welcome-banner h3 { font-size: 20px; color: #f59e0b; margin: 0 0 8px; }
-.welcome-banner p { font-size: 13px; color: #94a3b8; margin: 8px 0; }
-.welcome-banner ol { margin: 12px 0; padding-left: 20px; }
-.welcome-banner li { margin: 6px 0; color: #cbd5e1; font-size: 13px; }
-.welcome-hint { margin-top: 12px; }
-.welcome-link { color: #f59e0b; text-decoration: underline; }
+.seg-btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  font-family: var(--font-ui);
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--stroke);
+  cursor: pointer;
+  transition: background 0.16s, color 0.16s;
+}
+.seg-btn:last-child { border-right: 0; }
+.seg-btn:hover { background: var(--bg3); color: var(--text); }
+.seg-btn.active { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
 
-/* 快捷生成 */
-.quick-bar {
-  display: flex; gap: 10px; margin-bottom: 20px;
-  padding: 16px; background: #1e293b; border-radius: 12px; border: 1px solid #334155;
-}
-.quick-input {
-  flex: 1; padding: 12px 16px; border: 1px solid #334155; border-radius: 8px;
-  background: #0f172a; color: #e2e8f0; font-size: 14px; outline: none; transition: border-color 0.2s;
-}
-.quick-input:focus { border-color: #f59e0b; }
-.quick-input:disabled { opacity: 0.4; }
-.quick-btn { padding: 12px 28px; white-space: nowrap; }
+/* 批量开关的开启态 */
+.x-btn.on { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
 
-/* 快捷栏 + 批量切换 */
-.qb-main { display: flex; gap: 10px; flex: 1; }
-.qb-mode { display: flex; align-items: center; }
-.qb-toggle {
-  padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
-  background: #334155; color: #64748b; cursor: pointer; transition: all 0.15s;
-  white-space: nowrap; user-select: none;
+/* 卡片底部提示条 + 主操作行 */
+.drop-tip { margin-top: 10px; }
+.drop-tip b { color: var(--text); font-weight: 600; }
+.gen-actions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed var(--stroke);
 }
-.qb-toggle:hover { color: #94a3b8; }
-.qb-toggle.on { background: #2563eb44; color: #60a5fa; border: 1px solid #2563eb44; }
+/* 拖拽悬停：整张卡片高亮，给用户明确反馈 */
+.gen-card.dragging { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+/* ── 进度（在生成卡片内） ── */
+.x-btn.danger { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.spin {
+  width: 13px; height: 13px; flex: 0 0 13px; border-radius: 50%;
+  border: 2px solid var(--stroke-2); border-top-color: var(--brand);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.progress-box {
+  margin: 8px 0 4px; padding: 12px;
+  background: var(--bg1); border: 1px solid var(--stroke); border-radius: var(--r-sm);
+}
+.progress-top { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+.progress-title { flex: 1; font-size: 13px; font-weight: 600; color: var(--text); }
+.progress-step-label { font-size: 12.5px; color: var(--text-2); margin-bottom: 8px; }
+.progress-bar { height: 6px; border-radius: 3px; background: var(--bg3); overflow: hidden; margin-bottom: 10px; }
+.progress-fill { height: 100%; min-width: 2%; border-radius: 3px; background: var(--brand); transition: width 0.5s ease; }
+.progress-log {
+  max-height: 132px; overflow-y: auto; padding: 8px 10px;
+  background: var(--bg0); border: 1px solid var(--stroke); border-radius: var(--r-sm);
+}
+.progress-line { display: flex; gap: 10px; font-family: var(--font-mono); font-size: 11px; line-height: 1.65; }
+.progress-line-time { flex: 0 0 62px; color: var(--text-3); }
+.progress-line-msg { color: var(--text-2); word-break: break-word; }
+.progress-line.success .progress-line-msg { color: var(--ok); }
+.progress-line.error .progress-line-msg { color: var(--danger); }
+.progress-line.warning .progress-line-msg { color: var(--warn); }
 
-/* 批量生成面板 */
-.batch-panel {
-  padding: 16px; background: #1e293b; border: 1px solid #3b82f644; border-radius: 12px;
-  margin-bottom: 20px; animation: fadeIn 0.2s ease;
-}
-.bp-hint { font-size: 12px; color: #64748b; margin-bottom: 10px; }
-.bp-textarea {
-  width: 100%; padding: 12px; border: 1px solid #334155; border-radius: 8px;
-  background: #0f172a; color: #e2e8f0; font-size: 14px; font-family: inherit;
-  outline: none; resize: vertical; box-sizing: border-box;
-}
-.bp-textarea:focus { border-color: #3b82f6; }
-.bp-actions { display: flex; gap: 10px; margin-top: 10px; }
-.btn-sm { padding: 8px 16px; font-size: 12px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+/* ── 完成横幅 ── */
+.done-inner { display: flex; align-items: center; gap: 10px; padding: 12px 16px; }
+.done-ic { display: flex; align-items: center; }
+.done-ic svg { width: 17px; height: 17px; stroke: var(--ok); fill: none; stroke-width: 1.9; }
+.done-text { flex: 1; font-size: 13px; font-weight: 600; color: var(--ok); }
 
-/* 费用卡片 */
-.cost-card {
-  background: linear-gradient(135deg, #065f4622, #05966922);
-  border: 1px solid #05966944; border-radius: 12px;
-  padding: 14px 20px; margin-bottom: 20px;
-  display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+/* ── 内容预览 ── */
+.preview-text {
+  margin: 10px 0 8px; font-size: 12.5px; line-height: 1.6;
+  color: var(--text-2); max-height: 132px; overflow-y: auto;
 }
-.cost-label { font-size: 13px; color: #94a3b8; white-space: nowrap; }
-.cost-items { display: flex; gap: 20px; flex: 1; }
-.cost-item { display: flex; flex-direction: column; gap: 2px; }
-.cost-metric { font-size: 11px; color: #64748b; }
-.cost-value { font-size: 16px; font-weight: 700; color: #34d399; }
-.cost-total .cost-value { color: #f59e0b; font-size: 18px; }
+.preview-imgs { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 4px; }
+.preview-img {
+  width: 78px; height: 78px; object-fit: cover;
+  border-radius: var(--r-sm); border: 1px solid var(--stroke);
+}
 
-/* 今日产出 — 缩略图卡片 */
+/* ── 卡片底部工具行 / 提示条里的按钮 ── */
+.card-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px 12px; border-top: 1px solid var(--stroke); }
+.x-tip .x-mini { margin-left: auto; }
+.x-tip b { color: var(--text); font-weight: 600; }
+
+/* ── 最近费用 ── */
+.cost-body { display: flex; flex-wrap: wrap; gap: 26px; padding: 12px 16px 14px; }
+.cost-item { display: flex; flex-direction: column; gap: 3px; }
+.cost-metric { font-size: 11px; color: var(--text-3); }
+.cost-value { font-size: 15px; font-weight: 680; color: var(--text); font-family: var(--font-mono); }
+.cost-total .cost-value { font-size: 17px; color: var(--brand); }
+
+/* ── 采集数据概览 ── */
+.plat-grid { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0 4px; }
+.plat-card {
+  flex: 1 1 160px; min-width: 150px;
+  background: var(--bg1); border: 1px solid var(--stroke);
+  border-radius: var(--r-sm); padding: 10px 12px;
+}
+.plat-name { font-size: 12px; font-weight: 650; color: var(--text); margin-bottom: 6px; }
+.plat-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.stat-item { display: flex; gap: 5px; font-size: 11px; }
+.stat-label { color: var(--text-3); }
+.stat-value { color: var(--text-2); font-weight: 600; font-family: var(--font-mono); }
+
+/* ── 今日产出 ── */
+.today-list { display: flex; flex-direction: column; gap: 8px; padding: 10px 0 4px; }
 .item-card {
-  display: flex; gap: 14px; padding: 12px; background: #1e293b; border-radius: 10px;
-  margin-bottom: 8px; transition: background 0.15s;
+  display: flex; align-items: center; gap: 12px; padding: 10px;
+  background: var(--bg1); border: 1px solid var(--stroke);
+  border-radius: var(--r-sm); transition: background 0.16s, border-color 0.16s;
 }
-.item-card:hover { background: #334155; }
+.item-card:hover { background: var(--bg3); border-color: var(--stroke-2); }
 .item-thumb {
-  width: 64px; height: 64px; border-radius: 8px; overflow: hidden;
-  background: #0f172a; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  width: 56px; height: 56px; flex: 0 0 56px; border-radius: var(--r-sm);
+  overflow: hidden; background: var(--bg0);
+  display: flex; align-items: center; justify-content: center;
 }
 .thumb-img { width: 100%; height: 100%; object-fit: cover; }
-.thumb-placeholder { font-size: 24px; opacity: 0.5; }
-.item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
-.item-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-meta { font-size: 13px; color: #64748b; margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
-.item-time { color: #94a3b8; font-weight: 500; }
+.thumb-ph { display: flex; align-items: center; justify-content: center; }
+.thumb-ph svg { width: 20px; height: 20px; stroke: var(--text-3); fill: none; stroke-width: 1.7; }
+.item-body { flex: 1; min-width: 0; }
+.item-title { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-meta {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-top: 4px; font-size: 11.5px; color: var(--text-3);
+}
+.item-status.ok { color: var(--ok); }
+.item-status.warn { color: var(--warn); }
 
-/* skeleton + shimmer in global style.css */
+/* 骨架屏：覆盖全局 style.css 的旧配色 */
+.skeleton-card { background: var(--bg1); border: 1px solid var(--stroke); border-radius: var(--r-sm); }
+.skeleton-thumb, .skeleton-line { background: var(--bg3); }
+.x-empty svg { width: 26px; height: 26px; stroke: var(--text-3); fill: none; stroke-width: 1.6; }
 
-/* 完成通知横幅 */
-.completion-banner {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 16px; background: #065f4622; border: 1px solid #22c55e44;
-  border-radius: 10px; margin-bottom: 16px; animation: fadeIn 0.3s ease;
+/* ── 表格（待发布列表） ── */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  text-align: left; font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  padding: 9px 16px; background: var(--bg1); border-bottom: 1px solid var(--stroke);
 }
-.cb-icon { font-size: 20px; }
-.cb-text { flex: 1; font-size: 14px; font-weight: 600; color: #22c55e; }
-.cb-close {
-  background: none; border: none; color: #64748b; cursor: pointer;
-  font-size: 16px; padding: 2px 6px; border-radius: 4px;
+tbody td { padding: 9px 16px; border-bottom: 1px solid var(--stroke); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--bg3); }
+.pc-title {
+  display: block; max-width: 100%;
+  font-size: 12.5px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cb-close:hover { background: #334155; color: #e2e8f0; }
+td.num { text-align: right; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); }
+.pc-hint { padding: 8px 16px 0; font-size: 11px; color: var(--text-3); }
 
-/* 内容预览卡片 */
-.preview-card {
-  background: #1e293b; border: 1px solid #f59e0b44; border-radius: 10px;
-  padding: 12px 16px; margin-bottom: 16px; animation: fadeIn 0.3s ease;
+/* ── 日志区域（可折叠） ── */
+.log-head { cursor: pointer; }
+.log-container {
+  border-top: 1px solid var(--stroke);
+  padding: 10px 16px 12px;
+  max-height: 420px;
+  overflow-y: auto;
 }
-.pc-hd { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; font-weight: 700; color: #f59e0b; }
-.preview-text { font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 8px; max-height: 120px; overflow-y: auto; }
-.preview-imgs { display: flex; gap: 8px; flex-wrap: wrap; }
-.preview-img { width: 80px; height: 80px; object-fit: cover; border-radius: 6px; border: 1px solid #334155; }
-
-/* 系统状态卡 */
-.health-card {
-  background: #1e293b; border: 1px solid #334155; border-radius: 10px;
-  padding: 12px 16px; margin-bottom: 16px;
+.log-container.collapsed { display: none; }
+.log-line { display: flex; gap: 12px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7; }
+.log-time { flex: 0 0 142px; color: var(--text-3); }
+.log-msg { color: var(--text-2); word-break: break-word; }
+.log-line.success .log-msg { color: var(--ok); }
+.log-line.error .log-msg { color: var(--danger); }
+.log-line.warning .log-msg { color: var(--warn); }
+/* ── 调度进度卡片 ── */
+.sched-progress .x-card-body { padding-top: 12px; }
+.sp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
 }
-.hc-title { font-size: 13px; font-weight: 700; color: #94a3b8; margin-bottom: 10px; }
-.hc-grid { display: flex; gap: 16px; flex-wrap: wrap; }
-.hc-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.fail-warning {
-  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
-  background: #7f1d1d33; border: 1px solid #ef444444; border-radius: 10px;
-  margin-bottom: 16px; font-size: 13px; color: #fca5a5; animation: fadeIn 0.3s ease;
+.sp-stage {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
 }
-.hc-dot { width: 8px; height: 8px; border-radius: 50%; }
-.hc-on { background: #22c55e; }
-.hc-off { background: #64748b; }
-.hc-err { background: #ef4444; animation: pulse 1.5s infinite; }
-.hc-label { color: #64748b; }
-.hc-val { color: #e2e8f0; font-weight: 600; }
-
-/* 待发布卡片 */
-.publish-card {
-  background: #1e3a5f22; border: 1px solid #2563eb44; border-radius: 10px;
-  padding: 12px 16px; margin-bottom: 16px;
+.sp-stage b { font-weight: 640; }
+.sp-stage.failed b { color: var(--danger); }
+.sp-dir {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  background: var(--bg3);
+  border-radius: 5px;
+  padding: 1px 6px;
 }
-.pc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; font-weight: 700; color: #60a5fa; }
-.pc-count { font-size: 11px; color: #64748b; font-weight: 400; background: #0f172a; padding: 2px 8px; border-radius: 10px; }
-.pc-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #33415533; font-size: 13px; }
-.pc-row:last-of-type { border-bottom: none; }
-.pc-type { flex-shrink: 0; }
-.pc-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; }
-.pc-date { font-size: 11px; color: #64748b; flex-shrink: 0; }
-.pc-btn { margin-top: 8px; width: 100%; justify-content: center; }
-
-/* 采集数据概览 */
-.collect-card {
-  background: linear-gradient(135deg, #1e3a5f22, #1e40af22);
-  border: 1px solid #2563eb44; border-radius: 12px;
-  padding: 14px 20px; margin-bottom: 20px;
+.sp-time { font-size: 11.5px; color: var(--text-3); }
+.sp-time.mono { font-family: var(--font-mono); color: var(--text-2); }
+.sp-bar {
+  position: relative;
+  height: 4px;
+  border-radius: 3px;
+  background: var(--bg3);
+  overflow: hidden;
+  margin: 10px 0 9px;
 }
-.collect-header {
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: 14px; font-weight: 600; color: #e2e8f0; margin-bottom: 10px;
+.sp-bar i {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 38%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  animation: sp-slide 1.5s ease-in-out infinite;
 }
-.collect-date { font-size: 12px; color: #64748b; font-weight: 400; }
-.collect-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.platform-card {
-  background: #0f172a; border-radius: 8px; padding: 10px 12px;
-  min-width: 140px; flex: 1;
+@keyframes sp-slide {
+  0% { left: -40%; }
+  100% { left: 100%; }
 }
-.platform-name { font-size: 12px; font-weight: 700; color: #60a5fa; margin-bottom: 6px; }
-.platform-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; }
-.stat-item { display: flex; gap: 4px; font-size: 11px; }
-.stat-label { color: #64748b; }
-.stat-value { color: #e2e8f0; font-weight: 600; }
-
-/* empty-box in global style.css */
-
-/* 日志区域（可折叠） */
-.logs-section { margin-top: 24px; }
-.log-toggle { font-size: 12px; color: #64748b; cursor: pointer; user-select: none; }
-.log-toggle:hover { color: #94a3b8; }
-.log-container { transition: all 0.3s ease; overflow: hidden; }
-.log-container.collapsed {
-  max-height: 0; margin: 0; padding: 0; opacity: 0;
+.sp-steps {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
-:not(.collapsed).log-container {
-  max-height: 600px; background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 12px;
+.sp-step {
+  font-size: 11px;
+  color: var(--text-3);
+  border: 1px solid var(--stroke);
+  background: var(--bg1);
+  border-radius: 20px;
+  padding: 2px 9px;
 }
-.empty-log { padding: 20px; text-align: center; color: #64748b; font-size: 13px; }
-.log-line {
-  display: flex; gap: 12px; padding: 3px 0; font-size: 13px; font-family: monospace;
-  border-bottom: 1px solid #1e293b22;
+.sp-step.on {
+  color: var(--text-2);
+  border-color: var(--stroke-2);
 }
-.log-time { color: #64748b; min-width: 140px; flex-shrink: 0; }
-.log-msg { color: #94a3b8; }
-.log-line.success .log-msg { color: #22c55e; }
-.log-line.error .log-msg { color: #ef4444; }
-.log-line.warning .log-msg { color: #f59e0b; }
+.sp-step.cur {
+  color: var(--brand);
+  border-color: rgba(255, 46, 91, 0.5);
+  background: var(--brand-soft);
+  font-weight: 640;
+}
+.sp-next { display: flex; flex-direction: column; gap: 6px; }
+.sp-next-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg1);
+  border: 1px solid var(--stroke);
+}
+.sp-t {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text);
+  font-size: 13px;
+}
+.sp-n { color: var(--text-2); }
+.sp-in { font-size: 11.5px; color: var(--text-3); }
+.sp-last { margin-top: 8px; font-size: 11.5px; color: var(--text-3); }
+.sp-log {
+  margin-top: 11px;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--stroke);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--text-3);
+  overflow: hidden;
+}
+.sp-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sp-line:last-child { color: var(--text-2); }
 </style>

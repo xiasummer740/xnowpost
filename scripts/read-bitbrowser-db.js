@@ -1,7 +1,17 @@
 import initSqlJs from 'sql.js';
 import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
-const buf = fs.readFileSync('C:/Users/Administrator/AppData/Roaming/BitBrowser/db.sqlite');
+// 不要硬编码用户名/盘符 —— 用 %APPDATA% 推导（本仓库是公开的）
+const dbFile = process.argv[2]
+  || path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'BitBrowser', 'db.sqlite');
+if (!fs.existsSync(dbFile)) {
+  console.error('未找到比特浏览器数据库: ' + dbFile);
+  console.error('可传入路径: node scripts/read-bitbrowser-db.js <db.sqlite 路径>');
+  process.exit(1);
+}
+const buf = fs.readFileSync(dbFile);
 const SQL = await initSqlJs.default();
 const db = new SQL.Database(buf);
 

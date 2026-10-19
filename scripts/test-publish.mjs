@@ -10,9 +10,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
 // 配置
-const ENV_ID = '31bea5b146af40f58b2a6eae0e2c2a6b';
+// ⚠️ 不要硬编码环境 ID / 会话路径 —— 本仓库是公开的。用参数或环境变量传入：
+//    node scripts/test-publish.mjs <bitEnvId> [sessionPath]
+const ENV_ID = process.argv[2] || process.env.XNOWPOST_BIT_ENV_ID;
+if (!/^[0-9a-f]{32}$/i.test(ENV_ID || '')) {
+  console.error('用法: node scripts/test-publish.mjs <32位比特环境ID> [会话目录]  (或设置 XNOWPOST_BIT_ENV_ID)');
+  process.exit(1);
+}
 const API_KEY = '';
-const SESSION_PATH = path.join(ROOT, 'output', '2026-06-20', 'pm_1756');
+const SESSION_PATH = process.argv[3]
+  ? path.resolve(process.argv[3])
+  : path.join(ROOT, 'output', '2026-06-20', 'pm_1756');
 
 async function main() {
   // 删除 .published 标记（如果有）
