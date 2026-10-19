@@ -22,6 +22,21 @@ import {
 import { parseLogText, mergeLogLines, dropEchoedSchedulerLines } from './lib/log-lines.js';
 import { pickLogsToPrune } from './lib/log-prune.js';
 import { pickOldDateDirs, isCleanable } from '../src/output-retention.js';
+// 发布候选扫描（唯一实现：只认当天 / 跳 FAILED / 跳已发布 / 默认 3 条）
+import { scanUnpublished, summarizeSkips, DEFAULT_MAX_PER_RUN } from '../src/output-scan.js';
+// 凭据/关键状态的加密备份（纯逻辑 + 单测在 tests/unit/secrets-backup.test.js）
+import {
+  SECRET_FILES,
+  SECRET_KEEP_DAYS,
+  BUNDLE_FILE,
+  buildBundle,
+  parseBundle,
+  summarizeBundle,
+  isEmptyBundle,
+  missingSecretLabels,
+  planRestore,
+  describeBytes,
+} from '../src/secrets-backup.js';
 
 /** 日志页一次最多渲染多少行（再多 DOM 会卡；文件本身不截断，界面可以「显示更早」） */
 const LOG_LINE_LIMIT = 6000;
@@ -122,6 +137,42 @@ function killAllChildren() {
   engineProcess = null;
   schedulerProcess = null;
   collectProcess = null;
+}
+
+// === 失败通知（2026-10-19 全盘审查 P0-3）===
+// 原来唯一的对外告警是 `scheduler.js` 的 sendAlert()，只走 Telegram，
+// 而配置里的 tgBotToken 是空的 → 定时任务失败/被跳过时**没有任何人会知道**，
+// 只能等用户自己打开界面翻日志（2026-10-18 掉登录空跑 24 分钟就是这么漏掉的）。
+// 这里用系统通知（Windows 右下角 toast）补上，不依赖 TG。
+let lastNotifyKey = '';
+let lastNotifyAt = 0;
+const NOTIFY_DEDUPE_MS = 10 * 60 * 1000;
+
+function notifyFailure({ title = 'XNOWPost 任务异常', body = '', key = '' } = {}) {
+  try {
+    if (!electron.Notification || !electron.Notification.isSupported()) return false;
+    const now = Date.now();
+    const k = key || `${title}|${body}`;
+    // 同一件事 10 分钟内只弹一次（一次失败会在日志里刷好几行）
+    if (k === lastNotifyKey && now - lastNotifyAt < NOTIFY_DEDUPE_MS) return false;
+    lastNotifyKey = k;
+    lastNotifyAt = now;
+    const n = new electron.Notification({ title, body: String(body || '').slice(0, 400) });
+    n.on('click', () => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      } catch (_) { /* 窗口已销毁 */ }
+    });
+    n.show();
+    addLog('warning', `🔔 已弹系统通知：${title}`);
+    return true;
+  } catch (e) {
+    addLog('warning', `⚠️ 系统通知发送失败：${e.message}`);
+    return false;
+  }
 }
 
 // 全局未捕获异常处理（写入日志文件，防止静默崩溃）
@@ -1294,7 +1345,7 @@ function setupIPC() {
     out.tail = lines.slice(-12);
 
     const START_RE = /🚀\s*(.+?)\s*任务开始/;
-    const END_RE = /(✅\s*.+?完成|❌\s*.+?失败|⏱️|⏭️\s*跳过|进程结束)/;
+    const END_RE = /(✅\s*.+?完成|❌\s*.+?失败|⚠️\s*.+?未确认|⏱️|⏭️\s*跳过|进程结束)/;
     let startIdx = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
       if (START_RE.test(lines[i])) {
@@ -1909,6 +1960,9 @@ function setupIPC() {
           password: row.password,
           email: row.email,
           emailPassword: row.emailPassword,
+          // 2FA 密钥必须落盘（2026-10-19 审查发现：这里以前解析了却**没写**，
+          // 于是账号文件一删、密钥就再也找不回来，掉登录后无法重登）
+          totpSecret: row.totpSecret || (state[target] || {}).totpSecret || '',
           region: row.region || (state[target] || {}).region || '',
           at: new Date().toISOString(),
         };
@@ -2102,15 +2156,19 @@ function setupIPC() {
   });
 
   // 备份 cookie（换机器 / 环境坏了可直接导入恢复，不用重登）
+  // 2026-10-19 审查：原来的实现先 ensureDir 再请求，全部失败时只留下**空目录**、
+  // 日志里一个字都没有 → 用户以为备份好了，其实 0/10 环境。
+  // 现在：只在真有结果时建目录；没有 sessionid 视为失败；逐个环境打 ✅/❌；14 天自动清。
   ipcMain.handle('accounts:backup', async (_e, envs) => {
     const cfg = loadConfig();
     const base = String(cfg.foxApiBase || 'http://127.0.0.1:8000/api/v1').replace(/\/+$/, '');
     const axios = (await import('axios')).default;
-    const day = new Date().toISOString().slice(0, 10);
+    const day = localDateStr();
     const dir = path.join(accountDirs().backups, day);
-    fs.ensureDirSync(dir);
     const targets = Array.isArray(envs) && envs.length ? envs : (cfg.accounts || []).map((a) => a.bitEnvId);
     const out = [];
+    const gotCookies = {};
+    const SESSION_NAMES = ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard'];
     for (const env of targets) {
       if (!env) continue;
       try {
@@ -2119,12 +2177,30 @@ function setupIPC() {
           timeout: 12000,
         });
         if (!Array.isArray(r.data)) throw new Error('返回格式不对');
-        fs.writeFileSync(path.join(dir, `${env}.json`), JSON.stringify(r.data, null, 2));
-        out.push({ env, ok: true, count: r.data.length });
+        if (!r.data.length) throw new Error('cookie 是空的（这个环境没登录？）');
+        const hasSession = r.data.some((c) => c && SESSION_NAMES.includes(String(c.name)));
+        if (!hasSession) throw new Error('没有 sessionid，导出了也恢复不了登录态');
+        fs.ensureDirSync(dir);
+        const file = path.join(dir, `${env}.json`);
+        fs.writeFileSync(file, JSON.stringify(r.data, null, 2));
+        const bytes = fs.statSync(file).size;
+        if (!bytes) throw new Error('写出来是 0 字节');
+        gotCookies[env] = r.data;
+        out.push({ env, ok: true, count: r.data.length, bytes });
+        addLog('success', `✅ 备份 ${env} cookies（${r.data.length} 项，${(bytes / 1024).toFixed(1)} KB）`);
       } catch (e) {
         out.push({ env, ok: false, message: String(e.message || e) });
+        addLog('error', `❌ 备份 ${env} cookies 失败：${e.message}`);
       }
     }
+    // 导出的 cookie 同时并进今天的加密凭据包（明文那份留在 backups/cookies/<日期>/，14 天清掉）
+    if (Object.keys(gotCookies).length) autoBackupSecrets({ cookies: gotCookies });
+    pruneBackupDateDirs(accountDirs().backups, 'cookie 备份');
+    const okCount = out.filter((x) => x.ok).length;
+    addLog(
+      okCount ? 'info' : 'warning',
+      `${okCount ? '📦' : '⚠️'} cookie 备份完成：${okCount}/${out.length} 个环境成功${okCount ? '' : '（全部失败，看看环境是否已启动/已登录）'}`,
+    );
     return { ok: true, dir, out };
   });
 
@@ -2184,39 +2260,17 @@ function setupIPC() {
   });
 
   // 获取待发布内容列表
+  // 待发布列表（界面展示用）：走 src/output-scan.js 统一实现，
+  // 这样"列表里有什么"和"发布器会发什么"永远是同一套规则（以前是三份不同的实现）。
   ipcMain.handle('publish:pending', () => {
     const outDir = path.join(DATA_DIR, 'output');
     if (!fs.existsSync(outDir)) return [];
-
-    const dateDirs = fs.readdirSync(outDir)
-      .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
-      .sort().reverse();
-
-    const pending = [];
-    for (const dd of dateDirs) {
-      const dp = path.join(outDir, dd);
-      const sessions = fs.readdirSync(dp).filter(s => fs.statSync(path.join(dp, s)).isDirectory());
-      for (const s of sessions) {
-        const sp = path.join(dp, s);
-        if (fs.existsSync(path.join(sp, '.published'))) continue;
-        const files = fs.readdirSync(sp);
-        const hasVideo = files.some(f => f.endsWith('.mp4'));
-        const hasTxt = files.includes('文案.txt');
-        if (!hasVideo && !files.some(f => f.endsWith('.png'))) continue;
-        let title = s;
-        if (hasTxt) {
-          try {
-            const txt = fs.readFileSync(path.join(sp, '文案.txt'), 'utf-8');
-            title = txt.split('\n')[0].substring(0, 40) || s;
-          } catch (_) {}
-        }
-        pending.push({
-          date: dd, session: s, path: sp, type: hasVideo ? 'video' : 'post',
-          title,
-          time: s.match(/(\d{2})(\d{2})$/)?.[1] + ':' + s.match(/(\d{2})(\d{2})$/)?.[2] || '',
-        });
-      }
-    }
+    const { pending } = scanUnpublished({
+      outputDir: outDir,
+      today: localDateStr(),
+      onlyToday: false,   // 展示全部（含老会话），但要标出来
+      maxCount: 0,
+    });
     return pending;
   });
 
@@ -2274,7 +2328,7 @@ function setupIPC() {
     // 每轮发布条数上限：积压几十条时一次全推出去，容易被判定为批量营销。
     // 默认 3 条，可用 opts.maxCount 或环境变量覆盖（0/负数=不限）。
     const envMax = Number(process.env.XNOWPOST_PUBLISH_MAX_PER_RUN);
-    const defaultMax = Number.isFinite(envMax) && envMax > 0 ? envMax : 3;
+    const defaultMax = Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_PER_RUN;
     const reqMax = Number(opts?.maxCount);
     const maxCount = Number.isFinite(reqMax) && reqMax > 0 ? reqMax : defaultMax;
     try {
@@ -2291,53 +2345,28 @@ function setupIPC() {
       const outDir = path.join(DATA_DIR, 'output');
       if (!fs.existsSync(outDir)) return { ok: true, published: 0 };
 
-      const dateDirs = fs.readdirSync(outDir)
-        .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
-        .sort().reverse();
-
-      const unpublished = [];
-      const skipped = [];
-      for (const dd of dateDirs) {
-        const dp = path.join(outDir, dd);
-        const sessions = fs.readdirSync(dp).filter(s => fs.statSync(path.join(dp, s)).isDirectory());
-        for (const s of sessions) {
-          const sp = path.join(dp, s);
-          const files = fs.readdirSync(sp);
-          if (!files.some(f => f.endsWith('.mp4')) || !files.includes('文案.txt')) continue;
-
-          // ① 已有 .published 标记 → 绝不重复上传。
-          //    confirmed === false 表示「点过 Post 但结果未确认」（P2-5 新语义），
-          //    这种情况**同样不能重传**（重传会产生重复作品），但要在日志里说清楚。
-          if (files.includes('.published')) {
-            let m = {};
-            try { m = fs.readJsonSync(path.join(sp, '.published')); } catch (_) { /* ignore */ }
-            skipped.push(`${s}: ${m.confirmed === false ? '已点击发布但结果未确认（不重复上传，请人工核对）' : '已发布'}`);
-            continue;
-          }
-
-          // ② 引擎留下的 FAILED 标记（P1-4 新增契约）
-          if (files.includes('FAILED')) {
-            let f = {};
-            try { f = fs.readJsonSync(path.join(sp, 'FAILED')); } catch (_) { /* ignore */ }
-            // 视频其实已经发出去了 → 重跑会产生重复作品
-            if (f.published === true) { skipped.push(`${s}: 失败标记显示已发布`); continue; }
-            // 视频合成阶段失败 → mp4 可能是半成品/占位图拼的，不允许发布
-            const stage = String(f.stage || '');
-            if (stage.includes('视频')) {
-              skipped.push(`${s}: 合成失败(${stage || '未知'})，mp4 不可信，请先重跑生成`);
-              continue;
-            }
-            // 只有发布相关阶段失败 → 视频本身没问题，正是应该重试的场景
-            addLog('info', `  ♻️ ${s} 上次失败于「${stage || '未知'}」，本轮重试发布`);
-          }
-
-          unpublished.push({ date: dd, session: s, path: sp });
-        }
+      // 扫描走 src/output-scan.js（唯一实现）：默认只发当天、跳过 FAILED、跳过已发布/未确认，
+      // 老的积压会话只在显式 --any-date / includeOld 时才进候选（2026-10-19 P0-1）。
+      const { items: candidates, skipped: skippedRows } = scanUnpublished({
+        outputDir: outDir,
+        today: localDateStr(),
+        onlyToday: opts?.includeOld === true ? false : true,
+        maxCount: 0,
+      });
+      const unpublished = candidates;
+      if (opts?.includeOld === true) {
+        addLog('warning', '⚠️ 本次允许发布非当天的旧会话（includeOld=true），请确认内容仍然有效');
       }
 
-      if (skipped.length) {
-        addLog('info', `⏭️ 跳过 ${skipped.length} 条：`);
-        for (const s of skipped) addLog('info', `   · ${s}`);
+      if (skippedRows.length) {
+        // 积压几十条时会有一堆 old-date（旧日期）/published，按原因聚合成一行，
+        // 只把"需要人管"的明细（未确认 / 合成失败 / 标记损坏）逐条打出来。
+        addLog('info', `⏭️ 跳过 ${skippedRows.length} 条：${summarizeSkips(skippedRows)}`);
+        const needAttention = skippedRows.filter((s) => ['unconfirmed', 'failed-synthesize', 'failed-broken'].includes(s.reason));
+        for (const s of needAttention.slice(0, 8)) {
+          addLog('warning', `   · ${s.date}/${s.session}: ${s.detail || s.reason}`);
+        }
+        if (needAttention.length > 8) addLog('warning', `   · …另有 ${needAttention.length - 8} 条同类，见「运行日志」`);
       }
 
       if (unpublished.length === 0) {
@@ -2375,11 +2404,17 @@ function setupIPC() {
       pushPublishTimes();
       if (failures.length) {
         addLog('warning', `⚠️ 本轮成功 ${published} 条，失败 ${failures.length} 条`);
+        notifyFailure({
+          title: `XNOWPost 手动发布：成功 ${published} 条，失败 ${failures.length} 条`,
+          body: failures.slice(0, 3).join('\n'),
+          key: `publish-run|${failures.length}|${failures[0] || ''}`,
+        });
         return { ok: published > 0, published, failures, message: `${failures.length} 条失败` };
       }
       return { ok: true, published };
     } catch (err) {
       addLog('error', `❌ 发布失败: ${err.message}`);
+      notifyFailure({ title: 'XNOWPost 手动发布失败', body: err.message, key: `publish-run|${err.message}` });
       return { ok: false, message: err.message };
     }
   });
@@ -2681,6 +2716,52 @@ function setupIPC() {
   });
 
   // 获取趋势数据（最近 N 天）
+  // 某一天的「发布侧」结果（日报页用，2026-10-19 P0-3 配套）：
+  // 数据型日报在账号没数据时全是「—」，但"今天发了 N 条、失败 M 条"永远是实话，
+  // 而且这是用户每天真正想知道的东西。
+  // 成功来自发布账本（publish-ledger.jsonl），失败/未确认来自会话目录里的 FAILED 标记。
+  ipcMain.handle('report:publishDay', (_event, day) => {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(day || '')) ? String(day) : localDateStr();
+    const out = { date, published: 0, unconfirmed: 0, failed: 0, failures: [], accounts: [], sessions: 0 };
+    try {
+      const ledger = path.join(DATA_DIR, 'data', 'publish-ledger.jsonl');
+      if (fs.existsSync(ledger)) {
+        for (const line of fs.readFileSync(ledger, 'utf-8').split('\n')) {
+          if (!line.trim()) continue;
+          let row = null;
+          try { row = JSON.parse(line); } catch (_) { continue; }
+          const d = row.date || String(row.at || '').slice(0, 10);
+          if (d !== date) continue;
+          out.published += 1;
+          out.accounts.push({ env: row.env || '', session: row.session || '', title: String(row.title || '').slice(0, 60) });
+        }
+      }
+    } catch (_) { /* 账本读不到就当 0 */ }
+    try {
+      const dayDir = path.join(DATA_DIR, 'output', date);
+      if (fs.existsSync(dayDir)) {
+        for (const s of fs.readdirSync(dayDir)) {
+          const sp = path.join(dayDir, s);
+          try { if (!fs.statSync(sp).isDirectory()) continue; } catch (_) { continue; }
+          out.sessions += 1;
+          const failedFile = path.join(sp, 'FAILED');
+          if (fs.existsSync(failedFile)) {
+            let f = {};
+            try { f = fs.readJsonSync(failedFile); } catch (_) { f = {}; }
+            if (f.published === true) {
+              out.unconfirmed += 1;
+              if (out.failures.length < 20) out.failures.push({ session: s, stage: '发布未确认', reason: String(f.reason || '').slice(0, 160), unconfirmed: true });
+            } else {
+              out.failed += 1;
+              if (out.failures.length < 20) out.failures.push({ session: s, stage: String(f.stage || ''), reason: String(f.reason || '').slice(0, 160) });
+            }
+          }
+        }
+      }
+    } catch (_) { /* 目录读不到不抛 */ }
+    return out;
+  });
+
   ipcMain.handle('report:trend', async (_event, days) => {
     try {
       const { openDB } = await import('../src/db.js');
@@ -2930,6 +3011,189 @@ function autoBackup() {
   }
 }
 
+// === 凭据加密备份（2026-10-19 全盘审查 P0-4）===
+// 问题：10 个号的用户名/密码/邮箱密码只存在 data/env-accounts.json **一份**里，没有任何备份；
+//       cookie 备份目录是空的（0/10 环境）；2FA 密钥全盘检索命中 0。
+//       一次误删/写坏/坏盘 = 10 个号彻底失联，而且没有恢复路径。
+// 做法：每天写一份**加密**包 `backups/secrets/<本地日期>/secrets.enc`（Windows 走 DPAPI，
+//       只有当前 Windows 用户能解），启动时如果关键文件丢了/坏了，就从最新的一份补回来。
+// 硬规则：safeStorage 不可用时**跳过，绝不写明文备份**。
+function secretsRootDir() {
+  return path.join(DATA_DIR, 'backups', 'secrets');
+}
+
+function secretsDayDir(day = localDateStr()) {
+  return path.join(secretsRootDir(), day);
+}
+
+function secretsBundlePath(day = localDateStr()) {
+  return path.join(secretsDayDir(day), BUNDLE_FILE);
+}
+
+function safeStorageOrNull() {
+  try {
+    const ss = electron.safeStorage;
+    if (!ss || typeof ss.isEncryptionAvailable !== 'function') return null;
+    if (!ss.isEncryptionAvailable()) return null;
+    return ss;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 读要备份的文件原文（读不到就跳过，不让一个坏文件毁掉整次备份） */
+function readSecretSources() {
+  const files = {};
+  for (const item of SECRET_FILES) {
+    try {
+      const p = path.join(DATA_DIR, item.rel);
+      if (!fs.existsSync(p)) continue;
+      files[item.rel] = fs.readFileSync(p, 'utf-8');
+    } catch (_) { /* 单个文件读不了不影响其它 */ }
+  }
+  return files;
+}
+
+/** 当前状态：ok / missing / corrupt（json 类才校验能不能解析） */
+function probeSecretState(rel) {
+  const p = path.join(DATA_DIR, rel);
+  try {
+    if (!fs.existsSync(p)) return 'missing';
+    const text = fs.readFileSync(p, 'utf-8');
+    if (!text.trim()) return 'corrupt';
+    if (String(rel).endsWith('.json')) JSON.parse(text);
+    return 'ok';
+  } catch (_) {
+    return 'corrupt';
+  }
+}
+
+/** 解密今天已有的包（用来把后导出的 cookie 并进去） */
+function readTodaySecretsBundle(ss) {
+  try {
+    const p = secretsBundlePath();
+    if (!fs.existsSync(p)) return null;
+    return parseBundle(ss.decryptString(fs.readFileSync(p)));
+  } catch (_) {
+    return null;
+  }
+}
+
+function pruneBackupDateDirs(rootDir, label) {
+  try {
+    if (!fs.existsSync(rootDir)) return 0;
+    const doomed = pickOldDateDirs(fs.readdirSync(rootDir), { today: localDateStr(), days: SECRET_KEEP_DAYS });
+    let n = 0;
+    for (const name of doomed) {
+      try {
+        fs.removeSync(path.join(rootDir, name));
+        n++;
+      } catch (_) { /* 单个失败不影响其它 */ }
+    }
+    if (n) addLog('info', `🧹 清理 ${SECRET_KEEP_DAYS} 天前的${label} ${n} 份`);
+    return n;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
+ * 写今天的凭据加密包（幂等：同一天多次调用会与已有内容合并 cookie）。
+ * 关键：**写盘后必须解密读回校验**，对不上就删掉并报错 —— 不能"写了就算成功"。
+ */
+function autoBackupSecrets({ cookies = {} } = {}) {
+  const ss = safeStorageOrNull();
+  if (!ss) {
+    addLog('warning', '⚠️ 凭据备份跳过：系统加密存储不可用（safeStorage），不写明文备份');
+    return { ok: false, reason: 'no-safestorage' };
+  }
+  try {
+    let bundle = buildBundle({ files: readSecretSources(), cookies, version: app.getVersion() });
+    const existing = readTodaySecretsBundle(ss);
+    if (existing) {
+      bundle = { ...bundle, cookies: { ...(existing.cookies || {}), ...(bundle.cookies || {}) } };
+    }
+    if (isEmptyBundle(bundle)) {
+      addLog('warning', '⚠️ 凭据备份跳过：一个文件都没读到（数据目录不对？）');
+      return { ok: false, reason: 'empty' };
+    }
+    const text = JSON.stringify(bundle);
+    const enc = ss.encryptString(text);
+    fs.ensureDirSync(secretsDayDir());
+    const target = secretsBundlePath();
+    const tmp = `${target}.tmp`;
+    fs.writeFileSync(tmp, enc);
+    const back = parseBundle(ss.decryptString(fs.readFileSync(tmp)));
+    const s = summarizeBundle(bundle);
+    if (!back || summarizeBundle(back).fileCount !== s.fileCount) {
+      try { fs.unlinkSync(tmp); } catch (_) {}
+      addLog('error', '❌ 凭据备份校验失败：加密包读回来对不上，已丢弃（这几个文件现在没有备份）');
+      return { ok: false, reason: 'verify' };
+    }
+    fs.renameSync(tmp, target);
+    const cookiePart = s.cookieEnvs.length ? ` + cookie ${s.cookieEnvs.length} 个环境` : '';
+    addLog('success', `🔐 凭据备份 ${s.fileCount} 个文件 / ${describeBytes(s.bytes)}${cookiePart}（加密，backups/secrets/${localDateStr()}）`);
+    const missing = missingSecretLabels(bundle);
+    if (missing.length) {
+      addLog('warning', `⚠️ 凭据备份缺：${missing.join('、')}（缺账号凭据 = 换机器/坏盘后无法重登）`);
+    }
+    pruneBackupDateDirs(secretsRootDir(), '凭据备份');
+    return { ok: true, fileCount: s.fileCount, bytes: s.bytes };
+  } catch (e) {
+    addLog('error', `❌ 凭据备份失败：${e.message}`);
+    return { ok: false, reason: e.message };
+  }
+}
+
+/**
+ * 启动自愈：只有当关键文件**丢了或坏了**时才从最新的加密包补回来。
+ * 一切正常时一行日志都不写、不解密、不动任何文件。
+ */
+function restoreSecretsIfNeeded() {
+  const ss = safeStorageOrNull();
+  if (!ss) return 0;
+  try {
+    const root = secretsRootDir();
+    if (!fs.existsSync(root)) return 0;
+    // 先看有没有东西真的坏了（没有就不解密）
+    const broken = SECRET_FILES.filter((item) => probeSecretState(item.rel) !== 'ok');
+    if (!broken.length) return 0;
+    const days = fs.readdirSync(root).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse();
+    for (const day of days) {
+      const p = path.join(root, day, BUNDLE_FILE);
+      if (!fs.existsSync(p)) continue;
+      let bundle = null;
+      try {
+        bundle = parseBundle(ss.decryptString(fs.readFileSync(p)));
+      } catch (_) {
+        continue;   // 这一份解不开（换过 Windows 账户/损坏）→ 看上一份
+      }
+      if (!bundle) continue;
+      const plan = planRestore(bundle, probeSecretState);
+      if (!plan.length) return 0;
+      let n = 0;
+      const restored = [];
+      for (const item of plan) {
+        try {
+          const target = path.join(DATA_DIR, item.rel);
+          fs.ensureDirSync(path.dirname(target));
+          fs.writeFileSync(target, bundle.files[item.rel], 'utf-8');
+          n++;
+          restored.push(item.label);
+        } catch (_) { /* 单个失败继续 */ }
+      }
+      if (n) {
+        addLog('success', `🛠️ 已从 ${day} 的加密备份恢复 ${n} 个文件：${restored.join('、')}`);
+        return n;
+      }
+      return 0;
+    }
+  } catch (e) {
+    addLog('warning', `⚠️ 凭据恢复检查失败：${e.message}`);
+  }
+  return 0;
+}
+
 // === 单实例锁（防重复启动） ===
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -2978,7 +3242,10 @@ function startScheduler() {
   const DONE_RE = /(✅|❌|完成|失败|已取消|\bdone\b|\bfail(ed)?\b|\bcomplete(d)?\b|\bcancel(led)?\b)/i;
 
   const handleLine = (line) => {
-    addLog('info', `⏰ ${line}`);
+    // 失败/超时/未确认的定时任务行按 error 记账（原来一律记 info，导致
+    // 界面「错误 N 条」永远是 0，昨天的 115 条 ❌ 一条都没算进去）。
+    const isFailure = /❌|⏱️|⚠️.*未确认/.test(line);
+    addLog(isFailure ? 'error' : 'info', `⏰ ${line}`);
     // 单行的意外异常不能让同一 chunk 里的其余日志一起丢失
     try {
       if (START_RE.test(line)) {
@@ -2988,6 +3255,14 @@ function startScheduler() {
         pushEngineStatus();
       } else if (DONE_RE.test(line)) {
         schedulerRunning = false;
+        // 失败 / 超时未确认 / 被跳过 → 弹系统通知（TG 没配，这是唯一能主动找到人的通道）
+        if (/❌|⏱️|⚠️.*未确认|⏭️\s*跳过/.test(line)) {
+          notifyFailure({
+            title: 'XNOWPost 定时任务异常',
+            body: line.replace(/^\[[^\]]+\]\s*/, ''),
+            key: line.slice(0, 80),
+          });
+        }
         pushEngineStatus();
       }
     } catch (e) {
@@ -3064,6 +3339,10 @@ app.whenReady().then(async () => {
 
   // 初始化配置文件
   try { await saveConfig(cfg); } catch {}
+
+  // 凭据自愈：关键文件丢了/坏了就从最新的加密备份补回来（正常启动不做任何事）。
+  // 放在 saveConfig 之后、prune 之前 —— 后面所有逻辑都能读到恢复好的文件。
+  try { restoreSecretsIfNeeded(); } catch (_) { /* 自愈失败不阻断启动 */ }
 
   // 日志保留：只删 30 天前的 app-/scheduler- 日志（其它文件一概不碰）。
   // 用户问过「日志多了占不占内存」→ 内存不占（logBuffer 上限 500 行），
@@ -3153,6 +3432,7 @@ app.whenReady().then(async () => {
   createTray();
   initUpdater(mainWindow);
   autoBackup();
+  autoBackupSecrets();
   healthCheck();
   startScheduler();
 

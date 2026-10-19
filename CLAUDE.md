@@ -592,3 +592,51 @@ node src/publisher/index.js --env TK01 --max 1
 ```
 演练结束会抛 `演练模式：…`，上层计为「跳过」，**不会**写 `.published` 标记。
 截图落在会话目录 `dry-run.png`。
+
+## 发布候选只有一份扫描实现（`src/output-scan.js`，2026-10-19 定的护栏）
+别在界面/发布器/主进程里各写一份"哪些内容可以发"。
+- 同一个问题原来有三份实现，规则互相不一致，而**无人值守走的正是最松的那份**
+  （`src/publisher/index.js`：没有 FAILED 拦截、`--all` 全发、不认 `confirmed`、全部条目发到 `accounts[0]`）。
+  实测积压 **57 个未发布会话（14 个带 FAILED，最老 2026-06-18）**，一次 `--all` 就能把两个月的旧内容推出去。
+- 统一口径（默认值就是安全值）：**只认当天**；`--any-date` / `includeOld: true` 才放开旧会话；
+  **跳过 `.published`**（含 `confirmed:false` —— 重发会产生重复作品）；**跳过 FAILED**，
+  但 `FAILED.stage` 属于发布阶段（不含「视频/合成」）的会重试，因为视频本身是好的；
+  默认 **每轮最多 3 条**（`DEFAULT_MAX_PER_RUN`，可用 `XNOWPOST_PUBLISH_MAX_PER_RUN` 覆盖）。
+- 改规则先改 `tests/unit/output-scan.test.js`（12 例：老会话不进候选、FAILED 分级、
+  未确认不重传、坏标记不抛异常、上限截断…）。
+- `--all` 现在只表示「当天全部（不限条数）」，**不再**意味着清空历史积压。
+
+## 「点了 Post 但没确认」不许记成功（退出码 3）
+- `publishToTikTok` 在"点过 Post 但预算内没能证明已公开"时**不抛错**，只在 `.published`
+  里写 `confirmed:false` + `note:'post-clicked-unconfirmed'`。三处调用方原来都照样记 ✅。
+- 现在约定：这种结果计「未确认」——**不算成功，也不重发**（重发 = 重复作品/重复计费）：
+  `src/publisher/index.js` 计 `unconfirmed` 并退出 **3**；`src/index.js`（引擎自动发布）接
+  `options.onUnconfirmed` 回调后写 `FAILED{published:true}`（下一轮据此跳过）并退出 3；
+  `scheduler.js` 见退出码 3 记 `⚠️ … 未确认（不重试、不重发，请到后台核对）`。
+- 界面「调度进度」用 `END_RE` 判断任务是否结束，所以那行必须以 `⚠️ … 未确认` 结尾
+  （`electron/main.js` 的 `END_RE` 里同时认 `✅完成 / ❌失败 / ⚠️未确认 / ⏱️ / ⏭️跳过 / 进程结束`）。
+
+## 失败要知道（`tgBotToken` 是空的，别指望 TG）
+- 唯一的对外告警 `sendAlert()` 只走 Telegram，而配置里 token 一直是空的 →
+  定时任务失败/被跳过时**没有任何人会知道**（2026-10-18 掉登录空跑 24 分钟就是这么漏的）。
+- 现在三条通道，加新告警点时至少覆盖前两条：
+  1. **系统通知** `notifyFailure({title, body, key})`（主进程）：`Notification.isSupported()` 保护、
+     同一条消息 10 分钟去重、点击聚焦窗口。触发点是调度器输出里的
+     `❌ / ⏱️ / ⚠️…未确认 / ⏭️ 跳过`（这些行现在按 `error` 记账，所以「错误 N 条」KPI 才是真的数）
+     以及手动发布失败。
+  2. **控制台红条**：`store.status.recentErrors > 0` 时显示最新一条错误 + 「看日志」；
+     出现新错误会把"已关闭"状态复位。
+  3. **日报页「这天发了什么」**：IPC `report:publishDay` 读发布账本（成功）+ 会话目录 FAILED（失败/未确认）。
+     账号都没数据时数据日报全是「—」，但这三个数永远是实话。
+
+## 凭据备份与恢复（`src/secrets-backup.js`）
+- 每天把 5 个文件（`data/env-accounts.json`、`account-profiles.json`、`account-meta.json`、
+  `config/schedule.json`、`data/publish-ledger.jsonl`）+ 全部 cookie 打成
+  `backups/secrets/<日期>/secrets.enc`，用 Electron `safeStorage`（Windows = DPAPI）加密，
+  **写完解密读回校验**才落盘；保留 14 天。
+- 启动时 `restoreSecretsIfNeeded()` **只补缺失或损坏的文件**，绝不覆盖现有内容（避免拿旧备份盖掉新数据）。
+- 边界：DPAPI 是"同一个 Windows 用户"才能解密 —— 换机器/换用户解不开，要人工处理，
+  所以**明文塞账号密码仍然是唯一能跨机器恢复的东西**（`env-accounts.json` 本身就是明文，故意为之）。
+- 导入账号文件时 `totpSecret`（2FA 密钥）必须写进 `env-accounts.json` —— 老代码解析了但没落盘，
+  等于每次导入都把 2FA 丢了（已修）。
+

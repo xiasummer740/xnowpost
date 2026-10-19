@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('xnowpost', {
   getLatestCollect: () => ipcRenderer.invoke('collect:latest'),
   getDailyReport: (date) => ipcRenderer.invoke('report:daily', date),
   getTrend: (days) => ipcRenderer.invoke('report:trend', days),
+  // 某天的「发布侧」结果（发了 N 条 / 失败 M 条 / 未确认 K 条）—— 日报页用
+  getPublishDay: (date) => ipcRenderer.invoke('report:publishDay', date),
   pushReport: (date) => ipcRenderer.invoke('report:push', date),
 
   // 自动更新

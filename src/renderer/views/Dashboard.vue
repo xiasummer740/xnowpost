@@ -294,6 +294,28 @@
       </div>
     </div>
 
+    <!-- 失败/异常红条（2026-10-19 P0-3）：TG 没配、系统通知可能被系统静音，
+         所以界面上必须有一眼看得到的位置。点「看日志」直接跳运行日志页。 -->
+    <div v-if="errorBanner" class="alert-bar danger">
+      <span class="ab-ic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3.2 21 20H3z" />
+          <path d="M12 9v5M12 17h.01" />
+        </svg>
+      </span>
+      <div class="ab-body">
+        <span class="ab-title">最近有 {{ store.status.recentErrors }} 条错误</span>
+        <span class="ab-text">{{ errorBanner }}</span>
+      </div>
+      <div class="x-spacer"></div>
+      <button class="x-mini" @click="gotoLogs">看日志</button>
+      <button class="x-mini" @click="bannerDismissed = true" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 6l12 12M18 6 6 18" />
+        </svg>
+      </button>
+    </div>
+
     <!-- 系统状态 -->
     <div class="kpis">
       <div class="kpi" :class="{ on: store.status.running }">
@@ -423,6 +445,7 @@
         </span>
         <h2>待发布内容</h2>
         <span class="x-hint">{{ pendingItems.length }} 项</span>
+        <span v-if="todayPendingCount !== pendingItems.length" class="x-tag mute">当天 {{ todayPendingCount }}</span>
         <div class="x-spacer"></div>
         <button v-if="pendingItems.length > PENDING_LIMIT" class="x-mini" @click="pendingExpanded = !pendingExpanded">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -441,16 +464,22 @@
       <table>
         <thead>
           <tr>
-            <th style="width: 78px">类型</th>
+            <th style="width: 178px">类型</th>
             <th>标题</th>
             <th style="width: 168px; text-align: right">生成时间</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(item, i) in shownPending" :key="i">
-            <td>
+            <td class="pc-type">
               <span v-if="item.type === 'video'" class="x-tag brand">视频</span>
               <span v-else class="x-tag mute">图文</span>
+              <!-- 旧日期/失败过的会话必须标出来：默认不会被发布，别让人以为点了「发布全部」就会发 -->
+              <span v-if="item.old" class="x-tag mute" title="非当天的旧会话，默认不发布">旧</span>
+              <span v-if="item.failed" class="x-tag" :class="item.retryable ? 'warn' : 'danger'"
+                    :title="item.retryable ? '上次卡在发布阶段，会重试' : `上次失败于「${item.failedStage || '未知'}」，需要先重新生成`">
+                {{ item.retryable ? '待重试' : '失败' }}
+              </span>
             </td>
             <td><span class="pc-title">{{ item.title }}</span></td>
             <td class="num">{{ item.date }} {{ item.time }}</td>
@@ -461,6 +490,12 @@
         还有 {{ pendingItems.length - PENDING_LIMIT }} 项未显示
       </div>
       <div class="card-foot">
+        <label class="pc-old" title="勾上才会把非当天的旧会话也发出去">
+          <input v-model="includeOld" type="checkbox" />
+          <span>含旧会话</span>
+        </label>
+        <span class="x-hint">默认只发当天、每轮最多 3 条</span>
+        <div class="x-spacer"></div>
         <button class="x-btn" @click="handlePublish" :disabled="publishing">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
@@ -642,9 +677,11 @@
 
 <script setup>
 import { useAppStore } from '../stores/app.js';
+import { useRouter } from 'vue-router';
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
 
 const store = useAppStore();
+const router = useRouter();
 
 // 本次生成的临时选项：只影响这一条，不写进配置
 const gen = reactive({
@@ -800,6 +837,11 @@ const shownPending = computed(() => pendingExpanded.value
   ? sortedPending.value
   : sortedPending.value.slice(0, PENDING_LIMIT));
 
+// 「默认只发当天」：卡片上要说清楚到底几条是今天的
+const todayPendingCount = computed(() => pendingItems.value.filter((p) => !p.old).length);
+// 勾上才把非当天的旧会话也发出去（护栏默认 OFF）
+const includeOld = ref(false);
+
 const shownToday = computed(() => todayExpanded.value
   ? todayItems.value
   : todayItems.value.slice(0, TODAY_LIMIT));
@@ -826,6 +868,23 @@ let cleanupProgress = null;
 
 const recentLogs = computed(() => store.logs.slice(-5));
 const displayLogs = computed(() => store.logs.slice(-20).reverse());
+
+// ── 失败红条（2026-10-19 P0-3）──
+// TG 通知没配、系统 toast 也可能被系统静音，界面上必须有一眼看得到的位置。
+const bannerDismissed = ref(false);
+const errorBanner = computed(() => {
+  if (bannerDismissed.value) return '';
+  if (!(store.status.recentErrors > 0)) return '';
+  const last = [...store.logs].reverse().find((l) => l.type === 'error');
+  return last ? String(last.message || '').slice(0, 160) : '（错误内容见运行日志）';
+});
+// 又出现新错误时把「已关闭」状态复位，否则关一次就再也不提示了
+watch(() => store.status.recentErrors, (n, prev) => {
+  if ((n || 0) > (prev || 0)) bannerDismissed.value = false;
+});
+function gotoLogs() {
+  router.push('/logs');
+}
 
 // 非运行时自动折叠日志
 watch(() => store.status.running, (running, was) => {
@@ -937,10 +996,15 @@ async function refreshCollectData() {
 async function handlePublish() {
   publishing.value = true
   try {
-    const result = await window.xnowpost.runPublish()
+    // includeOld 只在用户明确勾选时传；不传 = 主进程按「只发当天」处理（P0-1 护栏）
+    const opts = includeOld.value ? { includeOld: true } : {}
+    const result = await window.xnowpost.runPublish(opts)
     if (!result.ok) {
       store.addLog('error', '发布失败: ' + (result.message || ''))
+    } else if (result.published > 0) {
+      store.addLog('success', `已发布 ${result.published} 条`)
     }
+    await loadPendingItems()
   } catch (e) {
     store.addLog('error', '发布调用失败: ' + (e.message || e))
   }
@@ -1070,6 +1134,34 @@ window.addEventListener('paste', onPaste);
 <style scoped>
 /* ── 页面骨架 ── */
 .dashboard-page { display: flex; flex-direction: column; gap: 14px; }
+
+/* ── 失败红条（P0-3）── */
+.alert-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+}
+.alert-bar.danger {
+  background: var(--danger-soft);
+  border: 1px solid rgba(255, 77, 109, 0.3);
+  color: var(--text-1);
+}
+.alert-bar .ab-ic { display: flex; flex: 0 0 16px; }
+.alert-bar .ab-ic svg { width: 16px; height: 16px; stroke: var(--danger); fill: none; }
+.alert-bar .ab-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.alert-bar .ab-title { font-weight: 600; color: var(--danger); }
+.alert-bar .ab-text {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 720px;
+}
 
 /* 顶栏里当按钮用的 router-link */
 a.x-btn { text-decoration: none; }
@@ -1268,6 +1360,21 @@ tbody tr:hover { background: var(--bg3); }
 }
 td.num { text-align: right; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); }
 .pc-hint { padding: 8px 16px 0; font-size: 11px; color: var(--text-3); }
+
+/* 类型列：视频/图文 + 旧 + 待重试 一行排开（挤成三行会把每行撑得很高） */
+.pc-type { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; }
+
+/* 「含旧会话」勾选框（默认关：护栏要求旧会话必须显式放行） */
+.pc-old {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.pc-old input { accent-color: var(--brand); cursor: pointer; }
 
 /* ── 日志区域（可折叠） ── */
 .log-head { cursor: pointer; }

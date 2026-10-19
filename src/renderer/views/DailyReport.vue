@@ -23,6 +23,40 @@
       </div>
     </div>
 
+    <!-- 发布侧结果：这一页原来只有「平台数据」，账号没数据时整页都是「—」。
+         发了多少条 / 失败多少条 / 有没有未确认，永远是实话，也是每天最想知道的事。 -->
+    <div v-if="publishDay" class="x-card pub-day">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+            <path d="m9.5 13.5 4.2-4.2" />
+          </svg>
+        </span>
+        <h2>这天发了什么</h2>
+        <span class="x-hint">{{ publishDay.date }} · 共 {{ publishDay.sessions }} 个生成会话</span>
+        <div class="x-spacer"></div>
+        <span class="x-tag" :class="publishDay.published ? 'ok' : 'mute'">已发 {{ publishDay.published }}</span>
+        <span class="x-tag" :class="publishDay.failed ? 'danger' : 'mute'">失败 {{ publishDay.failed }}</span>
+        <span class="x-tag" :class="publishDay.unconfirmed ? 'warn' : 'mute'">未确认 {{ publishDay.unconfirmed }}</span>
+      </div>
+      <ul v-if="publishDay.accounts.length" class="pub-list">
+        <li v-for="(a, i) in publishDay.accounts.slice(0, 10)" :key="'ok' + i">
+          <span class="x-tag ok">{{ a.env || '—' }}</span>
+          <span class="pub-title">{{ a.title || a.session }}</span>
+        </li>
+      </ul>
+      <ul v-if="publishDay.failures.length" class="pub-list is-bad">
+        <li v-for="(f, i) in publishDay.failures.slice(0, 6)" :key="'bad' + i">
+          <span class="x-tag" :class="f.unconfirmed ? 'warn' : 'danger'">{{ f.unconfirmed ? '未确认' : '失败' }}</span>
+          <span class="pub-title">{{ f.session }}<template v-if="f.stage"> · {{ f.stage }}</template></span>
+          <span class="pub-reason">{{ f.reason }}</span>
+        </li>
+      </ul>
+      <p v-if="!publishDay.published && !publishDay.failures.length" class="x-tip">这天还没有发布记录（也没有失败记录）。</p>
+      <p class="x-tip">「已发」来自发布账本（点过 Post 且确认公开）；「未确认」= 点过 Post 但没能证明已公开，既不重发也不算成功。</p>
+    </div>
+
     <div v-if="loading" class="loading-box">
       <span class="loading-spinner"></span>
       <span>加载中...</span>
@@ -410,6 +444,17 @@ async function loadTrend(days) {
 // --- 日报缓存 ---
 const reportCache = new Map()
 
+// --- 发布侧结果（2026-10-19 P0-3）---
+// 数据型日报在账号没数据时全是「—」，但"今天发了 N 条、失败 M 条"永远是实话。
+const publishDay = ref(null)
+async function loadPublishDay(date) {
+  try {
+    publishDay.value = await window.xnowpost.getPublishDay(date || '')
+  } catch (_) {
+    publishDay.value = null
+  }
+}
+
 async function load(date, force = false) {
   loading.value = true
   try {
@@ -420,6 +465,7 @@ async function load(date, force = false) {
       reportCache.delete('__latest')
       if (date) reportCache.delete(date)
     }
+    loadPublishDay(date)
     if (!force && reportCache.has(cacheKey)) {
       data.value = reportCache.get(cacheKey)
       if (data.value) {
@@ -662,4 +708,13 @@ onMounted(() => {
 .trend-chip.active { background: #334155; color: #f59e0b; border-color: #f59e0b44; }
 .trend-chart { background: #0f172a; border-radius: 10px; padding: 12px; border: 1px solid #1e293b; }
 .trend-svg { width: 100%; height: auto; display: block; }
+
+/* ── 「这天发了什么」卡片（只读 theme.css 的变量，不写死色值）── */
+.pub-day .x-card-head h2 { font-size: 14px; }
+.pub-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pub-list li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-1); }
+.pub-list.is-bad li { color: var(--text-2); }
+.pub-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 52%; }
+.pub-reason { color: var(--text-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pub-day .x-tip { margin: 10px 0 0; }
 </style>

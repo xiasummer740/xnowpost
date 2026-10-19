@@ -159,6 +159,14 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true }
       return { ok: false, insufficient: true };
     }
 
+    // 退出码 3 = 「点了发布按钮，但没能证明已公开」（2026-10-19 P0-2）。
+    // 既不算成功（旧实现记 ✅，真实结果无人知晓），也不能重试（重试会重复上传同一作品）。
+    // 界面的调度进度靠 `⚠️ … 未确认` 这行判定已结束（electron/main.js 的 END_RE）。
+    if (r.code === 3) {
+      log(`⚠️ ${label} 未确认：已点击发布按钮但无法确认公开（不重试、不重发，请到 TikTok 后台核对）`);
+      return { ok: false, unconfirmed: true };
+    }
+
     lastMessage = r.message;
     if (r.timeout) {
       sawTimeout = true;

@@ -528,6 +528,8 @@ async function main() {
 
   const videoOk = !failures.some(f => f.stage === '视频');
   let publishedOk = false;
+  // 「点了 Post 但没能证明已公开」—— 既不算成功，也不许重发（2026-10-19 P0-2）
+  let publishUnconfirmed = false;
 
   // === 自动发布（闹钟模式：生成后直接发布到指定账号） ===
   if (autoPublish && accountName && videoOk) {
@@ -573,7 +575,26 @@ async function main() {
         apiKey: config.bitApiKey || '',
         // 预算必须小于宿主 15 分钟超时，超时会提前结束并明确报"未确认"
         budgetMs: AUTO_PUBLISH_BUDGET_MS,
+        // 发布器「点了 Post 但没确认结果」时不会抛错，只会回调这里 ——
+        // 以前不接这个回调，于是把"未确认"直接当成了 ✅ 成功（P0-2）
+        onUnconfirmed: ({ reason } = {}) => {
+          publishUnconfirmed = true;
+          console.log(`  ⚠️ 发布结果未确认：${reason || '预算内无法确认已公开'}`);
+        },
       });
+      // 标记里也可能是未确认（发布器写入 confirmed:false）
+      try {
+        const marker = JSON.parse(fs.readFileSync(path.join(sessionDir, '.published'), 'utf-8'));
+        if (marker && (marker.confirmed === false || marker.note === 'post-clicked-unconfirmed')) {
+          publishUnconfirmed = true;
+        }
+      } catch (_) { /* 没有标记就按未确认处理 */ publishUnconfirmed = true; }
+      if (publishUnconfirmed) {
+        // 视频确实点过 Post → published:true，让下一轮**不会**重发；但本轮如实报"未确认"
+        await markFailed(sessionDir, '发布未确认', new Error('已点击发布按钮，但预算内无法确认已公开'), { published: true });
+        console.error(`  ⚠️ 已点击发布但结果未确认 📁 ${sessionDir}\n`);
+        return 3;
+      }
       console.log(`  ✅ 自动发布完成 ${url ? `(${url})` : ''}`);
       publishedOk = true;
     } catch (pubErr) {
