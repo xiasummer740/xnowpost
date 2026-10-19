@@ -23,6 +23,8 @@
             它读的是真实数据（发布账本 / FAILED 目录 / 调度日志 / 采集证据），不会编数字。
             改配置、改闹钟、发内容这类动作会先显示「要改什么」，你点「执行」才生效；
             改完 30 分钟内输入框上方会出现「撤销」。
+            跑生成 / 发布 / 采集只代表「已启动」，问它「发成功了吗」它会去查账本和会话目录给三态结论。
+            想让它先想再答：到「配置 → 文案模型」换成 deepseek-v4-pro（会慢一倍，但能看到思考过程）。
           </p>
         </div>
 
@@ -31,11 +33,34 @@
 
           <div v-else-if="m.role === 'assistant'" class="bubble assistant" v-html="render(m.text)"></div>
 
-          <div v-else-if="m.role === 'tool'" class="tool-chip" :class="{ bad: m.ok === false, skip: m.skipped }">
+          <!-- 思考过程（只有推理模型会给；默认收起，免得刷屏） -->
+          <div v-else-if="m.role === 'reasoning'" class="reason-box">
+            <button class="reason-toggle" @click="m._open = !m._open">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                <path d="M12 3a6 6 0 0 0-3.6 10.8c.5.4.8 1 .8 1.6V17h5.6v-1.6c0-.6.3-1.2.8-1.6A6 6 0 0 0 12 3z" />
+                <path d="M9.5 20h5" />
+              </svg>
+              思考过程（{{ m.text.length }} 字）{{ m._open ? '· 收起' : '· 展开' }}
+            </button>
+            <pre v-if="m._open" class="reason-text">{{ m.text }}</pre>
+          </div>
+
+          <div
+            v-else-if="m.role === 'tool'"
+            class="tool-chip"
+            :class="{
+              bad: m.ok === false,
+              skip: m.skipped,
+              good: m.ok !== false && m.verdict === 'success',
+              warn: m.ok !== false && (m.verdict === 'unconfirmed' || m.verdict === 'failed'),
+            }"
+            :title="m.preview"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
               <path d="M14.7 6.3a4 4 0 0 0 5 5L21 21H3l9.7-9.7a4 4 0 0 1 2-5z" />
             </svg>
-            <span class="tool-name">{{ m.preview }}</span>
+            <span class="tool-name">{{ m.name }}</span>
+            <span v-if="m.detail" class="tool-detail">{{ m.detail }}</span>
             <span class="tool-ms">{{ m.ok === false ? '失败' : m.skipped ? '已跳过' : m.ms + 'ms' }}</span>
           </div>
 
@@ -122,6 +147,7 @@ const hints = [
   '今天发了几个？有失败吗？',
   '为什么最近这一轮失败了？',
   '还有几条待发？',
+  '刚才那条发出去了吗？',
   '哪个号掉登录了？',
   '记住：配音一律用英文',
   '把 09:05 那个闹钟关掉',
@@ -210,7 +236,9 @@ async function decide(id, approve) {
   if (target) {
     log.value.push({
       role: 'tool',
-      preview: `${approve ? '执行' : '跳过'}：${String(target.preview).split('\n')[0]}`,
+      name: approve ? '执行' : '跳过',
+      detail: String(target.preview).split('\n')[0],
+      preview: target.preview,
       ok: approve,
       skipped: !approve,
       ms: 0,
@@ -234,7 +262,9 @@ async function decideAll() {
   for (const p of pending.value) {
     log.value.push({
       role: 'tool',
-      preview: `执行：${String(p.preview).split('\n')[0]}`,
+      name: '执行',
+      detail: String(p.preview).split('\n')[0],
+      preview: p.preview,
       ok: true,
       ms: 0,
     });
@@ -328,8 +358,31 @@ onMounted(async () => {
 .tool-chip svg { width: 13px; height: 13px; flex: 0 0 auto; }
 .tool-chip.bad { border-color: rgba(255, 77, 109, 0.45); color: #ffb3c1; }
 .tool-chip.skip { opacity: 0.75; }
-.tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-chip.good { border-color: rgba(52, 211, 153, 0.4); }
+.tool-chip.warn { border-color: rgba(255, 176, 32, 0.45); color: #ffd9a0; }
+.tool-name { flex: 0 0 auto; opacity: 0.85; font-variant-numeric: tabular-nums; }
+/* 结论行才是用户想看的东西（发了没发、几条），工具名只是注解 */
+.tool-detail {
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-chip.bad .tool-detail { color: #ffb3c1; }
 .tool-ms { color: var(--text-dim); opacity: 0.7; flex: 0 0 auto; }
+
+/* 推理模型的思考过程：默认收起 */
+.reason-box { align-self: flex-start; max-width: 86%; }
+.reason-toggle {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 4px 9px; border-radius: 8px; font-size: 12px;
+  background: rgba(124, 92, 255, 0.1); border: 1px solid rgba(124, 92, 255, 0.32);
+  color: #c4b5fd; font-family: inherit;
+}
+.reason-toggle svg { width: 13px; height: 13px; }
+.reason-text {
+  margin: 6px 0 0; padding: 9px 11px; border-radius: 8px; white-space: pre-wrap; word-break: break-word;
+  background: rgba(124, 92, 255, 0.06); border: 1px solid rgba(124, 92, 255, 0.2);
+  color: var(--text-dim); font-size: 12px; line-height: 1.65; font-family: inherit;
+  max-height: 320px; overflow: auto;
+}
 
 .confirm-box {
   border: 1px solid rgba(255, 176, 32, 0.42); background: rgba(255, 176, 32, 0.08);

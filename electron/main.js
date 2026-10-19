@@ -25,7 +25,7 @@ import { pickLogsToPrune } from './lib/log-prune.js';
 import { describeAiError } from './lib/ai-error.js';
 import { pickOldDateDirs, isCleanable } from '../src/output-retention.js';
 // 发布候选扫描（唯一实现：只认当天 / 跳 FAILED / 跳已发布 / 默认 3 条）
-import { scanUnpublished, summarizeSkips, DEFAULT_MAX_PER_RUN } from '../src/output-scan.js';
+import { scanUnpublished, summarizeSkips, DEFAULT_MAX_PER_RUN, sessionTime } from '../src/output-scan.js';
 // 凭据/关键状态的加密备份（纯逻辑 + 单测在 tests/unit/secrets-backup.test.js）
 import {
   SECRET_FILES,
@@ -1036,7 +1036,7 @@ function setupIPC() {
   });
 
   // 清空日志
-  ipcMain.handle('logs:clear', () => {
+  handle('logs:clear', () => {
     logBuffer = [];
     return { ok: true };
   });
@@ -1976,6 +1976,127 @@ function setupIPC() {
         const pub = buildPublishDay(args.date || today);
         return { ok: true, summary: `${pub.date}：已发 ${pub.published} / 未确认 ${pub.unconfirmed} / 失败 ${pub.failed}（共 ${pub.sessions} 场）`, ...pub };
       }
+      // ── 「刚才那次到底成没成」：三处证据合起来给一个三态结论 ─────────────────
+      // 起因（2026-10-19 用户截图）：助手跑完 run_publish 只回「发布已启动」，用户不知道发没发出去。
+      // 「已启动」≠「已发布」，所以这里只认落盘证据：发布账本 / .published / FAILED / 进程还在不在。
+      case 'get_last_task': {
+        const minutes = Math.min(Math.max(Number(args.minutes) || 40, 5), 240);
+        const since = Date.now() - minutes * 60 * 1000;
+        const isAlive = (p) => !!(p && !p.killed && p.exitCode === null);
+
+        const running = [];
+        if (isAlive(engineProcess)) running.push('生成（引擎）');
+        if (isAlive(collectProcess)) running.push('采集');
+        if (schedulerRunning) running.push('调度器任务');
+
+        // ① 发布账本：唯一能证明"真的发出去了"的东西
+        const publishedRows = [];
+        try {
+          const f = path.join(DATA_DIR, 'data', 'publish-ledger.jsonl');
+          if (fs.existsSync(f)) {
+            for (const line of fs.readFileSync(f, 'utf-8').split('\n')) {
+              if (!line.trim()) continue;
+              let row = null;
+              try { row = JSON.parse(line); } catch (_) { continue; }
+              const at = Date.parse(row.at || '');
+              if (!Number.isFinite(at) || at < since) continue;
+              publishedRows.push({
+                at: new Date(at).toISOString(),
+                env: row.env || '',
+                session: row.session || '',
+                title: String(row.title || '').slice(0, 50),
+              });
+            }
+          }
+        } catch (_) { /* 账本读不到就当没有 */ }
+
+        // ② 当天最近 3 场会话：.published / FAILED / 有没有成片
+        const sessions = [];
+        try {
+          const dayDir = path.join(DATA_DIR, 'output', today);
+          if (fs.existsSync(dayDir)) {
+            const names = fs.readdirSync(dayDir)
+              .filter((n) => { try { return fs.statSync(path.join(dayDir, n)).isDirectory(); } catch (_) { return false; } })
+              .sort((a, b) => sessionTime(a).localeCompare(sessionTime(b)))
+              .slice(-3)
+              .reverse();
+            for (const n of names) {
+              const sp = path.join(dayDir, n);
+              const row = { session: n, time: sessionTime(n), hasVideo: fs.existsSync(path.join(sp, 'video.mp4')), published: null, failed: null };
+              try {
+                if (fs.existsSync(path.join(sp, '.published'))) {
+                  const m = fs.readJsonSync(path.join(sp, '.published'));
+                  const at = Date.parse(m.at || '');
+                  if (!Number.isFinite(at) || at >= since) {
+                    row.published = { confirmed: m.confirmed !== false, env: m.env || '', at: m.at || '' };
+                  }
+                }
+              } catch (_) { /* 坏标记忽略 */ }
+              try {
+                if (fs.existsSync(path.join(sp, 'FAILED'))) {
+                  const f = fs.readJsonSync(path.join(sp, 'FAILED'));
+                  row.failed = {
+                    stage: String(f.stage || ''),
+                    reason: String(f.reason || '').slice(0, 160),
+                    published: f.published === true,
+                    at: f.at || '',
+                  };
+                }
+              } catch (_) { /* 同上 */ }
+              sessions.push(row);
+            }
+          }
+        } catch (_) { /* 目录读不到忽略 */ }
+
+        // ③ 裁决（优先级：还在跑 > 有新账本 > 未确认 > 失败 > 有片没发 > 只有空目录）
+        const lastLedger = publishedRows[publishedRows.length - 1] || null;
+        const lastSession = sessions[0] || null;
+        let verdict = 'none';
+        let verdictText = '';
+        if (running.length) {
+          verdict = 'running';
+          verdictText = `⏳ 还在跑：${running.join('、')}`;
+        } else if (lastLedger) {
+          verdict = 'success';
+          const t = lastLedger.at ? new Date(lastLedger.at).toISOString().slice(11, 16) : '';
+          verdictText = `✅ 已发布：${lastLedger.env || '未知环境'}${t ? ` · ${t}` : ''}${lastLedger.title ? ` · ${lastLedger.title}` : ''}`;
+        } else if (lastSession && lastSession.failed && lastSession.failed.published) {
+          verdict = 'unconfirmed';
+          verdictText = `⚠️ 未确认：${lastSession.session} 点过发布但没能证明已公开（不重发，请到后台核对）`;
+        } else if (lastSession && lastSession.failed) {
+          verdict = 'failed';
+          verdictText = `❌ 失败：${lastSession.session}${lastSession.failed.stage ? ` 卡在「${lastSession.failed.stage}」` : ''}${lastSession.failed.reason ? ` · ${lastSession.failed.reason}` : ''}`;
+        } else if (lastSession && lastSession.published) {
+          verdict = lastSession.published.confirmed ? 'success' : 'unconfirmed';
+          verdictText = verdict === 'success'
+            ? `✅ 已发布：${lastSession.session}${lastSession.published.env ? ` · ${lastSession.published.env}` : ''}`
+            : `⚠️ 未确认：${lastSession.session}（点过发布，未能证明已公开）`;
+        } else if (lastSession && lastSession.hasVideo) {
+          verdict = 'not_published';
+          verdictText = `📦 成片已生成但还没发：${lastSession.session}（${minutes} 分钟内没有发布记录）`;
+        } else if (lastSession) {
+          verdict = 'not_published';
+          verdictText = `🛠 ${lastSession.session} 还在生成，没有成片、也没发布`;
+        } else {
+          verdictText = `${minutes} 分钟内没有生成/发布/采集记录`;
+        }
+
+        const notes = [];
+        if (verdict === 'running') notes.push('等它跑完再问一次，别把「已启动」当「已发布」');
+        if (verdict === 'unconfirmed') notes.push('未确认的重发会产生重复作品，先去 TikTok 后台看一眼');
+        if (verdict === 'failed') notes.push('可以用 explain_failures 拿失败证据，或重跑一轮');
+        return {
+          ok: true,
+          verdict,
+          verdictText,
+          summary: verdictText,
+          minutes,
+          running,
+          published: publishedRows.slice(-5),
+          sessions,
+          notes,
+        };
+      }
       case 'get_pending': {
         const r = scanUnpublished({
           outputDir: outDir,
@@ -1999,6 +2120,112 @@ function setupIPC() {
           .sort((a, b) => String(a.time).localeCompare(String(b.time)));
         const on = jobs.filter((j) => j.enabled).length;
         return { ok: true, summary: `共 ${jobs.length} 个闹钟，启用 ${on} 个`, jobs, nextJob: nextEnabledJob() };
+      }
+      // ── 账号域（原来助手只能"看"，登录/资料都得人点界面）──────────────────────
+      // 登录和拉资料要跑几分钟到几十分钟，所以这里**不 await**：起完就返回 started，
+      // 结果由 get_last_task / get_logs 去查（和 run_engine 一个口径，别把对话卡死）。
+      case 'manage_accounts': {
+        const op = String(args.op || '');
+        const only = String(args.only || '').trim().toUpperCase();
+        const env = String(args.env || '').trim().toUpperCase();
+        const fire = (promise, kind) => {
+          Promise.resolve(promise)
+            .then((r) => addLog(r && r.ok === false ? 'error' : 'info',
+              `${r && r.ok === false ? '❌' : '✅'} 助手${kind}结束${r && r.ok === false ? `：${r.message || r.code || '失败'}` : ''}`))
+            .catch((e) => addLog('error', `❌ 助手${kind}出错：${e.message}`));
+        };
+        if (op === 'login') {
+          const fn = ACTIONS.get('accounts:run');
+          if (!fn) return { ok: false, error: '登录功能的处理器没注册' };
+          fire(fn(null, { only: only || undefined, force: args.force === true, dryRun: args.dryRun === true }), '登录');
+          return {
+            ok: true,
+            started: true,
+            summary: `已启动登录${only ? `（${only}）` : '（全部待登录账号）'}${args.dryRun === true ? '，演练不真的登录' : ''}`
+              + '。它会打开浏览器，10 个号约 10~20 分钟；完事后问「登录好了吗」我用 get_last_task 查',
+          };
+        }
+        if (op === 'sync_profiles') {
+          const fn = ACTIONS.get('accounts:syncProfiles');
+          if (!fn) return { ok: false, error: '拉资料的处理器没注册' };
+          fire(fn(null, { only: only || undefined }), '拉资料');
+          return { ok: true, started: true, summary: `已启动拉取账号资料${only ? `（${only}）` : '（所有账号）'}，约 30 秒/号` };
+        }
+        if (op === 'edit_profile') {
+          if (!env) return { ok: false, error: 'op=edit_profile 必须给 env（如 "TK04"）' };
+          if (!args.name && !args.bio) return { ok: false, error: '至少给一个要改的字段：name 或 bio' };
+          const job = { env };
+          if (args.name) job.name = String(args.name);
+          if (args.bio) job.bio = String(args.bio);
+          const fn = ACTIONS.get('accounts:editProfiles');
+          if (!fn) return { ok: false, error: '改资料的处理器没注册' };
+          fire(fn(null, { jobs: [job], dryRun: args.dryRun === true }), '改资料');
+          const bits = [args.name ? `昵称「${args.name}」` : '', args.bio ? `简介「${String(args.bio).slice(0, 30)}」` : ''].filter(Boolean);
+          return {
+            ok: true,
+            started: true,
+            summary: `已启动改资料：${env} ${bits.join('，')}${args.dryRun === true ? '（演练，不保存）' : ''}，约 30 秒；改完我会用头像/昵称回读校验`,
+          };
+        }
+        if (op === 'launch' || op === 'stop_env') {
+          if (!env) return { ok: false, error: `op=${op} 必须给 env` };
+          const fn = ACTIONS.get('accounts:launch');
+          if (!fn) return { ok: false, error: '环境开关的处理器没注册' };
+          const r = await fn(null, env, op === 'stop_env' ? 'stop' : 'launch');
+          return r && r.ok !== false
+            ? { ok: true, summary: `已${op === 'stop_env' ? '关闭' : '启动'}环境 ${env}` }
+            : { ok: false, error: (r && r.message) || `环境 ${env} ${op === 'stop_env' ? '关闭' : '启动'}失败` };
+        }
+        return { ok: false, error: `不认识的 op：${op}` };
+      }
+      case 'admin_action': {
+        const op = String(args.op || '');
+        if (op === 'cancel_engine') {
+          const r = await ACTIONS.get('engine:cancel')?.(null);
+          return r && r.ok !== false ? { ok: true, summary: '已请求取消生成任务' } : { ok: false, error: r?.message || '取消失败' };
+        }
+        if (op === 'cancel_collect') {
+          const r = await ACTIONS.get('collect:cancel')?.(null);
+          return r && r.ok !== false ? { ok: true, summary: '已请求取消采集任务' } : { ok: false, error: r?.message || '取消失败' };
+        }
+        if (op === 'clear_logs') {
+          const r = await ACTIONS.get('logs:clear')?.(null);
+          return r && r.ok !== false ? { ok: true, summary: '已清空界面日志缓冲（磁盘日志保留）' } : { ok: false, error: '清空失败' };
+        }
+        if (op === 'push_report') {
+          const r = await ACTIONS.get('report:push')?.(null, args.date || today);
+          return r && r.ok !== false
+            ? { ok: true, summary: `日报已推送${args.date ? `（${args.date}）` : ''}` }
+            : { ok: false, error: r?.message || '推送失败（先在配置页填 Telegram Bot Token）' };
+        }
+        return { ok: false, error: `不认识的 op：${op}` };
+      }
+      case 'get_trend': {
+        const days = Math.min(Math.max(Number(args.days) || 7, 1), 30);
+        const r = await ACTIONS.get('report:trend')?.(null, days);
+        // report:trend 的形状是 { "账号|指标": {account, platform, metric, dates[], values[]}, ... }
+        const keys = r && typeof r === 'object' ? Object.keys(r) : [];
+        if (!keys.length) return { ok: false, error: '还没有采集数据（analytics.db 里没有记录），趋势查不了' };
+        const series = keys.slice(0, 12).map((k) => {
+          const s = r[k];
+          const lastIdx = Array.isArray(s.values) ? s.values.map((v, i) => (v == null ? -1 : i)).filter((i) => i >= 0).pop() : -1;
+          const last = lastIdx >= 0 ? s.values[lastIdx] : null;
+          return {
+            account: s.account,
+            metric: s.metric,
+            last,
+            lastDate: lastIdx >= 0 ? s.dates[lastIdx] : '',
+            points: Array.isArray(s.values) ? s.values.filter((v) => v != null).length : 0,
+          };
+        });
+        const dates = Array.isArray(r[keys[0]].dates) ? r[keys[0]].dates : [];
+        return {
+          ok: true,
+          summary: `最近 ${days} 天：${series.length} 条曲线，${dates.length} 个日历天里只有 ${series.reduce((m, s) => Math.max(m, s.points), 0)} 天有数据（缺口是没采到，不是 0）`,
+          days,
+          dates,
+          series,
+        };
       }
       case 'get_accounts': {
         // 复用账号页那条 IPC（同一份登录态判定，不另写一套）
@@ -2223,7 +2450,11 @@ function setupIPC() {
     const apiKey = String(config.deepseekApiKey || '').trim();
     if (!apiKey) throw new Error('还没配 DeepSeek API Key（配置页 → DeepSeek）');
     const model = String(config.deepseekModel || '').trim() || 'deepseek-chat';
-    const maxTokens = Number(config.deepseekMaxTokens) || 4096;
+    // 推理模型（v4-pro / reasoner）先想再答：上限给小了会返回空正文（CLAUDE.md 有实测）
+    const reasoning = /reason|v4-pro/i.test(model);
+    const maxTokens = reasoning
+      ? Math.max(Number(config.deepseekMaxTokens) || 0, 8000)
+      : Number(config.deepseekMaxTokens) || 4096;
     const axios = (await import('axios')).default;
     const started = Date.now();
     const r = await axios.post(
@@ -2250,7 +2481,8 @@ function setupIPC() {
     const message = r.data?.choices?.[0]?.message || {};
     const usage = r.data?.usage || null;
     if (usage) {
-      addLog('info', `🤖 AI 助手：${r.data?.model || model} ${Date.now() - started}ms · ${usage.prompt_tokens}+${usage.completion_tokens} tokens`);
+      const think = message.reasoning_content ? `（思考 ${String(message.reasoning_content).length} 字）` : '';
+      addLog('info', `🤖 AI 助手：${r.data?.model || model} ${Date.now() - started}ms · ${usage.prompt_tokens}+${usage.completion_tokens} tokens${think}`);
     }
     return { message, usage };
   }
@@ -2625,7 +2857,7 @@ function setupIPC() {
   });
 
   // 跑批量登录（流式回传日志）
-  ipcMain.handle('accounts:run', async (event, opts = {}) => {
+  handle('accounts:run', async (event, opts = {}) => {
     if (loginChild) return { ok: false, message: '已有登录任务在进行中' };
     const script = loginScriptPath();
     if (!fs.existsSync(script)) return { ok: false, message: `找不到登录脚本：${script}` };
@@ -2770,7 +3002,7 @@ function setupIPC() {
   });
 
   // 拉取账号资料（头像/昵称/粉丝/关注/赞/注册时间）。和登录一样 spawn 脚本 + 流式回传。
-  ipcMain.handle('accounts:syncProfiles', async (_event, opts = {}) => {
+  handle('accounts:syncProfiles', async (_event, opts = {}) => {
     if (syncChild) return { ok: false, message: '资料拉取正在进行中' };
     const script = syncScriptPath();
     if (!fs.existsSync(script)) return { ok: false, message: `找不到脚本：${script}` };
@@ -2861,7 +3093,7 @@ function setupIPC() {
    * 批量/单个修改账号资料（头像 / 名字 / 用户名 / 简介）。
    * 界面把每个环境要写的最终值算好传进来，这里只负责落成 job 文件并 spawn 脚本。
    */
-  ipcMain.handle('accounts:editProfiles', async (_event, opts = {}) => {
+  handle('accounts:editProfiles', async (_event, opts = {}) => {
     if (editChild) return { ok: false, message: '资料修改任务正在进行中' };
     const jobs = Array.isArray(opts.jobs) ? opts.jobs.filter((j) => j && j.env) : [];
     if (!jobs.length) return { ok: false, message: '没有要修改的账号' };
@@ -3021,7 +3253,7 @@ function setupIPC() {
   startEnvTitleWatcher();
 
 
-  ipcMain.handle('accounts:launch', async (_e, env, action = 'launch') => {
+  handle('accounts:launch', async (_e, env, action = 'launch') => {
     const cfg = loadConfig();
     const base = String(cfg.foxApiBase || 'http://127.0.0.1:8000/api/v1').replace(/\/+$/, '');
     try {
@@ -3543,7 +3775,7 @@ function setupIPC() {
 
   ipcMain.handle('report:publishDay', (_event, day) => buildPublishDay(day));
 
-  ipcMain.handle('report:trend', async (_event, days) => {
+  handle('report:trend', async (_event, days) => {
     try {
       const { openDB } = await import('../src/db.js');
       const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
@@ -3597,7 +3829,7 @@ function setupIPC() {
   });
 
   // 手动推送日报到 TG
-  ipcMain.handle('report:push', async (_event, targetDate) => {
+  handle('report:push', async (_event, targetDate) => {
     try {
       const { openDB } = await import('../src/db.js');
       const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');

@@ -705,6 +705,40 @@ node src/publisher/index.js --env TK01 --max 1
   这一轮的钱白花（`trimHistory` 有单测）。
 - 主进程里**仍然只能用 axios 发 DeepSeek 请求**（`assistantCallModel`），原因见上一节。
 
+### 执行结果必须看得见 + 「发成功了吗」要有三态结论（2026-10-19 补）
+用户截图反馈原话：「AI 助手的执行结果也不明显，也没有告诉我是否发布成功」「这个 AI 对话执行是不是还差点意思」。
+三个问题、三处修：
+- **工具行要带人话结论**：界面每个工具行现在是「工具名 + 结论 + 耗时」（`get_pending · 待发 0 条（只算当天）· 95ms`），
+  结论来自 `summarizeToolResult(name, result)`（纯函数，有单测）：执行器的 `summary` 优先，其次错误，最后按已知结构兜底。
+  以前只显示「工具名 + 毫秒」，用户看到 `run_publish 103ms` 完全不知道发了没发。
+- **`get_last_task`（只读）**：把三处证据合起来裁决 —— ① 发布账本（唯一能证明"真发出去了"的东西）；
+  ② 当天最近 3 场会话的 `.published` / `FAILED` / 有没有成片；③ 进程还在不在（`engineProcess` / `collectProcess` / 调度器）。
+  返回 `verdict` 五态：`running / success / unconfirmed / failed / not_published`，一句话 `verdictText`。
+- **系统提示词钉死**：「跑生成/发布/采集只代表**已启动**」→ 用户问发成功没必须再调 `get_last_task`，
+  回答第一行就要给 ✅/❌/⏳ 三态结论。**不许把「已启动」说成「已发布」**（有单测守着这句话）。
+- 实测：点提示「刚才那条发出去了吗？」→ `get_last_task ✅ 3ms` → 回「✅ 已发布：TK01 · 10:30 ·
+  《海外账号运营卡顿？稳定网络是关键》，已确认公开。另外最近 40 分钟内还有两场也已确认发布：am_0915（TK10）、am_0910（TK09）」。
+
+### 覆盖面：界面上能点的，助手也要能点（2026-10-19 补）
+用户口径：「不光是发布视频，这个项目所有的它都能执行、判断、分析，可以吗」「说白了，就是要像你一样强大」。
+缺口是**工具定义**，不是模型能力。补齐后 22 个工具，覆盖全部页面：
+- `manage_accounts`（write）：`op=login` 批量登录+备份登录态、`op=sync_profiles` 重抓头像/粉丝、
+  `op=edit_profile` 改昵称/简介、`op=launch` / `stop_env` 开关环境。
+- `admin_action`（write）：`cancel_engine` / `cancel_collect` / `clear_logs` / `push_report`（推 TG 日报）。
+- `get_trend`（read）：最近 N 天各账号趋势（`report:trend` 的形状是 `{ "账号|指标": {...} }`，别当成数组）。
+- `backup_cookies`：**执行器早就写在 main.js 里，工具定义却漏了** → 模型根本不知道有这个能力（本次补上）。
+- 实现方式：把原来 `ipcMain.handle(...)` 的 `accounts:run / syncProfiles / editProfiles / launch /
+  report:trend / report:push / logs:clear` 改成 `handle(...)` 登记进 `ACTIONS`，助手直接调同一份实现。
+- **长任务不 await**：登录（10~20 分钟）、拉资料（30 秒/号）、改资料都只返回 `started: true`，
+  结果靠 `get_last_task` / `get_logs` 查 —— 和 `run_engine` 一个口径，别把对话卡死。
+- 单测 `tests/unit/assistant-coverage.test.js`（8 例）钉住：危险能力（exec/shell/read_file/eval）一个都不许有；
+  会动线上账号的必须 `write` 且要确认；预览文案必须写清"要等多久/会开浏览器"；工具总数写死防偷塞。
+
+### 会思考（推理模型）
+- 助手用的是配置页那个「文案模型」。选 `deepseek-v4-pro` 就是推理模型：回包多一段 `reasoning_content`，
+  循环里单独 push 成 `{role:'reasoning'}`，界面渲染成可折叠的「思考过程（N 字）」（紫色块，默认收起）。
+- **`max_tokens` 必须兜到 8000**（`assistantCallModel` 里按 `/reason|v4-pro/i` 判断），给小了正文会是空的。
+- 代价：慢约一倍（21.9s vs 9.6s 的实测），所以默认仍是 flash；界面上明确写着怎么换。
 ### 新建定时任务（助手能加闹钟，2026-10-19 补）
 用户原话：「我让 AI 新建闹钟都做不了吗，这个级别有点低呀」——以前的 `schedule_action` 只有
 改/启停/删，`create` 缺失，等于「改得动、造不出」。现在：

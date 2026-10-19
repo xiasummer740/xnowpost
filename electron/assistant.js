@@ -20,6 +20,7 @@ import {
   validateArgs,
   validateConfigPatch,
   describeToolCall,
+  summarizeToolResult,
   stringifyToolResult,
   trimHistory,
   ledgerLine,
@@ -111,6 +112,8 @@ export function createAssistantSession({ exec, callModel, systemPrompt, onLedger
       role: 'tool',
       name: call.name,
       preview,
+      detail: call.error || summarizeToolResult(call.name, result),
+      verdict: result && typeof result === 'object' ? (result.verdict || '') : '',
       ok,
       ms,
       ...(call.error ? { error: call.error } : {}),
@@ -144,6 +147,11 @@ export function createAssistantSession({ exec, callModel, systemPrompt, onLedger
       lastUsage = (resp && resp.usage) || lastUsage;
       const msg = (resp && resp.message) || {};
       const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+
+      // 推理模型（deepseek-reasoner / v4-pro）会额外给思维链，单独渲染成可展开的「思考」块
+      if (msg.reasoning_content && String(msg.reasoning_content).trim()) {
+        view.push({ role: 'reasoning', text: String(msg.reasoning_content).trim(), step });
+      }
 
       if (msg.content && String(msg.content).trim()) {
         view.push({ role: 'assistant', text: String(msg.content).trim(), step });

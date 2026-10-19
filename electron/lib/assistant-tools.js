@@ -108,6 +108,47 @@ export const TOOL_DEFS = [
     parameters: obj(),
   },
   {
+    name: 'manage_accounts',
+    level: LEVEL.WRITE,
+    description: '账号域的动作（原来只能看，不能动）：op=login 批量登录并备份登录态、'
+      + 'op=sync_profiles 重新抓头像/粉丝/简介、op=edit_profile 改昵称和简介、op=launch / stop_env 开关浏览器环境。'
+      + '登录和拉资料要跑几分钟，属于"已启动"，结果用 get_last_task 或 get_logs 查。',
+    parameters: obj({
+      op: { type: 'string', enum: ['login', 'sync_profiles', 'edit_profile', 'launch', 'stop_env'] },
+      only: { type: 'string', description: 'op=login/sync_profiles 只处理指定环境，如 "TK01" 或 "TK01,TK03"' },
+      env: { type: 'string', description: 'op=edit_profile / launch / stop_env 的环境名，如 "TK04"' },
+      name: { type: 'string', description: 'op=edit_profile 的新昵称' },
+      bio: { type: 'string', description: 'op=edit_profile 的新简介' },
+      dryRun: { type: 'boolean', description: 'op=login / edit_profile 演练：只填不保存' },
+      force: { type: 'boolean', description: 'op=login 强制重登（会先退出登录）' },
+    }, ['op']),
+  },
+  {
+    name: 'admin_action',
+    level: LEVEL.WRITE,
+    description: '运维动作：op=cancel_engine 取消正在跑的生成、op=cancel_collect 取消采集、'
+      + 'op=clear_logs 清空界面日志缓冲、op=push_report 把某天日报推到 Telegram。',
+    parameters: obj({
+      op: { type: 'string', enum: ['cancel_engine', 'cancel_collect', 'clear_logs', 'push_report'] },
+      date: { type: 'string', description: 'op=push_report 的日期 YYYY-MM-DD，默认今天' },
+    }, ['op']),
+  },
+  {
+    name: 'get_trend',
+    level: LEVEL.READ,
+    description: '查最近 N 天各账号的指标趋势（播放/点赞/粉丝…），用来做对比分析。缺数据的天是断点，不是 0。',
+    parameters: obj({ days: { type: 'number', description: '天数，默认 7，上限 30' } }),
+  },
+  {
+    name: 'get_last_task',
+    level: LEVEL.READ,
+    description: '查刚刚启动的生成/发布/采集任务到底怎么样了：还在跑吗、跑完了成没成、失败在哪一步、有没有真发出去。'
+      + '用户问「发成功了吗」「刚才那条发出去了吗」时必须先调它，别拿「已启动」当成功。',
+    parameters: obj({
+      minutes: { type: 'number', description: '往回查多少分钟，默认 40' },
+    }),
+  },
+  {
     name: 'get_daily_report',
     level: LEVEL.READ,
     description: '查某一天的数据日报汇总（播放/点赞/评论/粉丝等）。注意「—」表示没采到数据，不是 0。',
@@ -202,6 +243,15 @@ export const TOOL_DEFS = [
     level: LEVEL.READ,
     description: '看当前记住了什么（带 id 与记录时间）。',
     parameters: obj(),
+  },
+  {
+    // 执行器早写在 main.js 里，但工具定义漏了 → 模型根本不知道有这个能力（2026-10-19 补）
+    name: 'backup_cookies',
+    level: LEVEL.WRITE,
+    description: '把已登录环境的 cookie 导出备份到 backups/cookies/<日期>/：换机器、环境坏了都能直接恢复，不用重新登录。',
+    parameters: obj({
+      envs: { type: 'array', description: '要备份的环境名，如 ["TK01","TK02"]；留空 = 全部已登录环境' },
+    }),
   },
 ];
 
@@ -313,6 +363,34 @@ export function normalizeJobTime(raw) {
   return `${String(hh).padStart(2, '0')}:${m[2]}`;
 }
 
+/**
+ * 把工具返回结果压成一行给人看的结论（界面每个工具行右侧显示）。
+ *
+ * 为什么需要：原来界面只显示「工具名 + 毫秒」，用户看到 `run_publish 103ms` 完全不知道发了没发。
+ * 这里只做"取现成字段"，**不猜**：执行器给的 `summary` 优先，其次错误，最后才按几个已知工具兜底。
+ */
+export function summarizeToolResult(name, result) {
+  const one = (t) => String(t == null ? '' : t).replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (result == null) return '';
+  if (typeof result !== 'object') return one(result);
+  if (result.ok === false) {
+    const why = result.error || result.message || result.reason;
+    return one(why ? `失败：${why}` : '失败');
+  }
+  if (result.summary) return one(result.summary);
+  if (result.verdictText) return one(result.verdictText);
+  if (name === 'get_schedule' && Array.isArray(result.jobs)) {
+    const on = result.jobs.filter((j) => j.enabled !== false).length;
+    return `共 ${result.jobs.length} 个闹钟，启用 ${on} 个`;
+  }
+  if (name === 'get_memory' && Array.isArray(result.items)) return `记住 ${result.items.length} 条`;
+  if (name === 'get_pending' && result.stats) {
+    const s = result.stats;
+    return `待发 ${s.pending ?? s.todo ?? 0} 条 · 跳过 ${s.skipped ?? 0} 条`;
+  }
+  return '';
+}
+
 /** 把点号路径写进对象（`dailyLimit.videos` → `{dailyLimit:{videos:n}}`） */
 function setDeep(target, dotted, value) {
   const parts = String(dotted).split('.');
@@ -377,6 +455,27 @@ export function describeToolCall(name, args = {}, ctx = {}) {
     case 'get_accounts': return '看账号登录状态';
     case 'get_logs': return `读日志（${a.level || 'error'}，最多 ${Math.min(Number(a.limit) || 60, 200)} 行）`;
     case 'get_cost': return '查最近一次花费';
+    case 'get_last_task': return `查刚才那次任务的结果（往回 ${Math.min(Math.max(Number(a.minutes) || 40, 5), 240)} 分钟）`;
+    case 'get_trend': return `看最近 ${Math.min(Math.max(Number(a.days) || 7, 1), 30)} 天的数据趋势`;
+    case 'manage_accounts': {
+      const who = a.only ? `（${a.only}）` : '（全部账号）';
+      if (a.op === 'login') return `登录并备份登录态${who}${a.force ? ' · 强制重登' : ''}${a.dryRun ? ' · 演练不登录' : ''} · 会打开浏览器，10 个号约 10~20 分钟`;
+      if (a.op === 'sync_profiles') return `重新抓账号资料（头像/粉丝/简介）${who} · 约 30 秒/号`;
+      if (a.op === 'edit_profile') {
+        const bits = [];
+        if (a.name) bits.push(`昵称「${a.name}」`);
+        if (a.bio) bits.push(`简介「${String(a.bio).slice(0, 40)}」`);
+        return `改资料：${a.env || '?'} ${bits.join('，') || '（没给新值）'}${a.dryRun ? ' · 演练不保存' : ''} · 会打开浏览器`;
+      }
+      if (a.op === 'launch') return `启动指纹环境 ${a.env || '?'}（会弹出浏览器窗口）`;
+      return `关闭指纹环境 ${a.env || '?'}`;
+    }
+    case 'admin_action': {
+      if (a.op === 'cancel_engine') return '取消正在跑的生成任务（已花的钱不退）';
+      if (a.op === 'cancel_collect') return '取消正在跑的采集任务';
+      if (a.op === 'clear_logs') return '清空界面上的日志缓冲（磁盘日志不动）';
+      return `把 ${a.date || '今天'} 的日报推送到 Telegram`;
+    }
     case 'get_daily_report': return `查 ${a.date || '今天'} 的数据日报`;
     case 'explain_failures': return `取失败证据${a.session ? `（${a.session}）` : ''}${a.date ? ` · ${a.date}` : ''}`;
 
@@ -635,6 +734,10 @@ export function buildSystemPrompt({ today = '', appVersion = '', model = '', mem
     '3. 回答要短、要有具体数字和时间（例如「10 条已发 / 1 条失败」），不要长篇大论。',
     '4. 需要改动配置或跑任务时，直接调用对应工具 —— 系统会先把改动给用户确认，不需要你在文字里再问一遍。',
     '5. 如果用户的问题缺信息（比如「关掉那个闹钟」），先用 get_schedule 查清楚再动手，不要猜 id。',
+    '6. **跑生成 / 发布 / 采集只代表"已启动"**（一条要跑几分钟）。用户问「发成功了吗」时，',
+    '   必须再调 get_last_task 看真实结果（账本 / FAILED 标记 / 进程是否还在），然后给三态结论：',
+    '   ✅ 已发布 / ❌ 失败（附原因）/ ⏳ 还在跑（附已等多久）。**不许把"已启动"说成"已发布"。**',
+    '7. 结论要写在第一行，别让用户自己去翻工具行；失败时给出可执行的下一步。',
     '',
     '事实口径（很重要，别搞错）：',
     '- 「未确认」= 点过发布按钮但没能证明已公开：不算成功、也不会重发，需要人工去后台核对。',
