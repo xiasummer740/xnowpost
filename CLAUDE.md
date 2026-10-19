@@ -197,6 +197,31 @@
   ② 收起后输入框**仍然有焦点**，再点它不会触发 `focus` 事件 → 必须额外绑 `@click` 兜底重开，
      否则用户要点一下空白处再点回来才有反应。
 
+### 闹钟轮次跑完要自己说话（v1.6.40）
+用户口径（2026-10-19）：「跑完的生成/发布要主动回报进 AI 助手对话，不能让用户守着时间问」。
+界面按钮 / 助手叫的轮次早就有了（`reportEngineRun()` 挂在 `doRunEngine().finish()` 上），
+**但 00:30 / 08:30 那些闹钟跑在 `src/scheduler.js` 独立进程里**，`finish()` 钩子根本不存在
+→ 那些轮次跑完只有 `logs/scheduler-<日期>.log`，用户不问就永远不知道成没成。
+
+- 落地方式：**每轮一个小 JSON**，不是"去 grep 日志文本"（日志是给人看的，措辞随时会改）。
+  - 写：`src/scheduler.js` 的 `runJobTracked()` → `writeRunRecord(dataPath('data/runs'), record)`，
+    文件名 `<日期>-<HHMM>-<jobId>.json`（按名字排序 = 按时间排序）。
+  - 读：`electron/main.js` 的 `startScheduledRunReporter()` —— `fs.watch(dir)` + 30 秒轮询兜底
+    + 启动时补报。推完就写 `reportedAt`（**先推再标记**：宁可能重复一次，也不能悄悄丢掉）；
+    `reportedAt` 已存在、或结束时间早于 6 小时的记录不再说（重装/迁移后别把老记录灌进对话）。
+  - 记录保留 7 天（`RUN_KEEP_DAYS`，`pruneRunRecords()`）。
+- **结果码只来自 `runWithRetry()` 的返回值**（`ok/insufficient/unconfirmed/timeout/failed`），
+  `runJob()` 因此改成统一返回 `{ result, reason }`（`outcomeOf()` 一处映射），
+  **不许**靠搜日志文字判断成败 —— 返回值是契约，日志措辞会改。
+- 文案在 `src/scheduled-run.js#describeScheduledRun()`（纯函数，21 条单测
+  `tests/unit/scheduled-run.test.js`），只按落盘证据说话：
+  - `.published` 的 `confirmed:false` 只说「没确认到公开」，不算成功；
+  - 「进程正常退出但没成片也没发布」就说「没看到成片也没看到发布记录」；
+  - `publish` 模式发的是**历史会话**，所以还会按 `startedAtMs..finishedAtMs` 时间窗查发布账本，
+    否则那一轮看起来像"什么都没发"。
+- 会话目录来自引擎自己的 `📅 …/am_0830 | 模式: video` 行（`pickSession()` 取最后一条，
+  重试后的那次才是真正落地的产物），不靠"猜最新目录"——那样会把上一轮/手动发布的会话算进来。
+
 ## CMD 弹窗零容忍
 - 所有 `spawn()` / `execSync()` 必须带 `windowsHide: true`
 - 启动子进程一律用 `windowsHide: true`，不允许出现任何 CMD 窗口

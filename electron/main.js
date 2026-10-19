@@ -5,7 +5,16 @@ import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import { initUpdater, downloadUpdate, quitAndInstall, checkForUpdates } from './updater.js';
 // 发布账本 / 最后发布时间（扫描逻辑与命令行脚本共用同一份实现）
-import { latestPublishByEnv } from '../src/publish-history.js';
+import { latestPublishByEnv, readLedger } from '../src/publish-history.js';
+// 定时轮次的落盘记录（调度器写 / 这里读），纯函数 + 落盘helper，单测在 tests/unit/scheduled-run.test.js
+import {
+  describeScheduledRun,
+  listPendingRunRecords,
+  markRunReported,
+  pruneRunRecords,
+  RUNS_REL,
+  RUN_KEEP_DAYS,
+} from '../src/scheduled-run.js';
 // 环境窗口标题前缀（窗口侧脚本与单测共用一份实现）
 // 纯逻辑工具抽到 ./lib/sanitize.js，便于被单元测试直接导入（main.js 本身无法在 node --test 里加载）
 import {
@@ -2998,6 +3007,128 @@ function setupIPC() {
     s.reset();
     return withUndo({ ok: true });
   });
+
+  /**
+   * 给「定时轮次」记录凑落盘证据。
+   *
+   * ⚠️ 只用**已经发生的事**：`.published`（`confirmed:false` 不算成功）、`FAILED`、账本时间窗、
+   *    `cost.json`、`collect-*.json`。读不到就返回空证据，让文案老老实实说"没看到"。
+   * ⚠️ 账本必须按**本轮时间窗**过滤：publish 模式发的是历史会话，只看 `record.session` 会漏；
+   *    不过滤又会把上一轮的发布算到这一轮头上。
+   */
+  function gatherRunEvidence(record) {
+    const ev = {
+      published: [],
+      unconfirmedPublish: false,
+      failed: null,
+      hasVideo: false,
+      hasText: false,
+      cost: null,
+      collect: null,
+    };
+    const startedMs = Number(record.startedAtMs) || Date.now();
+    const date = record.date || localDateStr(new Date(startedMs));
+    const dayDir = path.join(DATA_DIR, 'output', date);
+    const from = startedMs - 60_000;
+    const to = Number(record.finishedAtMs || Date.now()) + 120_000;
+    try {
+      if (record.session) {
+        const row = readSessionRow(dayDir, record.session, 0);
+        ev.hasVideo = !!row.hasVideo;
+        ev.hasText = !!row.hasText;
+        if (row.published) {
+          if (row.published.confirmed) {
+            ev.published.push({ env: row.published.env || '', at: row.published.at || '', title: '' });
+          } else {
+            ev.unconfirmedPublish = true;
+          }
+        }
+        if (row.failed) ev.failed = { stage: row.failed.stage, reason: row.failed.reason };
+        try {
+          const c = fs.readJsonSync(path.join(dayDir, record.session, 'cost.json'));
+          const total = Number(c && c.total);
+          if (Number.isFinite(total) && total > 0) ev.cost = total;
+        } catch (_) { /* 没有账单就不报花费 */ }
+        try {
+          const title = String(fs.readFileSync(path.join(dayDir, record.session, '文案.txt'), 'utf-8'))
+            .split('\n')[0].trim();
+          if (title && ev.published.length) ev.published[0].title = title;
+        } catch (_) { /* 没有文案就不报标题 */ }
+      }
+      // 账本里落在本轮时间窗内的发布（确认过的才算）
+      for (const rec of readLedger(DATA_DIR)) {
+        const at = Date.parse(rec.at || '');
+        if (!Number.isFinite(at) || at < from || at > to) continue;
+        const env = rec.env || '';
+        if (ev.published.some((p) => p.at === rec.at && p.env === env)) continue;
+        ev.published.push({ env, at: rec.at || '', title: rec.title || '' });
+      }
+      // 采集轮次：最近一份本轮时间窗内的 collect-*.json 才是这一轮的证据
+      if (record.mode === 'collect' && fs.existsSync(dayDir)) {
+        const files = fs.readdirSync(dayDir).filter((f) => /^collect-.*\.json$/.test(f)).sort();
+        for (let i = files.length - 1; i >= 0; i--) {
+          try {
+            const c = fs.readJsonSync(path.join(dayDir, files[i]));
+            const at = Date.parse(c.at || '');
+            if (Number.isFinite(at) && at < from) continue;   // 不是这一轮的
+            ev.collect = c;
+            break;
+          } catch (_) { /* 坏证据跳过 */ }
+        }
+      }
+    } catch (_) { /* 证据读不到就不报细节，别让回报本身炸掉 */ }
+    return ev;
+  }
+
+  /**
+   * 监听调度器写下的轮次记录，跑完主动说进 AI 助手对话。
+   *
+   * 为什么需要：`reportEngineRun()` 只挂在 `doRunEngine()` 的 finish 上（界面按钮 / 助手叫的轮次），
+   * 而 00:30 / 08:30 那些闹钟跑在 `src/scheduler.js` 独立进程里，结果以前只留在
+   * `logs/scheduler-<日期>.log` —— 用户不问就永远不知道那一轮成没成。
+   *
+   * 读的是 `data/runs/*.json`（记录里带 startedAt/finishedAt，能和账本时间窗对齐），
+   * 而不是去 grep 日志文本：日志是给人看的，措辞随时会改。
+   */
+  let runRecordTimer = null;
+  function startScheduledRunReporter() {
+    const dir = path.join(DATA_DIR, RUNS_REL);
+    let busy = false;
+    const scan = () => {
+      if (busy) return;      // watch 抖动时不要并发重复回报同一批记录
+      busy = true;
+      try {
+        for (const item of listPendingRunRecords(dir)) {
+          try {
+            pushAssistantNote(describeScheduledRun(item.record, gatherRunEvidence(item.record)));
+          } catch (e) {
+            addLog('warning', `定时轮次回报失败：${e.message}`);
+          }
+          markRunReported(item);   // 先推再标记：宁可能重复一次，也不能悄悄丢掉
+        }
+        const removed = pruneRunRecords(dir);
+        if (removed) addLog('info', `🧹 清理 ${RUN_KEEP_DAYS} 天前的轮次记录 ${removed} 个`);
+      } catch (e) {
+        addLog('warning', `轮次记录扫描失败：${e.message}`);
+      } finally {
+        busy = false;
+      }
+    };
+    try {
+      fs.ensureDirSync(dir);
+      fs.watch(dir, { persistent: false }, () => {
+        // 先让调度器把文件写完（原子写已经保证不读半截，这里只是去抖）
+        clearTimeout(runRecordTimer);
+        runRecordTimer = setTimeout(scan, 800);
+      });
+    } catch (e) {
+      addLog('warning', `轮次记录监听启动失败（改用轮询）：${e.message}`);
+    }
+    setInterval(scan, 30_000).unref?.();   // 兜底：watch 偶发丢事件也不会漏
+    scan();                                 // 启动时补报应用重启期间写下的记录
+  }
+
+  startScheduledRunReporter();
 
   // 测试指纹浏览器（FoxProfile）连接
   // 默认只做只读检查（健康 + 环境列表 + 账号里配的环境名是否存在），

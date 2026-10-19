@@ -7,6 +7,7 @@ import { dataPath, resolveCodeRoot } from './paths.js';
 import { writeJsonAtomicSync } from './fs-atomic.js';
 import { todayStr } from './organizer.js';
 import { checkLogins, resolveEnvs, allConfigEnvs, describeLogin } from './login-state.js';
+import { buildRunRecord, resultFromRunWithRetry, pickSession, writeRunRecord, RUNS_REL } from './scheduled-run.js';
 
 // 代码目录（打包版 = app.asar.unpacked）与数据目录（%APPDATA%/xnowpost）是两回事：
 // 子进程 cwd 用代码目录才能定位 src/*.js；日志与 TG 配置必须用数据目录，
@@ -98,11 +99,25 @@ async function sendAlert(message) {
   }
 }
 
+/**
+ * 这一轮的子进程输出（只留最近 400 行）。
+ * 用途：从引擎的 `📅 …/am_0830 | 模式: video` 拿到本轮会话目录，写进轮次记录；
+ * 不为了"看日志"把整轮输出留在内存里（一天 11 轮、每轮上千行）。
+ */
+let captureLines = null;
+const CAPTURE_MAX = 400;
+
 /** 子进程输出按行转发到调度器日志 */
 function forward(text) {
   if (!text) return;
   for (const line of String(text).split('\n')) {
-    if (line.trim()) log(line.trim());
+    const one = line.trim();
+    if (!one) continue;
+    log(one);
+    if (captureLines) {
+      captureLines.push(one);
+      if (captureLines.length > CAPTURE_MAX) captureLines.shift();
+    }
   }
 }
 
@@ -156,7 +171,7 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true }
     if (r.code === 2) {
       log(`❌ ${label} 失败：数据不足（TikTok 分析页只返回「--」占位，本轮不重试）`);
       log('   ℹ️ 这不是采集器故障：这些账号还没有可统计的播放/粉丝数据，等有数据后会自己恢复。');
-      return { ok: false, insufficient: true };
+      return { ok: false, insufficient: true, reason: '数据不足（分析页只有「--」占位）' };
     }
 
     // 退出码 3 = 「点了发布按钮，但没能证明已公开」（2026-10-19 P0-2）。
@@ -164,7 +179,7 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true }
     // 界面的调度进度靠 `⚠️ … 未确认` 这行判定已结束（electron/main.js 的 END_RE）。
     if (r.code === 3) {
       log(`⚠️ ${label} 未确认：已点击发布按钮但无法确认公开（不重试、不重发，请到 TikTok 后台核对）`);
-      return { ok: false, unconfirmed: true };
+      return { ok: false, unconfirmed: true, reason: '已点击发布按钮但无法确认公开' };
     }
 
     lastMessage = r.message;
@@ -187,7 +202,13 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true }
   const msg = `${head} <b>${label}</b>\n${sawTimeout ? '原因: 执行超时，子进程已被强制结束，需要人工确认产物/发布状态，本轮未重试' : `已重试 ${MAX_RETRIES} 次均失败\n原因: ${lastMessage}`}\n时间: ${new Date().toLocaleString('zh-CN')}\n日志: ${getLogPath()}`;
   log(msg);
   await sendAlert(msg);
-  return { ok: false, timeout: sawTimeout };
+  return {
+    ok: false,
+    timeout: sawTimeout,
+    reason: sawTimeout
+      ? `执行超时，子进程已被强制结束（重试 ${MAX_RETRIES} 次也无效前就停了）`
+      : `已重试 ${MAX_RETRIES} 次均失败：${lastMessage || '退出码非 0'}`,
+  };
 }
 
 function parseCron(timeStr) {
@@ -241,6 +262,14 @@ async function precheckLogin(envs) {
   };
 }
 
+/**
+ * `runWithRetry()` 的返回值 → runJob 的统一形状 `{ result, reason }`。
+ * 三个调用点（采集 / 发布 / 引擎）共用这一份映射，别各写各的。
+ */
+function outcomeOf(r) {
+  return { result: resultFromRunWithRetry(r), reason: r && !r.ok ? (r.reason || '') : '' };
+}
+
 async function runJob(job) {
   const cfg = loadUserConfig();
 
@@ -257,7 +286,7 @@ async function runJob(job) {
       log(`⚠️ 以下环境未登录，采集大概率会失败：${pre.out.map(r => r.env).join(', ')}`);
       log('   请到账号页点「启动」→ 手动登录（或用「批量登录」），再等下一轮。');
     }
-    await runWithRetry(args, job.label, { kind: 'collect' });
+    return outcomeOf(await runWithRetry(args, job.label, { kind: 'collect' }));
     // daily.js 已被 collector/index.js 内部调用，无需单独执行
   } else if (job.mode === 'publish') {
     const envs = allConfigEnvs(cfg);
@@ -266,12 +295,12 @@ async function runJob(job) {
       log(`⏭️ 跳过「${job.label || job.time}」：${envs.length} 个环境全都没登录。`);
       log('   发布一定是失败，本轮不启动发布器（省时间、不留 FAILED 目录）。');
       await sendAlert(`⏭️ 定时发布已跳过\n所有环境都未登录：${envs.join(', ')}\n时间: ${new Date().toLocaleString('zh-CN')}\n请先到账号页登录。`);
-      return;
+      return { result: 'skipped', reason: `所有环境都没登录（${envs.join('、')}），没启动发布器` };
     }
     if (pre.out.length) {
       log(`⚠️ 这些环境未登录，本轮发布会跳过/失败：${pre.out.map(r => r.env).join(', ')}`);
     }
-    await runWithRetry(['src/publisher/index.js', '--all'], job.label, { kind: 'publish' });
+    return outcomeOf(await runWithRetry(['src/publisher/index.js', '--all'], job.label, { kind: 'publish' }));
   } else {
     // 🔴 如果闹钟指定了账号，会加自动发布参数（作为独立 argv 元素传递，不拼字符串）
     const account = String(job.account || '').trim();
@@ -286,7 +315,7 @@ async function runJob(job) {
       log('   TikTok 图文自动发布通道未实现，图文产出没有 mp4，自动发布必然失败。');
       log('   请把该闹钟的「账号」去掉（改为纯图文生成），或删除这个闹钟。');
       log('   为避免白烧 API 费用，本轮不生成、不发布、不重试。');
-      return;
+      return { result: 'skipped', reason: 'TikTok 图文自动发布通道未实现（图文产出没有 mp4），本轮没生成也没发布' };
     }
 
     // 指定了账号（= 会自动发布）时先验登录态：没登录就别花 API 费用生成
@@ -300,7 +329,10 @@ async function runJob(job) {
         await sendAlert(
           `⏭️ 定时任务已跳过\n账号 ${account}（${pre.out.map(r => r.env).join(',')}）未登录\n时间: ${new Date().toLocaleString('zh-CN')}\n请到账号页登录后再等下一轮。`,
         );
-        return;
+        return {
+          result: 'skipped',
+          reason: `账号 ${account} 的环境没登录，本轮没花 API 费用、没生成也没发布`,
+        };
       }
     }
 
@@ -312,8 +344,51 @@ async function runJob(job) {
 
     // 自动发布模式不重试：重试会跑完整 engine 生成新内容，浪费钱
     // 超时（未确认）在 runWithRetry 内部一律不重试，避免重复上传/重复计费
-    await runWithRetry(args, job.label, { kind: 'engine', retryOnFail: !hasAccount });
+    return outcomeOf(await runWithRetry(args, job.label, { kind: 'engine', retryOnFail: !hasAccount }));
   }
+}
+
+/**
+ * 跑一轮 + 落一条「轮次结果」记录。
+ *
+ * 记录写在 `<数据目录>/data/runs/<日期>-<HHMM>-<jobId>.json`，主进程监听这个目录，
+ * 把结果**主动说进 AI 助手对话** —— 否则 00:30 / 08:30 那些轮次跑完，
+ * 用户不问就永远不知道成没成（`reportEngineRun()` 只覆盖界面/助手叫的轮次）。
+ *
+ * 写记录本身绝不能让任务失败：整段包在 try 里，出错只打一行日志。
+ */
+async function runJobTracked(job) {
+  const startedAtMs = Date.now();
+  captureLines = [];
+  let outcome = { result: 'failed', reason: '' };
+  try {
+    outcome = (await runJob(job)) || { result: 'ok', reason: '' };
+  } catch (e) {
+    outcome = { result: 'failed', reason: String((e && e.message) || e) };
+    log(`⚠️ 任务异常（${job.label}）: ${outcome.reason}`);
+  } finally {
+    const lines = captureLines || [];
+    captureLines = null;
+    try {
+      // 会话目录从引擎自己的 `📅 …/am_0830` 行里取：比"猜最新目录"准，
+      // 也不会把上一轮（或手动发布）的会话算成本轮产物。
+      const sess = pickSession(lines);
+      const record = buildRunRecord({
+        job,
+        startedAtMs,
+        finishedAtMs: Date.now(),
+        result: outcome.result,
+        reason: outcome.reason,
+        date: sess ? sess.date : todayStr(),
+        session: sess ? sess.session : '',
+        logFile: getLogPath(),
+      });
+      writeRunRecord(dataPath(RUNS_REL), record);
+    } catch (e) {
+      log(`⚠️ 轮次记录写入失败（不影响任务本身）: ${e.message}`);
+    }
+  }
+  return outcome;
 }
 
 // 加载配置并注册 cron
@@ -357,7 +432,9 @@ function loadSchedule() {
     let task;
     try {
       task = cron.schedule(cronExpr, () => {
-        runJob(job).catch(e => log(`⚠️ 任务异常（${job.label}）: ${e.message || e}`));
+        // runJobTracked 内部已经 catch 了异常并落记录；这里再兜一层，
+        // 因为 cron 回调里的未处理 rejection 会直接杀掉整个调度器进程。
+        runJobTracked(job).catch(e => log(`⚠️ 任务异常（${job.label}）: ${e.message || e}`));
       }, { timezone: 'Asia/Shanghai' });
     } catch (e) {
       log(`⚠️ 注册定时任务失败（${job.time} ${job.label}）: ${e.message}`);

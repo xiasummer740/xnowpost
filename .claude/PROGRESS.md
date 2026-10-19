@@ -1,8 +1,8 @@
 # 接力开发 — 新对话从这里开始
 
-> 更新：2026-10-19 23:12 ｜ 版本 **1.6.39**（已打包 / 已部署 E:\software\XNOWPost / 已重启）
-> 状态：`npm run verify` **505 pass / 0 fail**；git HEAD `e132941`，工作区干净；
-> 应用已在跑（PID 33144），调度器 ready 21 个任务；今天已发 **16 条**（TK01×3、TK05×3，其余各 1~2）。
+> 更新：2026-10-19 23:30 ｜ 版本 **1.6.40**（已打包 / 已部署 E:\software\XNOWPost / 已重启）
+> 状态：`npm run verify` **526 pass / 0 fail**；git HEAD `6082646`，工作区干净；
+> 应用已在跑，调度器 ready **21 个任务**；今天已发 **16 条**（TK01×3、TK05×3，其余各 1~2）。
 
 ## 0. 这个项目当前长什么样（新对话先读这一段）
 
@@ -20,10 +20,10 @@ Electron 43 + Vue 3 的 TikTok 自动化工具：10 个 FoxProfile 指纹环境�
 
 ## 1. 下一步（按优先级，接着做就行）
 
-**P1 — 把 A/B 在真机上撞一次（唯一还没真触发的验收）**
+**P1 — 把 A/B 在真机上撞一次（唯一还没真触发的验收，需要用户点头）**
 A（`tiktok.js` 超时放行的日志口径）和 B（`dialogs.js`/`page-sense.js` 的「Continue to post?」弹窗）
-只在**内容检查超过 90 秒**时才出现。今晚两轮检查分别 40 秒 / 21 秒就真通过了，所以没撞上。
-强制触发的办法（会真发一条、约 ¥0.03、7 分钟）：
+只在**内容检查超过 90 秒**时才出现。1.6.37 那轮两轮检查分别 40 秒 / 21 秒就真通过了，所以没撞上。
+强制触发的办法（**会真发一条到 TK05、约 ¥0.03、7 分钟**，所以必须先问用户）：
 ```powershell
 $env:XNOWPOST_DATA_DIR = "$env:APPDATA\xnowpost"
 $env:XNOWPOST_CHECKS_WAIT = "5"      # 5 秒就"超时放行"，最可能逼出 Continue to post
@@ -31,15 +31,16 @@ node src\publisher\index.js --env TK05 --max 1
 ```
 看两处日志：`⏳ 检查未完成（等了 Ns 就放行）` + `弹窗「检查未完成确认框」→ 点了「post now」`。
 
-**P1 — 调度器跑的轮次回报不进来**（当前唯一的功能缺口）
-`src/scheduler.js` 是独立进程，`finish()` 钩子拿不到它的结果 → 00:30 / 08:30 那些闹钟轮次跑完
-**不会**进 AI 助手对话（只有界面按钮和助手叫的会）。两条路选一条：
-① 主进程 `fs.watch` 调度器日志里的收尾行 → 推一条（便宜，但只能拿到日志文本）；
-② 让调度器把每轮结果写一个小 JSON（`data/runs/<日期>-<jobId>.json`），主进程读完推送（准，建议这条）。
+**P1 — 今晚 00:30–01:15 那 10 轮 = 1.6.40 的真机验收（不用动手，看结果就行）**
+那 10 个闹钟每轮都会往 `data/runs/` 写一条记录并在跑完后自己说进 AI 助手对话。
+明早核对：对话里应有 10 条「✅ 定时轮次完成（00:30 · 仅视频 · 账号 01）：已发布 → TK01《…》」，
+`data/runs/` 里对应 10 个 `<日期>-<HHMM>-<jobId>.json`，每条都带 `reportedAt`。
+**没有的话说明 `fs.watch` 在真机上丢了事件**（30 秒轮询是兜底，理论上最多晚 30 秒）。
 
 **P2 — `.published` 补 `confirmedAt`**
-现在账本/标记里的时间是"点 Post 的时刻"，公开确认往往晚 20~60 秒（今晚 22:59:12 点、22:59:45 确认）。
+现在账本/标记里的时间是"点 Post 的时刻"，公开确认往往晚 20~60 秒（10-19 22:59:12 点、22:59:45 确认）。
 账号页「最后发布」和 `get_last_task` 都只报点击时刻。发布器里拿到 `✅ 审查完成` 时补写 `confirmedAt` 即可。
+（1.6.40 的轮次回报已经会用 `.published` 里的证据，补上 `confirmedAt` 后文案可以顺带说「公开时刻」。）
 
 **P2 — 历史遗留（长期挂账，做之前先确认还有没有人疼）**
 `spawnSync` → `spawn`（调度器）；采集 0 成功时的退出码；`/login` 失败原因上报；子进程看门狗；
@@ -54,7 +55,7 @@ node src\publisher\index.js --env TK05 --max 1
 cd F:\summer\vs-code\xnowpost; npm run verify
 
 # 2) 版本号 + 打包 + 部署 + 重启（每次打包都要 bump 版本）
-(Get-Content package.json -Raw) -replace '"version": "1.6.39"', '"version": "1.6.40"' | Set-Content package.json -NoNewline
+(Get-Content package.json -Raw) -replace '"version": "1.6.40"', '"version": "1.6.41"' | Set-Content package.json -NoNewline
 npm run package
 Get-Process XNOWPost -EA SilentlyContinue | Stop-Process -Force
 robocopy release\win-unpacked E:\software\XNOWPost /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -87,7 +88,38 @@ Set-Clipboard -Value "今天发了几个？"; # 点输入框(窗口 660,800 / �
   **和** `handleDialogs()` 里给页面侧的那份映射（漏传就"命中但一个按钮都点不到"）。
 - `handleDialogs` / `page-sense` 是同一个框的两层判定，**加规则要两层一起加**，否则日志里还是「未知浮层」。
 - 任何 `spawn` 都要 `windowsHide: true`；发布器 `finally` 里必须 `closeFoxProfile`。
-- 永远别 `git checkout -- .` / `git stash`（HEAD 停在 1.2.18，工作区已到 1.6.39）。
+- 永远别 `git checkout -- .` / `git stash`（HEAD 停在 1.2.18，工作区已到 1.6.40）。
+
+## 1T（v1.6.40）闹钟轮次跑完自己说话（「调度器跑的轮次回报不进来」收口）
+用户口径：「跑完的生成/发布自动返回结果状态，不然我还要一直看着时间守着」。
+1.6.35–1.6.39 已经让**界面按钮 / 助手叫的**轮次自动回报，但 00:30 / 08:30 那些闹钟跑在
+`src/scheduler.js` **独立进程**里，`doRunEngine().finish()` 钩子根本不存在 → 那批轮次跑完只有日志。
+
+- **落地**：每轮写一个小 JSON，主进程读它（不是去 grep 日志文本 —— 日志是给人看的，措辞随时改）。
+  - 写：`src/scheduler.js` 新增 `runJobTracked()`，`runJob()` 改成统一返回 `{result, reason}`
+    （`outcomeOf()` 一处把 `runWithRetry()` 的返回值映射成结果码，**不再靠搜日志判断成败**），
+    收尾 `writeRunRecord(dataPath('data/runs'), record)`，文件名 `<日期>-<HHMM>-<jobId>.json`。
+  - 读：`electron/main.js` 新增 `startScheduledRunReporter()`（`fs.watch` + 30 秒轮询兜底 + 启动补报），
+    推完写 `reportedAt`（**先推再标记**）；已回报的、或结束早于 6 小时的记录不再说；
+    记录保留 7 天（`pruneRunRecords()`）。
+  - 文案：`src/scheduled-run.js#describeScheduledRun()`（纯函数），只按落盘证据说话：
+    `.published`（`confirmed:false` → 只说「没确认到公开」）/ FAILED / **发布账本按
+    `startedAtMs..finishedAtMs` 时间窗**（publish 模式发的是历史会话，不看时间窗会漏）/
+    `cost.json` / `collect-*.json`（采集轮次报「采到 8/10 个账号」）。
+  - 会话目录取自引擎自己的 `📅 …/am_0830 | 模式: video` 行（`pickSession()` 取最后一条），
+    不"猜最新目录"——那会把上一轮/手动发布的会话算进来。
+- **单测**：`tests/unit/scheduled-run.test.js` 21 条（会话行解析 / 5 个结果码映射 /
+  文案逐种结局 / 落盘-标记-清理 / 6 小时外不灌进对话 / 坏 JSON 跳过）。全量 **526 pass**。
+- **实测（真应用、真调度器）**：23:20 部署重启（版本 1.6.40，`data/runs/` 目录自动建好）；
+  23:21 往线上 `schedule.json` 临时插一个 `23:23 仅图文 + 账号 01` 的闹钟（走"图文通道未实现"跳过分支，
+  **不花 API 费用、不开浏览器**），调度器 23:20:32 热重载认到它 →
+  - 23:23:00.594 写 `data/runs/2026-10-19-2323-999.json`（`result:"skipped"`、`durationMs:3`）
+  - 23:23:01.430 `reportedAt` 落盘；app 日志 `🤖 AI 助手自动回报：⏭️ 定时轮次跳过（23:23 · 仅图文 ·
+    账号 01）：TikTok 图文自动发布通道未实现（图文产出没有 mp4），本轮没生成也没发布。`
+  - 界面截图 `output/v1640-assistant.png`（AI 助手对话里就是这一条，版本号 v1.6.40）
+  - 23:23:20 把临时闹钟删掉、`schedule.json` 恢复原样（21 个任务），调度器日志确认热重载。
+  - 那条测试记录已删除（jobId 999 已不存在，留着只会让 `data/runs/` 多一个假轮次）。
+- **剩下的真机验收**：今晚 00:30–01:15 那 10 轮会各写一条并自己说进对话（见「下一步」P1 第二条）。
 
 ## 1S（v1.6.35–1.6.37）第二轮实测 + 「跑完自动回报」
 用户口径：「修 A B，另外截图的，能不需要我重复问吗，发布完成后 自动返回结果状态，
