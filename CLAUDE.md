@@ -705,6 +705,21 @@ node src/publisher/index.js --env TK01 --max 1
   这一轮的钱白花（`trimHistory` 有单测）。
 - 主进程里**仍然只能用 axios 发 DeepSeek 请求**（`assistantCallModel`），原因见上一节。
 
+### 新建定时任务（助手能加闹钟，2026-10-19 补）
+用户原话：「我让 AI 新建闹钟都做不了吗，这个级别有点低呀」——以前的 `schedule_action` 只有
+改/启停/删，`create` 缺失，等于「改得动、造不出」。现在：
+- `op=create` 支持单条（`time` + `account` + `mode`）和批量（`items: [{time,account,mode}, …]`，**一次最多 10 条**）。
+  一次请求 = 一张确认卡 = 用户点一次「执行」（多条待确认时界面右上还有「全部执行（N 步）」）。
+- 校验顺序从便宜到贵：**时间**（`normalizeJobTime`：`8:30`/全角冒号都收，落盘永远 `HH:MM`；
+  `24:00`/`08:60` 一律拒）→ **账号必须已存在**（凭空造 `account:"11"` 会到点发现没这个环境）
+  → **重复检查**（同一批里也查，避免自己撞自己）→ 才动盘。
+- 新建出来默认 `enabled: true`（用户说「加个闹钟」不是「加个关着的闹钟」）；id 由 `nextJobId()` 发，永不复用。
+- 整个新建走 `assistantTxBegin('新建定时任务 …', ['config/schedule.json'])`，**所以「撤销」能把它删掉**
+  —— 实测：建 23:50/账号 10 → #23 → 点撤销 → 23 个回到 22 个、`23:50` 消失。
+- 单测 `tests/unit/schedule-create.test.js`（11 条）钉住：`required` 只有 `op`、枚举外 op 拒绝、
+  时间规范化、确认卡逐条列出且超过 12 条省略、批量 items 结构不被校验层拍成字符串、
+  原有 enable/disable/delete/update 文案没被挤掉。
+
 ### 长期记忆（`data/assistant-memory.json`）
 - 权限级多了 **`note`**：`remember` / `forget` 只动助手自己的文件，**直接执行不用确认**；
   业务写操作（改配置/改定时）和花钱动作仍然必须人点「执行」。`get_memory` 是只读。

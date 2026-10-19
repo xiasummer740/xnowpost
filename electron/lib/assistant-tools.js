@@ -39,6 +39,14 @@ export const CONFIG_WHITELIST = {
   'dailyLimit.videos': { type: 'number', min: 1, max: 20, label: '每日视频上限' },
 };
 
+/** 定时任务类型的中文名（和界面 `src/renderer/constants.js` 的 MODE_LABEL_MAP 对齐） */
+export const SCHEDULE_MODE_LABEL = {
+  auto: '视频+图文',
+  video: '仅视频',
+  post: '仅图文',
+  collect: '数据采集',
+};
+
 /** 单轮发布上限（和 `src/output-scan.js` 的 DEFAULT_MAX_PER_RUN 同口径） */
 export const PUBLISH_MAX_PER_TURN = 3;
 /** 一轮对话最多带几轮历史（防止上下文无限长大把费用拉起来） */
@@ -128,12 +136,19 @@ export const TOOL_DEFS = [
   {
     name: 'schedule_action',
     level: LEVEL.WRITE,
-    description: '改定时任务：启用/停用某个任务（op=enable/disable），或改它的时间与账号（op=update），或删除（op=delete）。',
+    description: '改定时任务：**新建**（op=create，给 time + mode + account）、启用/停用（op=enable/disable）、改时间或账号（op=update）、删除（op=delete）。新建的任务默认就是启用状态。',
     parameters: obj({
-      op: { type: 'string', enum: ['enable', 'disable', 'delete', 'update'] },
-      id: { type: 'string', description: '任务 id（先用 get_schedule 查）' },
-      patch: { type: 'object', description: 'op=update 时要改的字段，如 {"time":"09:20"}' },
-    }, ['op', 'id']),
+      op: { type: 'string', enum: ['create', 'enable', 'disable', 'delete', 'update'] },
+      id: { type: 'string', description: '任务 id（create 不需要；其它操作先用 get_schedule 查）' },
+      time: { type: 'string', description: 'op=create 的时间，HH:MM 24 小时制，如 "08:30"' },
+      mode: { type: 'string', enum: ['video', 'auto', 'post'], description: 'op=create 的类型，默认 video（仅视频）' },
+      account: { type: 'string', description: 'op=create 发到哪个账号编号，如 "03"（必须已存在）' },
+      items: {
+        type: 'array',
+        description: 'op=create 批量新建（一次最多 10 条）：[{"time":"08:30","account":"01","mode":"video"}, …]。「每 5 分钟一个账号」这类请求用它，不要连着调 10 次 create。给了 items 就不用 time/account。',
+      },
+      patch: { type: 'object', description: 'op=update 时要改的字段，如 {"time":"09:20","account":"05"}' },
+    }, ['op']),
   },
 
   // ── 花钱 / 发内容（需要用户确认）────────────────────────────────────
@@ -260,7 +275,9 @@ export function validateArgs(name, rawArgs) {
       } else out[k] = v;
     } else if (s.type === 'array') {
       if (!Array.isArray(v)) return { ok: false, error: `${k} 必须是数组` };
-      out[k] = v.map((x) => String(x));
+      // 对象元素（如新建闹钟的 items）原样保留，把结构校验留给执行层；
+      // 标量数组（账号编号之类）统一转字符串。
+      out[k] = v.map((x) => (x && typeof x === 'object' ? x : String(x)));
     } else if (s.type === 'object') {
       if (!isPlainObject(v)) return { ok: false, error: `${k} 必须是对象` };
       out[k] = v;
@@ -274,6 +291,26 @@ export function validateArgs(name, rawArgs) {
     if (out[k] === undefined) return { ok: false, error: `缺少参数：${k}` };
   }
   return { ok: true, args: out };
+}
+
+/**
+ * 把「用户/模型嘴里的时间」规范化成 `HH:MM`（24 小时制），非法返回 null。
+ *
+ * 为什么要宽容：模型（和人）经常写 `8:30`、`8：30`（全角冒号）、` 08:30 `。
+ * 但写进 `schedule.json` 必须是严格的 `HH:MM` —— 调度器按字符串比对到点触发，
+ * `8:30` 这种永远等不到（2026-10-19 加「新建闹钟」时定的口径）。
+ * 超出范围的（`24:00`、`08:60`）一律拒绝，不做"夹到最近合法值"这种猜测。
+ */
+export function normalizeJobTime(raw) {
+  let t = String(raw == null ? '' : raw).trim();
+  t = t.replace(/[：]/g, ':').replace(/\s+/g, '');
+  const m = t.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return `${String(hh).padStart(2, '0')}:${m[2]}`;
 }
 
 /** 把点号路径写进对象（`dailyLimit.videos` → `{dailyLimit:{videos:n}}`） */
@@ -353,6 +390,20 @@ export function describeToolCall(name, args = {}, ctx = {}) {
       return `改配置：\n  ${lines.join('\n  ')}${a.reason ? `\n原因：${a.reason}` : ''}`;
     }
     case 'schedule_action': {
+      if (a.op === 'create') {
+        const labelOf = (m) => SCHEDULE_MODE_LABEL[m || 'video'] || (m || 'video');
+        if (Array.isArray(a.items) && a.items.length) {
+          // 批量：逐条列出来，超过 12 条就省略（确认卡不是日志，别把界面撑爆）
+          const rows = a.items.slice(0, 12).map((it) => {
+            const m = (it && it.mode) || 'video';
+            return `每天 ${(it && it.time) || '??:??'} · ${labelOf(m)}${it && it.account ? ` · 账号 ${it.account}` : ''}`;
+          });
+          const more = a.items.length > 12 ? `\n… 还有 ${a.items.length - 12} 条` : '';
+          return `新建 ${a.items.length} 个定时任务：\n  ${rows.join('\n  ')}${more}\n（编号自动分配；新建后默认启用）`;
+        }
+        const mode = a.mode || 'video';
+        return `新建定时任务：每天 ${a.time || '??:??'} · ${SCHEDULE_MODE_LABEL[mode] || mode}${a.account ? ` · 账号 ${a.account}` : ''}\n（编号自动分配；新建后默认启用）`;
+      }
       const job = (ctx.jobs || []).find((j) => String(j.id) === String(a.id));
       const who = job
         ? `#${job.id} · ${job.time} ${job.type || job.mode || ''}${job.account ? ` · 账号 ${job.account}` : ''}`

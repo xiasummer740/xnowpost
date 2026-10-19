@@ -55,7 +55,10 @@ import {
   canUndo,
   describeUndo,
   UNDO_KEEP,
+  SCHEDULE_MODE_LABEL,
+  normalizeJobTime,
 } from './lib/assistant-tools.js';
+import { nextJobId } from '../src/job-ids.js';
 
 /** 日志页一次最多渲染多少行（再多 DOM 会卡；文件本身不截断，界面可以「显示更早」） */
 const LOG_LINE_LIMIT = 6000;
@@ -2050,6 +2053,76 @@ function setupIPC() {
         return { ok: true, summary: `已改 ${keys}（30 分钟内可撤销）`, applied: v.patch, undoable: true };
       }
       case 'schedule_action': {
+        // ── 新建（2026-10-19 用户反馈：只能改/启停/删，做不了「帮我加 10 个闹钟」）──
+        // 校验顺序刻意从便宜到贵：格式 → 账号存在 → 重复 → 才动盘。
+        // 账号必须已存在：凭空造一个 `account: "11"` 的任务，调度器跑到点会发现没有这个环境。
+        if (args.op === 'create') {
+          // 批量：`items` = [{time, mode, account}]，最多 10 条（一次「帮我设 10 个闹钟」= 一张确认卡）
+          const rawItems = Array.isArray(args.items) && args.items.length
+            ? args.items
+            : [{ time: args.time, mode: args.mode, account: args.account }];
+          if (rawItems.length > 10) {
+            return { ok: false, error: `一次最多新建 10 个任务，收到 ${rawItems.length} 条` };
+          }
+          const names = (loadConfig().accounts || []).map((a) => String(a.name || '')).filter(Boolean);
+          const list = readScheduleJobs();
+          const plan = [];
+          for (const [i, raw] of rawItems.entries()) {
+            const at = `第 ${i + 1} 条`;
+            // 宽容输入、严格落盘：`8:30` / 全角冒号都收，写进 JSON 的永远是 `08:30`
+            const time = normalizeJobTime(raw && raw.time);
+            if (!time) {
+              return { ok: false, error: `${at}时间不是合法的 HH:MM（24 小时制），收到「${(raw && raw.time) || ''}」` };
+            }
+            const mode = ['video', 'auto', 'post', 'collect'].includes(raw && raw.mode) ? raw.mode : 'video';
+            const account = mode === 'collect' ? '' : String((raw && raw.account) || '').trim();
+            if (mode !== 'collect') {
+              if (!account) return { ok: false, error: `${at}必须指定 account（账号编号，如 "03"）` };
+              if (names.length && !names.includes(account)) {
+                return { ok: false, error: `${at}的账号 ${account} 不存在（现有：${names.join('、')}）` };
+              }
+            }
+            // 重复检查：既有任务 + 本批里已经排进去的（同一批不许自撞）
+            const clash = [...list, ...plan].find((j) => String(j.time) === time
+              && String(j.mode || 'video') === mode
+              && String(j.account || '') === account);
+            if (clash) {
+              return { ok: false, error: `${at}和已有任务重复了：#${clash.id || '（本批）'}（${time} · 账号 ${account || '-'}）` };
+            }
+            plan.push({ time, mode, account });
+          }
+          assistantTxBegin(
+            plan.length === 1 ? `新建定时任务 ${plan[0].time}` : `批量新建 ${plan.length} 个定时任务`,
+            ['config/schedule.json'],
+          );
+          const created = [];
+          for (const p of plan) {
+            const id = nextJobId(list);
+            const label = SCHEDULE_MODE_LABEL[p.mode] || '仅视频';
+            list.push({ id, time: p.time, mode: p.mode, label, enabled: true, account: p.account });
+            created.push({ ...p, id, label });
+          }
+          const savedCreate = await ACTIONS.get('schedule:save')(null, list);
+          if (!savedCreate || savedCreate.ok === false) {
+            return { ok: false, error: `写 schedule.json 失败：${savedCreate?.message || '未知错误'}` };
+          }
+          for (const c of created) {
+            addLog('info', `🤖 AI 助手新建定时任务：#${c.id} ${c.time} ${c.label} · 账号 ${c.account || '-'}`);
+          }
+          const brief = created.map((c) => `#${c.id} ${c.time} 账号 ${c.account || '-'}`).join('，');
+          return {
+            ok: true,
+            ids: created.map((c) => c.id),
+            id: created.length === 1 ? created[0].id : undefined,
+            summary: created.length === 1
+              ? `已新建 #${created[0].id}：每天 ${created[0].time} · ${created[0].label}${created[0].account ? ` · 账号 ${created[0].account}` : ''}（30 分钟内可撤销）`
+              : `已新建 ${created.length} 个：${brief}（30 分钟内可撤销）`,
+            undoable: true,
+          };
+        }
+        if (!String(args.id || '').trim()) {
+          return { ok: false, error: `op=${args.op} 必须给 id（先用 get_schedule 查）` };
+        }
         const jobs = readScheduleJobs();
         const idx = jobs.findIndex((j) => String(j.id) === String(args.id));
         if (idx < 0) return { ok: false, error: `没有 id=${args.id} 的定时任务（先用 get_schedule 查）` };

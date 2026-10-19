@@ -43,7 +43,12 @@
         </div>
 
         <div v-if="pending.length" class="confirm-box">
-          <p class="confirm-title">这一步会真的改动东西，确认后才执行：</p>
+          <p class="confirm-title">
+            这一步会真的改动东西，确认后才执行：
+            <button v-if="pending.length > 1" class="x-btn asst-all" :disabled="busy" @click="decideAll">
+              全部执行（{{ pending.length }} 步）
+            </button>
+          </p>
           <div v-for="p in pending" :key="p.id" class="confirm-item">
             <span class="x-tag" :class="p.level === 'spend' ? 'warn' : 'brand'">{{ p.level === 'spend' ? '会花钱 / 会发布' : '改配置' }}</span>
             <pre class="confirm-text">{{ p.preview }}</pre>
@@ -120,6 +125,8 @@ const hints = [
   '哪个号掉登录了？',
   '记住：配音一律用英文',
   '把 09:05 那个闹钟关掉',
+  '加一个 23:50 的闹钟（账号 10）',
+  '看下我的定时任务',
 ];
 
 const thinkingMessages = ['看数据…', '读日志…', '算一下…'];
@@ -220,6 +227,29 @@ async function decide(id, approve) {
   }
 }
 
+/** 一批待确认动作一次全执行（模型一次提议 10 个闹钟时，不该让人点 10 下） */
+async function decideAll() {
+  if (busy.value || !pending.value.length) return;
+  const items = pending.value.map((p) => ({ id: p.id, approve: true }));
+  for (const p of pending.value) {
+    log.value.push({
+      role: 'tool',
+      preview: `执行：${String(p.preview).split('\n')[0]}`,
+      ok: true,
+      ms: 0,
+    });
+  }
+  pending.value = [];
+  startThinking();
+  try {
+    applyResult(await window.xnowpost.assistantAnswer(items));
+  } catch (e) {
+    log.value.push({ role: 'error', text: `执行失败：${e.message}` });
+  } finally {
+    stopThinking();
+  }
+}
+
 async function doUndo(id) {
   if (busy.value) return;
   const item = undoList.value.find((u) => u.id === id);
@@ -305,7 +335,11 @@ onMounted(async () => {
   border: 1px solid rgba(255, 176, 32, 0.42); background: rgba(255, 176, 32, 0.08);
   border-radius: 10px; padding: 11px 13px; display: flex; flex-direction: column; gap: 10px;
 }
-.confirm-title { font-size: 12.5px; color: #ffcf7a; }
+.confirm-title {
+  font-size: 12.5px; color: #ffcf7a;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.asst-all { padding: 4px 12px; font-size: 12px; }
 .confirm-item { display: flex; flex-direction: column; gap: 8px; }
 .confirm-text {
   margin: 0; white-space: pre-wrap; word-break: break-word;
