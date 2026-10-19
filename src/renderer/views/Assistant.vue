@@ -63,8 +63,8 @@
         <textarea
           ref="input"
           v-model="draft"
-          class="x-input asst-input"
-          rows="2"
+          class="x-textarea asst-input"
+          rows="3"
           :disabled="busy || !!pending.length"
           :placeholder="pending.length ? '先点上面的「执行」或「跳过」' : '问点什么，例如：今天发了几个？哪个号掉登录了？'"
           @keydown.enter.exact.prevent="send"
@@ -274,9 +274,17 @@ onMounted(async () => {
 .thinking-text { margin-left: 4px; }
 @keyframes asst-blink { 0%, 70%, 100% { opacity: .25; } 35% { opacity: 1; } }
 
-.asst-input-row { display: flex; gap: 10px; padding: 12px 14px 6px; border-top: 1px solid var(--line); align-items: flex-end; }
-.asst-input { flex: 1; resize: none; line-height: 1.55; font-family: inherit; }
-.asst-send { flex: 0 0 84px; height: 38px; }
-.asst-foot { padding: 0 14px 12px; margin: 0; font-size: 11.5px; color: var(--text-dim); }
+/* 输入区：原来 36px（沿用了单行 .x-input 的 height），鼠标很难点中。
+   现在换 .x-textarea + 88px 最小高度、字号 13.5px，点击/输入都舒服。 */
+.asst-input-row { display: flex; gap: 12px; padding: 14px 16px 8px; border-top: 1px solid var(--line); align-items: flex-end; }
+.asst-input {
+  flex: 1; resize: none; font-family: inherit;
+  min-height: 88px; max-height: 220px;
+  padding: 10px 12px; font-size: 13.5px; line-height: 1.65;
+  border-radius: 10px; cursor: text;
+}
+.asst-input:disabled { cursor: not-allowed; opacity: 0.7; }
+.asst-send { flex: 0 0 96px; height: 44px; font-size: 13.5px; }
+.asst-foot { padding: 0 16px 12px; margin: 0; font-size: 11.5px; color: var(--text-dim); }
 .asst-foot code { background: rgba(0, 0, 0, 0.25); padding: 1px 5px; border-radius: 4px; }
 </style>
