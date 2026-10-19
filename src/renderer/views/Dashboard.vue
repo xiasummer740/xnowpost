@@ -233,12 +233,12 @@
             </svg>
             <span>{{ collecting ? '采集中…' : '采集' }}</span>
           </button>
-          <button class="x-btn" @click="handlePublish" :disabled="publishing">
+          <button class="x-btn" @click="handlePublish" :disabled="publishing" :title="`发到 ${publishTargetLabel}`">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
               <path d="m9.5 13.5 4.2-4.2" />
             </svg>
-            <span>{{ publishing ? '发布中…' : '发布' }}</span>
+            <span>{{ publishing ? '发布中…' : (publishTarget ? `发布 → ${publishTarget} 号` : '发布') }}</span>
           </button>
         </div>
       </div>
@@ -254,12 +254,12 @@
           </svg>
         </span>
         <span class="done-text">内容已生成完成！</span>
-        <button class="x-btn primary" @click="handlePublish" :disabled="publishing">
+        <button class="x-btn primary" @click="handlePublish" :disabled="publishing" :title="`发到 ${publishTargetLabel}`">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
             <path d="m9.5 13.5 4.2-4.2" />
           </svg>
-          <span>{{ publishing ? '发布中…' : '立即发布' }}</span>
+          <span>{{ publishing ? '发布中…' : `立即发布 → ${publishTargetLabel}` }}</span>
         </button>
         <button class="x-mini" @click="showCompletionBanner = false" aria-label="关闭">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -494,8 +494,19 @@
           <input v-model="includeOld" type="checkbox" />
           <span>含旧会话</span>
         </label>
-        <span class="x-hint">默认只发当天、每轮最多 3 条</span>
+        <!-- 目标账号：2026-10-19 加的。以前这里只能发 accounts[0]，用户想发 02 号没入口，
+             助手也跟着发错号。现在选哪个就发哪个，选「默认」才按配置第一个。 -->
+        <label class="pub-target" title="这条发到哪个指纹环境">
+          <span>发到</span>
+          <select v-model="publishTarget" class="x-select">
+            <option value="">{{ defaultAccountLabel }}</option>
+            <option v-for="a in accountOptions" :key="a.name" :value="a.name">
+              {{ a.name }} · {{ a.env }}
+            </option>
+          </select>
+        </label>
         <div class="x-spacer"></div>
+        <span class="x-hint pub-hint" title="默认只发当天、每轮最多 3 条；勾「含旧会话」才发历史日期">只发当天 · 最多 3 条</span>
         <button class="x-btn" @click="handlePublish" :disabled="publishing">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
@@ -505,6 +516,48 @@
         </button>
       </div>
     </div>
+
+    <!-- 发布确认：账号发错撤不回来，所以点完按钮先看一眼"发到哪个号、几条" -->
+    <div v-if="publishConfirm" class="pub-mask" @click.self="publishConfirm = false">
+      <div class="pub-dialog">
+        <div class="pub-dialog-head">
+          <span class="x-ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
+              <path d="m9.5 13.5 4.2-4.2" />
+            </svg>
+          </span>
+          <span>确认发布</span>
+        </div>
+        <div class="pub-dialog-body">
+          <div class="pub-row">
+            <span class="pub-k">发到</span>
+            <span class="pub-v">
+              <b>{{ publishTargetLabel }}</b>
+              <em v-if="!publishTarget" class="pub-warn">（没选账号 = 配置里第一个）</em>
+            </span>
+          </div>
+          <div class="pub-row">
+            <span class="pub-k">条数</span>
+            <span class="pub-v">最多 {{ publishMaxCount }} 条{{ includeOld ? '，含历史日期会话' : '，只发当天' }}</span>
+          </div>
+          <div class="pub-row">
+            <span class="pub-k">待发</span>
+            <span class="pub-v">{{ pendingItems.length }} 条可发</span>
+          </div>
+          <div class="x-tip pub-tip">
+            发出去就撤不回来了。要发到别的号，关掉这张卡，在「发到」里换账号。
+          </div>
+        </div>
+        <div class="pub-dialog-foot">
+          <button class="x-btn" @click="publishConfirm = false" :disabled="publishing">取消</button>
+          <button class="x-btn primary" @click="confirmPublish" :disabled="publishing">
+            {{ publishing ? '发布中…' : `发到 ${publishTargetLabel}` }}
+          </button>
+        </div>
+      </div>
+    </div>
+
 
     <!-- 最近费用 -->
     <div v-if="store.latestCost" class="x-card">
@@ -679,6 +732,7 @@
 import { useAppStore } from '../stores/app.js';
 import { useRouter } from 'vue-router';
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
+import { buildPublishOpts, publishTargetLabel as targetLabelOf, publishTargetOptions } from '../lib/publish-request.js';
 
 const store = useAppStore();
 const router = useRouter();
@@ -993,17 +1047,60 @@ async function refreshCollectData() {
   } catch (_) {}
 }
 
-async function handlePublish() {
+// 目标账号：'' = 按配置第一个（老行为）；选了就必须发到那个号。
+// 持久化在 localStorage，重启应用还记得上次选的是几号。
+const publishTarget = ref(localStorage.getItem('xnowpost.publishTarget') || '')
+watch(publishTarget, (v) => localStorage.setItem('xnowpost.publishTarget', v || ''));
+const publishConfirm = ref(false)
+const pendingLoaded = ref(false)
+const publishMaxCount = 3;   // 和主进程 DEFAULT_MAX_PER_RUN 一致，超过也只发 3 条
+const accountOptions = ref([])
+const defaultAccountLabel = ref('')
+
+// 账号列表取本地配置（config:get），不走 accounts:list —— 那个要问 FoxProfile，慢且可能超时
+async function loadPublishAccounts() {
+  try {
+    const cfg = await window.xnowpost.getConfig()
+    const list = Array.isArray(cfg?.accounts) ? cfg.accounts : []
+    const t = publishTargetOptions(list)
+    accountOptions.value = t.options
+    defaultAccountLabel.value = t.defaultLabel
+    // 记住的号已经不在配置里了就退回默认，免得上游改了配置这里还挂着个幽灵账号
+    if (publishTarget.value && !accountOptions.value.some((a) => a.name === publishTarget.value)) {
+      publishTarget.value = ''
+    }
+  } catch (_) {}
+}
+
+// 文案和真正发出去的目标同源（都是 src/renderer/lib/publish-request.js，有单测守着）
+const publishTargetLabel = computed(() => targetLabelOf(accountOptions.value, publishTarget.value))
+
+// 点「发布」只是开确认卡：账号发错撤不回来，值得多看一眼
+function handlePublish() {
+  if (publishing.value) return
+  // 只有"确实读到了待发列表且是 0 条"才拦；列表没读到时照常开确认卡，
+  // 由主进程给准话（否则界面一次接口抖动就变成"点了没反应"）
+  if (pendingLoaded.value && !pendingItems.value.length) {
+    store.addLog('info', '没有待发布的内容')
+    return
+  }
+  publishConfirm.value = true
+}
+
+async function confirmPublish() {
   publishing.value = true
   try {
-    // includeOld 只在用户明确勾选时传；不传 = 主进程按「只发当天」处理（P0-1 护栏）
-    const opts = includeOld.value ? { includeOld: true } : {}
+    // includeOld / account 都由纯函数决定（单元测试守着），别在视图里再写一份
+    const opts = buildPublishOpts({ target: publishTarget.value, includeOld: includeOld.value })
     const result = await window.xnowpost.runPublish(opts)
     if (!result.ok) {
       store.addLog('error', '发布失败: ' + (result.message || ''))
     } else if (result.published > 0) {
-      store.addLog('success', `已发布 ${result.published} 条`)
+      store.addLog('success', `已发布 ${result.published} 条 → ${publishTargetLabel.value}`)
+    } else {
+      store.addLog('info', `没有可发的内容（${publishTargetLabel.value}）`)
     }
+    publishConfirm.value = false
     await loadPendingItems()
   } catch (e) {
     store.addLog('error', '发布调用失败: ' + (e.message || e))
@@ -1015,6 +1112,7 @@ async function openDir() { await window.xnowpost.openOutputDir(); }
 async function loadPendingItems() {
   try {
     pendingItems.value = await window.xnowpost.getPendingPublish()
+    pendingLoaded.value = true
   } catch (_) {}
 }
 
@@ -1045,6 +1143,7 @@ onMounted(async () => {
     store.loadCost();
     await refreshCollectData();
     loadPendingItems();
+    await loadPublishAccounts();   // 「发到哪个号」的下拉，取本地配置，不走 FoxProfile
   } catch (e) {
     store.addLog('error', '控制台初始化失败: ' + ((e && e.message) || e));
   }
@@ -1375,6 +1474,72 @@ td.num { text-align: right; font-family: var(--font-mono); font-size: 11.5px; co
   user-select: none;
 }
 .pc-old input { accent-color: var(--brand); cursor: pointer; }
+/* 这一行现在有 4 个元素（含旧会话 / 发到 / 提示 / 按钮），窄了要能换行，控件不许被压扁 */
+.card-foot { flex-wrap: wrap; row-gap: 8px; }
+.pub-hint { flex: none; white-space: nowrap; }
+
+/* 目标账号下拉：和「含旧会话」同一行，字号压低一点免得抢走按钮的视觉重心 */
+.pub-target {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.pub-target .x-select {
+  height: 26px;
+  min-width: 132px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+/* 发布确认卡：账号发错撤不回来，所以在动手前把「发到谁、几条」摆出来 */
+.pub-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 16, 0.55);
+  backdrop-filter: blur(2px);
+}
+.pub-dialog {
+  width: 380px;
+  max-width: calc(100vw - 40px);
+  background: var(--bg0);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.pub-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+  border-bottom: 1px solid var(--stroke);
+}
+.pub-dialog-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 9px; }
+.pub-row { display: flex; gap: 10px; font-size: 12px; }
+.pub-k { width: 34px; flex: none; color: var(--text-3); }
+.pub-v { color: var(--text-2); }
+.pub-v b { color: var(--text); font-weight: 650; }
+.pub-warn { color: var(--warn); font-style: normal; margin-left: 4px; }
+.pub-tip { margin-top: 2px; }
+.pub-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--stroke);
+  background: var(--bg1);
+}
 
 /* ── 日志区域（可折叠） ── */
 .log-head { cursor: pointer; }
