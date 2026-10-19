@@ -76,6 +76,116 @@ function localDateStr(d = new Date()) {
   return d.toLocaleDateString('sv-SE');
 }
 
+/**
+ * ISO/UTC 时间 → 本地「HH:MM」。
+ * ⚠️ 不许再用 `new Date(x).toISOString().slice(11,16)` 直接显示：那是 UTC，
+ * 北京时间会少 8 小时（2026-10-19 实测：21:43 发的作品，助手报「13:43」，
+ * 而历史页/账号页显示的是本地时间 → 同一个事实两个时间）。
+ */
+function localHHMM(iso) {
+  const d = new Date(iso || '');
+  if (!Number.isFinite(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * 当前跑到哪一步：读今天的 app 日志尾部，取最后一个"阶段"标记。
+ * 用途：用户等 2~3 分钟只想知道"现在在配音还是在传视频"，
+ * 以前 get_last_task 只有「已启动 / 已发布 / 失败」三态，中间全靠猜。
+ * 只读最后 80 行，不解析整个文件（一天 6000+ 行）。
+ */
+const STAGE_PATTERNS = [
+  [/🎬 === (视频|图文|文案) ===/, '开始生成'],
+  [/💬|🔄 标题|🚫 文案/, '写文案'],
+  [/🗣️ 先做配音|🔊 配音|✅ 配音完成/, '配音'],
+  [/📥 素材下载|🎞️ 分镜|🎨 全部分镜/, '找实拍素材'],
+  [/🎨 封面|🤖 底图|✍️ 叠加/, '做封面'],
+  [/🎬 合成|🎥 tiktok|✅ video\.mp4/, '合成视频'],
+  [/开头封面卡/, '加封面卡'],
+  [/📤 (自动发布|开始发布)|🌐 打开指纹环境/, '打开发布页'],
+  [/⬆️ 上传视频|文件已提交|处理完成/, '上传视频'],
+  [/📝 填写内容|✅ 标题已填/, '填文案'],
+  [/⏳ 等待检查|✅ 检查已通过/, '等内容检查'],
+  [/✅ 发布按钮已点击|Video published|审查完成/, '等平台审查'],
+];
+function currentStage() {
+  try {
+    const f = path.join(DATA_DIR, 'logs', `app-${localDateStr()}.log`);
+    if (!fs.existsSync(f)) return null;
+    const lines = fs.readFileSync(f, 'utf-8').trimEnd().split('\n').slice(-80);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      for (const [re, label] of STAGE_PATTERNS) {
+        if (re.test(line)) {
+          const m = line.match(/\[(\d{4}\/\d{2}\/\d{2}) (\d{2}:\d{2}:\d{2})\]/);
+          return { label, at: m ? m[2].slice(0, 5) : '' };
+        }
+      }
+    }
+  } catch (_) { /* 日志读不到就不给阶段 */ }
+  return null;
+}
+
+/**
+ * 读一场会话目录的状态（get_last_task 的原子单元）。
+ * `since` 用于过滤「本轮窗口内」的发布标记。
+ */
+function readSessionRow(dayDir, n, since = 0) {
+  const sp = path.join(dayDir, n);
+  const row = { session: n, time: sessionTime(n), hasVideo: fs.existsSync(path.join(sp, 'video.mp4')), published: null, failed: null };
+  try {
+    row.files = fs.readdirSync(sp).filter((f) => !f.startsWith('_') && !f.startsWith('.')).slice(0, 6);
+    row.mtime = fs.statSync(sp).mtimeMs;
+    row.ageMin = Math.max(0, Math.round((Date.now() - row.mtime) / 60000));
+  } catch (_) { row.files = []; row.mtime = 0; row.ageMin = 0; }
+  try {
+    if (fs.existsSync(path.join(sp, '.published'))) {
+      const m = fs.readJsonSync(path.join(sp, '.published'));
+      const at = Date.parse(m.at || '');
+      if (!Number.isFinite(at) || at >= since) {
+        row.published = { confirmed: m.confirmed !== false, env: m.env || '', at: m.at || '' };
+      }
+    }
+  } catch (_) { /* 坏标记忽略 */ }
+  try {
+    if (fs.existsSync(path.join(sp, 'FAILED'))) {
+      const f = fs.readJsonSync(path.join(sp, 'FAILED'));
+      row.failed = {
+        stage: String(f.stage || ''),
+        reason: String(f.reason || '').slice(0, 160),
+        published: f.published === true,
+        at: f.at || '',
+      };
+    }
+  } catch (_) { /* 同上 */ }
+  try {
+    row.hasText = fs.existsSync(path.join(sp, '文案.txt')) && fs.statSync(path.join(sp, '文案.txt')).size > 0;
+  } catch (_) { row.hasText = false; }
+  return row;
+}
+
+/**
+ * 一句话说清"这场会话到底怎么了"（给助手、也给人看）。
+ * 关键：**没有成片也没有发布/失败标记 != 还在生成** —— 必须看它多久没动静。
+ */
+function describeSession(row) {
+  if (!row) return '';
+  const files = (row.files || []).join('、') || '空目录';
+  if (row.published) {
+    return `${row.session} 已发布（${row.published.env || '环境未知'}${row.published.confirmed ? '' : '，未确认'}）`;
+  }
+  if (row.failed) {
+    return `${row.session} 失败${row.failed.stage ? ` 卡在「${row.failed.stage}」` : ''}${row.failed.reason ? ` · ${row.failed.reason}` : ''}`;
+  }
+  if (row.hasVideo) return `${row.session} 成片在（video.mp4），但没发出去`;
+  if (row.ageMin >= 15) {
+    return `${row.session} 没跑完就断了（${row.time} 开始，${row.ageMin} 分钟没动静，目录里只有 ${files}）`
+      + '——多半是被取消或中途崩溃，不是"还在生成"';
+  }
+  return `${row.session} 可能还在跑（${row.time} 开始，约 ${row.ageMin} 分钟，还没有成片）`;
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 // 用 createRequire 加载 electron（ESM 的 import 在 Electron 中不可靠）
@@ -244,6 +354,10 @@ let tray = null;
 let isQuitting = false;
 let logBuffer = [];
 let schedulerRunning = false;  // 调度器是否正在执行引擎任务
+// 手动发布的重入保护：2026-10-19 日志里 19:11:13 和 19:11:15 各跑了一次
+// 「📤 手动发布开始」，两次都把 307 条历史会话完整扫了一遍 —— 按钮被点了两下。
+let publishInFlight = false;
+let publishLastAt = 0;
 let schedulerLastRun = '';     // 最近一次调度执行时间
 let consecutiveFailures = 0;   // 引擎连续失败次数
 
@@ -1988,19 +2102,32 @@ function setupIPC() {
         const st = getEngineStatus();
         const pub = buildPublishDay(today);
         let pendingCount = 0;
+        let pendingOld = 0;
         let skipped = '';
         try {
-          const r = scanUnpublished({ outputDir: outDir, today, onlyToday: true, maxCount: 0 });
-          pendingCount = r.items.length;
+          // 口径必须和界面「待发布内容」一致（含历史日期）。
+          // 以前只传 onlyToday:true → 助手答「待发 0」，而首页卡片写着「27 项」，
+          // 用户会以为队列空了（2026-10-19 实测）。
+          // ⚠️ 用 `pending` 而不是 `items`：`items` 是"本轮能发的候选"（已按 onlyToday 过滤，
+          //    且不含 FAILED 待重试），`pending` 才是界面那张列表的同一份数据，
+          //    `old` 标记也只在 pending 里有。
+          const r = scanUnpublished({ outputDir: outDir, today, onlyToday: false, maxCount: 0 });
+          const all = r.pending || [];
+          pendingCount = all.filter((i) => !i.old).length;
+          pendingOld = all.length - pendingCount;
           skipped = summarizeSkips(r.skipped || []);
         } catch (_) { /* 输出目录还没有 */ }
         return {
           ok: true,
-          summary: `今天已发 ${pub.published} / 未确认 ${pub.unconfirmed} / 失败 ${pub.failed}，待发 ${pendingCount}`,
+          summary: `今天已发 ${pub.published} / 未确认 ${pub.unconfirmed} / 失败 ${pub.failed}，`
+            + `待发 当天 ${pendingCount} 条${pendingOld ? `（另有历史 ${pendingOld} 条未发，要在界面勾「含旧会话」才发得出去）` : ''}`,
           engine: { running: st.running, configured: st.configured, consecutiveFailures: st.consecutiveFailures, recentErrors: st.recentErrors },
           scheduler: { running: st.schedulerRunning },
           today: { date: today, published: pub.published, unconfirmed: pub.unconfirmed, failed: pub.failed, sessions: pub.sessions },
           pendingCount,
+          pendingOld,
+          pendingTotal: pendingCount + pendingOld,
+          stage: currentStage(),
           skipped,
           nextJob: nextEnabledJob(),
         };
@@ -2054,44 +2181,58 @@ function setupIPC() {
               .slice(-3)
               .reverse();
             for (const n of names) {
-              const sp = path.join(dayDir, n);
-              const row = { session: n, time: sessionTime(n), hasVideo: fs.existsSync(path.join(sp, 'video.mp4')), published: null, failed: null };
-              try {
-                if (fs.existsSync(path.join(sp, '.published'))) {
-                  const m = fs.readJsonSync(path.join(sp, '.published'));
-                  const at = Date.parse(m.at || '');
-                  if (!Number.isFinite(at) || at >= since) {
-                    row.published = { confirmed: m.confirmed !== false, env: m.env || '', at: m.at || '' };
-                  }
-                }
-              } catch (_) { /* 坏标记忽略 */ }
-              try {
-                if (fs.existsSync(path.join(sp, 'FAILED'))) {
-                  const f = fs.readJsonSync(path.join(sp, 'FAILED'));
-                  row.failed = {
-                    stage: String(f.stage || ''),
-                    reason: String(f.reason || '').slice(0, 160),
-                    published: f.published === true,
-                    at: f.at || '',
-                  };
-                }
-              } catch (_) { /* 同上 */ }
-              sessions.push(row);
+              sessions.push(readSessionRow(dayDir, n, since));
             }
           }
         } catch (_) { /* 目录读不到忽略 */ }
 
-        // ③ 裁决（优先级：还在跑 > 有新账本 > 未确认 > 失败 > 有片没发 > 只有空目录）
+        // ②b 点名某一轮（用户说「pm_1911 那轮跑完了吗」）：只在给了 session 时才查。
+        // 没有这个参数时，助手只能看到"最近 3 场"，容易把别的场次的事情安到它头上。
+        let focused = null;
+        let focusedMissing = '';
+        const wantSession = String(args.session || '').trim();
+        if (wantSession) {
+          const norm = wantSession.replace(/\.txt$/, '');
+          const withDate = norm.match(/^(\d{4}-\d{2}-\d{2})[\/\\]([a-z]{2}_\d{4})$/i);
+          const bare = norm.match(/^([a-z]{2}_\d{4})$/i);
+          if (withDate) {
+            const d = withDate[1];
+            const dir = path.join(DATA_DIR, 'output', d);
+            if (fs.existsSync(path.join(dir, withDate[2]))) focused = readSessionRow(dir, withDate[2], 0);
+            else focusedMissing = `没有 ${d}/${withDate[2]} 这个会话目录`;
+          } else if (bare) {
+            // 只给 pm_1911：先查今天，再往前翻 7 天
+            for (let i = 0; i < 8 && !focused; i++) {
+              const d = localDateStr(new Date(Date.now() - i * 86400000));
+              const dir = path.join(DATA_DIR, 'output', d);
+              if (fs.existsSync(path.join(dir, bare[1]))) {
+                focused = readSessionRow(dir, bare[1], 0);
+                focused.date = d;
+              }
+            }
+            if (!focused) focusedMissing = `最近 8 天没有 ${bare[1]} 这个会话目录`;
+          } else {
+            focusedMissing = `session 参数格式不对：「${wantSession}」，应该是 pm_1911 或 2026-10-19/pm_1911`;
+          }
+        }
+
+        // ③ 裁决（优先级：真在跑 > 有新账本 > 未确认 > 失败 > 有片没发 > 断了/中断）
         const lastLedger = publishedRows[publishedRows.length - 1] || null;
         const lastSession = sessions[0] || null;
+        // 当前跑到哪一步：读今天 app 日志尾部推断（用户等 2~3 分钟时最想知道的就是这个）
+        const stage = currentStage();
         let verdict = 'none';
         let verdictText = '';
         if (running.length) {
           verdict = 'running';
-          verdictText = `⏳ 还在跑：${running.join('、')}`;
+          // 「还在跑」必须带上"跑到哪了 + 多久没动静"，否则用户只能反复问
+          const st = stage ? `，当前：${stage.label}${stage.at ? `（${stage.at}）` : ''}` : '';
+          verdictText = `⏳ 还在跑：${running.join('、')}${st}`;
         } else if (lastLedger) {
           verdict = 'success';
-          const t = lastLedger.at ? new Date(lastLedger.at).toISOString().slice(11, 16) : '';
+          // 账本里的 at 是 UTC。以前这里直接 toISOString().slice(11,16) → 北京时间少 8 小时
+          // （2026-10-19 实测：21:43 发的，助手说 13:43）。时间一律转本地再显示。
+          const t = localHHMM(lastLedger.at);
           verdictText = `✅ 已发布：${lastLedger.env || '未知环境'}${t ? ` · ${t}` : ''}${lastLedger.title ? ` · ${lastLedger.title}` : ''}`;
         } else if (lastSession && lastSession.failed && lastSession.failed.published) {
           verdict = 'unconfirmed';
@@ -2108,23 +2249,56 @@ function setupIPC() {
           verdict = 'not_published';
           verdictText = `📦 成片已生成但还没发：${lastSession.session}（${minutes} 分钟内没有发布记录）`;
         } else if (lastSession) {
-          verdict = 'not_published';
-          verdictText = `🛠 ${lastSession.session} 还在生成，没有成片、也没发布`;
+          // 只有目录、没有成片/发布/失败标记：必须区分「真在跑」和「早就断了」。
+          // 踩过（2026-10-19 21:40）：pm_1911 是 19:11 那轮，3 秒就被取消，助手却答
+          // 「还在生成，没有成片、也没发布」——用户会一直等一个死掉的会话。
+          const quiet = lastSession.ageMin >= 15;
+          if (quiet) {
+            verdict = 'stalled';
+            const files = (lastSession.files || []).join('、') || '（空目录）';
+            verdictText = `⚠️ ${lastSession.session} 这轮没跑完就断了：${lastSession.time} 开始，`
+              + `${lastSession.ageMin} 分钟没有任何动静，也没有成片/发布/失败标记（目录里只有 ${files}）`
+              + '——多半是被取消或中途崩溃，不是"还在生成"';
+          } else {
+            verdict = 'running';
+            const st = stage ? `，当前：${stage.label}${stage.at ? `（${stage.at}）` : ''}` : '';
+            verdictText = `⏳ ${lastSession.session} 还在生成（${lastSession.time} 开始，约 ${lastSession.ageMin} 分钟，还没有成片）${st}`;
+          }
         } else {
           verdictText = `${minutes} 分钟内没有生成/发布/采集记录`;
         }
 
+        // ②c 点名的那一场优先：用户问「pm_1911 那轮跑完了吗」，就必须只答那一场，
+        // 不能用"最近一次发布成功"糊过去（2026-10-19 实测：助手把 21:43 的成功
+        // 当成了 pm_1911 的结果，还自己编了"它只生成了文案"）。
+        if (wantSession) {
+          const d = focused ? describeSession(focused) : focusedMissing;
+          if (focused) {
+            verdict = focused.published ? (focused.published.confirmed ? 'success' : 'unconfirmed')
+              : focused.failed ? (focused.failed.published ? 'unconfirmed' : 'failed')
+                : (focused.ageMin >= 15 || !running.length) ? 'stalled' : 'running';
+          }
+          verdictText = `${focused ? '📋' : '❓'} ${d}`;
+        }
+        // 最近一场会话的状态始终带一句：只报"上次发布成功"会掩盖后面那一轮断掉的事实
+        const sessionLine = lastSession && (!lastLedger || lastSession.session !== lastLedger.session)
+          ? describeSession(lastSession) : '';
+
         const notes = [];
         if (verdict === 'running') notes.push('等它跑完再问一次，别把「已启动」当「已发布」');
+        if (verdict === 'stalled') notes.push('这轮已经没有进程在跑了：要重跑就再起一轮，别继续等');
         if (verdict === 'unconfirmed') notes.push('未确认的重发会产生重复作品，先去 TikTok 后台看一眼');
         if (verdict === 'failed') notes.push('可以用 explain_failures 拿失败证据，或重跑一轮');
         return {
           ok: true,
           verdict,
           verdictText,
-          summary: verdictText,
+          summary: sessionLine && !wantSession ? `${verdictText}；最近一场：${sessionLine}` : verdictText,
           minutes,
           running,
+          stage,
+          session: wantSession ? (focused || null) : undefined,
+          lastSession: lastSession || null,
           published: publishedRows.slice(-5),
           sessions,
           notes,
@@ -3488,6 +3662,17 @@ function setupIPC() {
     const maxCount = Number.isFinite(reqMax) && reqMax > 0 ? reqMax : defaultMax;
     // 手动勾选的条数：>0 表示"只发这几条"（逐条显式指定，优先于 maxCount）
     const pickCount = Array.isArray(opts?.pick) ? opts.pick.length : 0;
+    // 🔴 重入保护 + 3 秒去抖（用户双击/连点）：重复触发会重复扫描 300+ 会话，
+    //    最坏情况两条并发上传同一个会话 → 重复作品。判断放在最前面，日志都不写。
+    if (publishInFlight) {
+      addLog('warning', '⚠️ 已经在发布中，本次点击已忽略');
+      return { ok: false, message: '发布已在进行中' };
+    }
+    if (Date.now() - publishLastAt < 3000) {
+      return { ok: false, message: '刚刚点过一次（3 秒内不重复执行）' };
+    }
+    publishInFlight = true;
+    publishLastAt = Date.now();
     try {
       addLog('info', `📤 手动发布开始（预算 ${Math.round(budgetMs / 60000)} 分钟${pickCount ? `，勾选 ${pickCount} 条` : ''}）...`);
       const config = loadConfig();
@@ -3610,6 +3795,8 @@ function setupIPC() {
       addLog('error', `❌ 发布失败: ${err.message}`);
       notifyFailure({ title: 'XNOWPost 手动发布失败', body: err.message, key: `publish-run|${err.message}` });
       return { ok: false, message: err.message };
+    } finally {
+      publishInFlight = false;
     }
   });
 

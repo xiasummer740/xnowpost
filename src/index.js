@@ -320,7 +320,8 @@ async function runVideoPipeline(sessionDir, index, topic) {
     }
     const size = (await fs.stat(vr)).size;
     if (size === 0) throw new Error('视频合成产出了 0 字节文件');
-    console.log(`  ✅ video.mp4 (${(size/1024/1024).toFixed(1)}MB)`);
+    // 文件大小那行已由 src/engine/video.js 的 synthOne() 打过（✅ video.mp4 (x.xMB)），
+    // 这里不再重复 —— 2026-10-19 日志里同一行出现两遍，看着像合成了两次。
 
     // 🖼️ 开头封面卡：把 封面.png 贴到正片最前面 1.6 秒。
     // 不这么做的话，第一帧是分镜的 fade-in（全黑），平台自动封面也是黑的，
@@ -342,8 +343,8 @@ async function runVideoPipeline(sessionDir, index, topic) {
 
     // P2-12：视频产出后推送通知（此前 pushVideoContent 导入了却从未调用）
     const pushRes = await pushVideoContent(c, index, vr, TIME_LABEL);
-    if (pushRes.skipped) console.log('  ⚠️ 未配置 TG，跳过视频推送');
-    else if (!pushRes.ok) console.log(`  ⚠️ 视频推送失败（不影响产出）: ${pushRes.error}`);
+    // 「未配置 TG」的提示由 notifier.pushVideoContent() 自己打，这里不再打一遍（同义两条）
+    if (!pushRes.skipped && !pushRes.ok) console.log(`  ⚠️ 视频推送失败（不影响产出）: ${pushRes.error}`);
 
     ok = true;
     return { content: c, videoPath: vr };
@@ -408,8 +409,8 @@ async function runPostPipeline(sessionDir, index, topic, textName = '文案.txt'
 
   const imagePath = path.join(sessionDir, `p${index}_01.png`);
   const pushRes = await pushPostContent(c, index, imagePath, TIME_LABEL);
-  if (pushRes.skipped) console.log('  ⚠️ 未配置 TG，跳过图文推送');
-  else if (!pushRes.ok) console.log(`  ⚠️ 图文推送失败（不影响产出）: ${pushRes.error}`);
+  // 同视频：「未配置 TG」由 notifier 自己打，这里不重复
+  if (!pushRes.skipped && !pushRes.ok) console.log(`  ⚠️ 图文推送失败（不影响产出）: ${pushRes.error}`);
 
   console.log('  ✅ 4张轮播图');
   return { content: c, imagePath };

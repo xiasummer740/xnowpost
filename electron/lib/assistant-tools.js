@@ -143,9 +143,12 @@ export const TOOL_DEFS = [
     name: 'get_last_task',
     level: LEVEL.READ,
     description: '查刚刚启动的生成/发布/采集任务到底怎么样了：还在跑吗、跑完了成没成、失败在哪一步、有没有真发出去。'
-      + '用户问「发成功了吗」「刚才那条发出去了吗」时必须先调它，别拿「已启动」当成功。',
+      + '用户问「发成功了吗」「刚才那条发出去了吗」时必须先调它，别拿「已启动」当成功。'
+      + '用户点名某一轮（例如「pm_1911 那轮」「pm_19:11 那次」）时传 session，才答得准；'
+      + '不传 session 只会答"最近一次发布"和"最近一场会话"，容易答非所问。',
     parameters: obj({
       minutes: { type: 'number', description: '往回查多少分钟，默认 40' },
+      session: { type: 'string', description: '点名某一轮会话：pm_1911 或 2026-10-19/pm_1911' },
     }),
   },
   {
@@ -196,7 +199,7 @@ export const TOOL_DEFS = [
   {
     name: 'run_engine',
     level: LEVEL.SPEND,
-    description: '跑一轮内容生成（会花钱：约 ¥0.01/条）。mode=video 出视频，mode=text 只出文案。'
+    description: '跑一轮内容生成（会花钱：一条视频约 ¥0.03 = 文案 ¥0.01 + 封面生图 ¥0.02；mode=text 只出文案约 ¥0.01）。'
       + '用户指定了账号（如「发 TK02」「账号 02」）时**必须**传 account：这样生成完会直接发到那个账号；'
       + '不传则账号由配置决定（通常是账号 01），生成完只是一份待发内容。',
     parameters: obj({
@@ -538,7 +541,7 @@ export function describeToolCall(name, args = {}, ctx = {}) {
     }
     case 'run_engine': {
       const who = a.account ? ` · 生成完直发账号 ${a.account}` : ' · 账号按配置（通常是 01）';
-      return `跑一轮${a.mode === 'text' ? '文案生成' : '视频生成'}${a.topic ? `，主题「${a.topic}」` : ''}${who} · 会花钱（约 ¥0.01/条）`;
+      return `跑一轮${a.mode === 'text' ? '文案生成（约 ¥0.01）' : '视频生成（约 ¥0.03：文案 ¥0.01 + 封面生图 ¥0.02）'}${a.topic ? `，主题「${a.topic}」` : ''}${who} · 会花钱`;
     }
     case 'run_publish': {
       const who = a.account ? ` · 发到账号 ${a.account}` : a.env ? ` · 发到 ${String(a.env).toUpperCase()}` : ' · 发到默认账号（01）';
@@ -874,6 +877,9 @@ export function buildSystemPrompt({ today = '', appVersion = '', model = '', mem
     '9. **用户点名了"具体哪一条"（标题、第几条、某个生成时间）时，run_publish 必须带 pick**：',
     '   先用 get_pending 拿到序号 n 和标题，再把序号或标题照抄进 pick。',
     '   绝不许"待发里随便挑一条发"再报告发了哪条 —— 用户说要哪条就发哪条，找不到就直说找不到。',
+    '10. **用户点名了"哪一轮会话"（pm_1911、19:11 那次）时，get_last_task 要带 session**：',
+    '    不带 session 返回的是"最近一次发布 + 最近一场会话"，很容易把别处的成功当成它的结果。',
+    '    工具会一起给 `lastSession`（含 files/ageMin/hasText），照它说，别自己推断"它只生成了文案"。',
     '   只有用户说「全发」才传 all: true。',
     '   pick 点名的条目即使是历史日期也照发（不需要 includeOld），别再追问"要不要 includeOld"。',
     '',
@@ -881,7 +887,7 @@ export function buildSystemPrompt({ today = '', appVersion = '', model = '', mem
     '- 「未确认」= 点过发布按钮但没能证明已公开：不算成功、也不会重发，需要人工去后台核对。',
     '- 图标/日报里的「—」= 没采到数据，不是 0；这些账号本来就没播放/粉丝。',
     '- 默认只发当天内容；历史日期的会话要显式 includeOld 才会发。',
-    '- 一条视频成本约 ¥0.01（文案 + 一张生图约 ¥0.02）。',
+    '- 一条视频成本约 ¥0.03：文案 ¥0.01 + 封面生图 ¥0.02；只出文案约 ¥0.01。',
     '- 改配置 / 改定时这类写操作，执行前会自动快照，30 分钟内界面上有「撤销」；',
     '  跑生成 / 发布 / 采集不可撤销（钱和内容已经出去了），所以这类动作要更谨慎。',
     '',

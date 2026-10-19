@@ -52,7 +52,7 @@
               bad: m.ok === false,
               skip: m.skipped,
               good: m.ok !== false && m.verdict === 'success',
-              warn: m.ok !== false && (m.verdict === 'unconfirmed' || m.verdict === 'failed'),
+              warn: m.ok !== false && (m.verdict === 'unconfirmed' || m.verdict === 'failed' || m.verdict === 'stalled'),
             }"
             :title="m.preview"
           >
@@ -115,6 +115,9 @@
           v-model="draft"
           class="x-textarea asst-input"
           rows="3"
+          spellcheck="false"
+          autocorrect="off"
+          autocomplete="off"
           :disabled="busy || !!pending.length"
           :placeholder="pending.length ? '先点上面的「执行」或「跳过」' : '问点什么，例如：今天发了几个？哪个号掉登录了？'"
           @keydown.enter.exact.prevent="send"
