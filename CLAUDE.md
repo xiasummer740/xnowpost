@@ -759,7 +759,21 @@ node src/publisher/index.js --env TK01 --max 1
   - `publish:run` 的新参数：`pick: ["2026-10-18/pm_2014", …]`（只给 session 也行）、
     `all: true`（= 当天全部）。确认卡上的「条数/内容」和真正执行同源
     （`buildPublishOptions` / `describePublishPlan` / `buildPickKeys`，共 13 条单测）。
-  - **别在下拉选项上再读 `browserEnv`**：`publishTargetOptions()` 产出的是 `{name, env}`，
+- **助手也能"发我点名的那一条"**（2026-10-19，用户：「把同样的能力给助手」）：
+  `run_publish` 多了 `pick`（数组）和 `all`；`pick` 每一项可以是
+  **序号**（`"2"` / `"第2条"`）、**会话键**（`"2026-10-18/pm_2014"`）、**会话名**（`"pm_2014"`）、
+  **标题片段**（`"不露脸"`）。解析在 `resolvePublishSelectors()`（纯函数，11 条单测），
+  匹配不上 / 匹配多条就**报错并列出候选**，绝不退回"那就发第一条"。
+  - `get_pending` 现在返回的 `items[].n` **就是"第几条"**，队列口径和界面完全一致
+    （含历史日期、新→旧），模型拿到 n 照抄进 pick 即可。
+  - 确认卡会显示解析后的真实条目（`只发点名的 1 条：第1条《标题》(日期/会话)`），
+    解析不了就明写 `⚠️ 但没对上待发队列：…`——**绝不显示一个裸序号 `1` 让人猜**。
+  - 这需要把待发队列塞进预览上下文（`previewCtx()` 的 `pendingQueue`）。**注意作用域**：
+    `previewCtx` 在 `ensureAssistantSession()` 里，`outDir` 不在那个作用域，
+    引用它抛 ReferenceError 会被 catch 吞掉 → 确认卡永远退化成裸序号（2026-10-19 真踩过）。
+  - 一次点名超过 `PUBLISH_MAX_PER_TURN`（3）**直接报错让分批**，不静默截断。
+  - `pick` 命中历史日期照发（用户亲手点的），模型不用再纠结 `includeOld`（提示词里写了）。
+  - 界面那条示范：助手页提示条「把待发里第 1 条发到 02 号」（点一下就能看到整条链路）。  - **别在下拉选项上再读 `browserEnv`**：`publishTargetOptions()` 产出的是 `{name, env}`，
     `publishTargetLabel()` 必须同时认 `env`，否则确认卡会写「账号 02（未绑定环境）」
     （2026-10-19 真实踩到，已加回归测试）。
 ### 覆盖面：界面上能点的，助手也要能点（2026-10-19 补）

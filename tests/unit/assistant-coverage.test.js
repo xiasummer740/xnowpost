@@ -98,6 +98,16 @@ test('发内容能指定账号（2026-10-19 发错号事故的护栏）', () => 
   assert.equal(validateArgs('run_publish', { env: 'TK02' }).ok, true);
   assert.equal(validateArgs('run_engine', { mode: 'video', account: '02', autoPublish: true }).ok, true);
   assert.equal(validateArgs('run_publish', { target: '02' }).ok, false);
+  // 2026-10-19 追加：助手也要能"发我点名的那一条"（用户要求把界面的勾选能力给助手）
+  assert.equal(validateArgs('run_publish', { pick: ['2'] }).ok, true);
+  assert.equal(validateArgs('run_publish', { pick: ['2026-10-18/pm_2014'] }).ok, true);
+  assert.equal(validateArgs('run_publish', { all: true }).ok, true);
+  assert.equal(validateArgs('run_publish', { pick: [{ bad: 1 }] }).ok, false);
+  assert.match(describeToolCall('run_publish', { pick: ['第2条'] }), /只发点名的 1 条/);
+  assert.match(describeToolCall('run_publish', { all: true, account: '02' }), /当天全部.*账号 02/);
+  // 系统提示词必须写清：点名内容要带 pick，不许随便挑一条
+  assert.match(buildSystemPrompt({ today: '2026-10-19' }), /run_publish 必须带 pick/);
+  assert.match(buildSystemPrompt({ today: '2026-10-19' }), /随便挑一条/);
 
   // ③ 系统提示词必须写死"用户点名账号就要带 account，不许先跑再说发错"
   const p = buildSystemPrompt({ today: '2026-10-19', appVersion: '1.6.18', model: 'deepseek-chat' });

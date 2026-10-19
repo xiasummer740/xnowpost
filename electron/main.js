@@ -59,6 +59,8 @@ import {
   UNDO_KEEP,
   SCHEDULE_MODE_LABEL,
   normalizeJobTime,
+  resolvePublishSelectors,
+  PUBLISH_MAX_PER_TURN,
 } from './lib/assistant-tools.js';
 import { nextJobId } from '../src/job-ids.js';
 
@@ -2107,18 +2109,34 @@ function setupIPC() {
         };
       }
       case 'get_pending': {
+        // 队列口径和界面「待发布内容」完全一致（含历史日期，按 新→旧），
+        // 这样助手说的「第 N 条」和用户在界面上数的是同一条（2026-10-19 统一）。
         const r = scanUnpublished({
           outputDir: outDir,
           today,
-          onlyToday: args.includeOld === true ? false : true,
+          onlyToday: false,
           maxCount: 0,
         });
+        const queue = (r.pending || []).map((p, i) => ({
+          n: i + 1,
+          key: `${p.date}/${p.session}`,
+          date: p.date,
+          session: p.session,
+          time: p.time,
+          title: String(p.title || '').slice(0, 40),
+          old: !!p.old,
+          type: p.type,
+        }));
+        const todayCount = queue.filter((q) => !q.old).length;
         return {
           ok: true,
-          summary: `待发 ${r.items.length} 条${args.includeOld === true ? '（含历史日期）' : '（只算当天）'}`,
+          summary: `待发 ${queue.length} 条（当天 ${todayCount} 条 + 历史 ${queue.length - todayCount} 条），按生成时间新→旧`,
           includeOld: args.includeOld === true,
-          count: r.items.length,
-          items: r.items.slice(0, 10).map((i) => ({ date: i.date, session: i.session, title: String(i.title || '').slice(0, 40) })),
+          count: queue.length,
+          todayCount,
+          // 序号 n 就是"用户说的第几条"，run_publish 的 pick 可以直接照抄
+          items: queue.slice(0, 12),
+          order: '新→旧（日期倒序 → 同一天 pm 先于 am → 同前缀时间倒序）',
           skipped: summarizeSkips(r.skipped || []),
         };
       }
@@ -2456,18 +2474,65 @@ function setupIPC() {
           const acc = (loadConfig().accounts || []).find((a) => String(a.name || '').trim() === wantAccount.padStart(2, '0'));
           if (!acc) return { ok: false, error: `配置里没有账号 ${wantAccount}` };
         }
+
+        // 用户点名了具体哪一条 → 解析成 date/session；解析不出来就**报错**，
+        // 绝不退回"那就发队列第一条"（那正是用户抱怨的"发哪条是随机的"）。
+        const wantPick = (Array.isArray(args.pick) ? args.pick : (args.pick ? [args.pick] : []))
+          .map((x) => String(x || '').trim()).filter(Boolean);
+        let pickKeys = [];
+        let pickMatched = [];
+        if (wantPick.length) {
+          const queue = scanUnpublished({ outputDir: outDir, today, onlyToday: false, maxCount: 0 }).pending || [];
+          const res = resolvePublishSelectors(wantPick, queue);
+          if (!res.ok) {
+            const cands = (res.candidates || []).map((c) => `第${c.n}条 ${c.key}《${c.title}》`).join('；');
+            return {
+              ok: false,
+              error: `${res.error}${cands ? `。可选的：${cands}` : ''}`,
+              candidates: res.candidates || [],
+            };
+          }
+          pickKeys = res.keys;
+          pickMatched = res.matched;
+          // 点名超过单次上限就不发，让模型（或用户）分批 —— 不静默截断
+          if (pickKeys.length > PUBLISH_MAX_PER_TURN) {
+            return {
+              ok: false,
+              error: `一次最多发 ${PUBLISH_MAX_PER_TURN} 条，你点名了 ${pickKeys.length} 条，请分批`,
+              candidates: pickMatched,
+            };
+          }
+        }
+
         Promise.resolve(ACTIONS.get('publish:run')(null, {
-          maxCount,
+          ...(pickKeys.length ? { pick: pickKeys } : { maxCount }),
+          ...(args.all === true && !pickKeys.length ? { all: true } : {}),
           includeOld: args.includeOld === true,
           ...(wantAccount ? { account: wantAccount } : {}),
           ...(wantEnv ? { env: wantEnv } : {}),
         })).catch((e) => {
           addLog('error', `AI 助手启动发布失败：${e.message}`);
         });
-        addLog('info', `🤖 AI 助手启动发布（最多 ${maxCount} 条${args.includeOld ? '，含历史日期' : ''}${wantAccount ? ` → 账号 ${wantAccount}` : wantEnv ? ` → ${wantEnv}` : ' → 默认账号'}）`);
+        const who = wantAccount ? ` → 账号 ${wantAccount}` : wantEnv ? ` → ${wantEnv}` : ' → 默认账号';
+        if (pickKeys.length) {
+          const list = pickMatched.map((m) => `第${m.n}条《${m.title}》`).join('、');
+          addLog('info', `🤖 AI 助手启动发布（点名 ${pickKeys.length} 条：${pickKeys.join('、')}${who}）`);
+          return {
+            ok: true,
+            summary: `已启动发布，只发点名的 ${pickKeys.length} 条${who}：${list}`,
+            started: true,
+            count: pickKeys.length,
+            picked: pickMatched,
+            account: wantAccount || '',
+            env: wantEnv || '',
+          };
+        }
+        addLog('info', `🤖 AI 助手启动发布（${args.all === true ? '当天全部' : `最多 ${maxCount} 条`}${args.includeOld ? '，含历史日期' : ''}${who}）`);
         return {
           ok: true,
-          summary: `已启动发布，最多 ${maxCount} 条${wantAccount ? ` → 账号 ${wantAccount}` : wantEnv ? ` → ${wantEnv}` : '（发到默认账号 01，没指定账号）'}`,
+          summary: args.all === true
+            ? `已启动发布，发当天全部待发内容${who}`
+            : `已启动发布，最多 ${maxCount} 条${wantAccount ? ` → 账号 ${wantAccount}` : wantEnv ? ` → ${wantEnv}` : '（发到默认账号 01，没指定账号）'}`,
           started: true,
           maxCount,
           account: wantAccount || '',
@@ -2547,7 +2612,20 @@ function setupIPC() {
       callModel: assistantCallModel,
       exec: assistantExec,
       systemPrompt,
-      previewCtx: () => ({ config: loadConfig(), jobs: readScheduleJobs() }),
+      // 确认卡上要能显示"第几条《标题》"，所以把待发队列也交给预览函数
+    // （只在有 pick 的工具上扫一次，别每次预览都扫目录）
+    previewCtx: () => {
+      const ctx = { config: loadConfig(), jobs: readScheduleJobs() };
+      try {
+        // 注意：这里在 ensureAssistantSession 里，`outDir` 不在作用域内（踩过一次：
+        // 引用它抛 ReferenceError 被 catch 吞掉 → 确认卡永远退化成裸序号）。
+        const oDir = path.join(DATA_DIR, 'output');
+        ctx.pendingQueue = scanUnpublished({ outputDir: oDir, today, onlyToday: false, maxCount: 0 }).pending || [];
+      } catch (_) {
+        ctx.pendingQueue = [];
+      }
+      return ctx;
+    },
       onLedger: assistantLedger,
       log: (m) => addLog('info', m),
     });

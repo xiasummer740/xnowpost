@@ -209,13 +209,22 @@ export const TOOL_DEFS = [
   {
     name: 'run_publish',
     level: LEVEL.SPEND,
-    description: `把待发布的内容发出去（每条最多 ${PUBLISH_MAX_PER_TURN} 个，避免一次误发太多）。`
-      + '用户指定了账号时必须传 account —— 不传会发到配置里的第一个账号（通常是 01），发了就撤不回来。',
+    description: `把待发布的内容发出去（每次最多 ${PUBLISH_MAX_PER_TURN} 条，避免一次误发太多）。`
+      + '用户指定了账号时必须传 account —— 不传会发到配置里的第一个账号（通常是 01），发了就撤不回来。'
+      + '用户点名了**具体哪一条**（标题、第几条、某个时间）时必须传 pick，不许"随便挑一条发"。'
+      + '要挑哪条先用 get_pending 拿序号（n）和标题，再照抄进 pick。',
     parameters: obj({
-      maxCount: { type: 'number', description: `本轮发几条，1~${PUBLISH_MAX_PER_TURN}，默认 1` },
+      pick: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '只发这几条。每项可以是：序号（"2" 或 "第2条"，序号见 get_pending 的 n）、'
+          + '会话键（"2026-10-18/pm_2014"）、会话名（"pm_2014"）、或标题片段。拿不准就先 get_pending。',
+      },
+      maxCount: { type: 'number', description: `没传 pick 时发几条，1~${PUBLISH_MAX_PER_TURN}，默认 1` },
+      all: { type: 'boolean', description: '当天待发的全部发出去（等同界面里条数选「全部」）；用户没明说别传' },
       account: { type: 'string', description: '发到哪个账号（配置里的 01…10），如 "02"；强烈建议总是给' },
       env: { type: 'string', description: '或直接给环境名，如 "TK02"（与 account 二选一）' },
-      includeOld: { type: 'boolean', description: '是否包含历史日期的会话（默认 false）' },
+      includeOld: { type: 'boolean', description: '是否包含历史日期的会话（默认 false；pick 里点名的旧会话照发）' },
     }),
   },
   {
@@ -332,9 +341,16 @@ export function validateArgs(name, rawArgs) {
       } else out[k] = v;
     } else if (s.type === 'array') {
       if (!Array.isArray(v)) return { ok: false, error: `${k} 必须是数组` };
-      // 对象元素（如新建闹钟的 items）原样保留，把结构校验留给执行层；
-      // 标量数组（账号编号之类）统一转字符串。
-      out[k] = v.map((x) => (x && typeof x === 'object' ? x : String(x)));
+      // 声明了元素类型（如 run_publish 的 pick: string[]）就按标量校验：
+      // 模型塞进对象元素说明它理解错了，宁可报错也别让它带着 {bad:1} 往下走。
+      if (s.items && s.items.type === 'string') {
+        const bad = v.find((x) => x && typeof x === 'object');
+        if (bad) return { ok: false, error: `${k} 的元素必须是文本（如 "2" 或 "标题片段"）` };
+        out[k] = v.map((x) => String(x));
+      } else {
+        // 没声明元素类型的（如新建闹钟的 items）原样保留，结构校验留给执行层。
+        out[k] = v.map((x) => (x && typeof x === 'object' ? x : String(x)));
+      }
     } else if (s.type === 'object') {
       if (!isPlainObject(v)) return { ok: false, error: `${k} 必须是对象` };
       out[k] = v;
@@ -525,8 +541,27 @@ export function describeToolCall(name, args = {}, ctx = {}) {
       return `跑一轮${a.mode === 'text' ? '文案生成' : '视频生成'}${a.topic ? `，主题「${a.topic}」` : ''}${who} · 会花钱（约 ¥0.01/条）`;
     }
     case 'run_publish': {
-      const n = clampPublishCount(a.maxCount);
       const who = a.account ? ` · 发到账号 ${a.account}` : a.env ? ` · 发到 ${String(a.env).toUpperCase()}` : ' · 发到默认账号（01）';
+      const picks = (Array.isArray(a.pick) ? a.pick : (a.pick ? [a.pick] : []))
+        .map((x) => String(x || '').trim()).filter(Boolean);
+      if (picks.length) {
+        // 确认卡上要看到"到底哪几条"：有队列就解析（第几条《标题》），
+        // 解析不了就说清原因 —— 绝不显示一个 `1` 让人自己去猜。
+        const queue = ctx.pendingQueue;
+        if (Array.isArray(queue) && queue.length) {
+          const res = resolvePublishSelectors(picks, queue);
+          if (res.ok) {
+            const list = res.matched
+              .map((m) => `第${m.n}条《${m.title}》(${m.key})`)
+              .join('、');
+            return `只发点名的 ${res.keys.length} 条：${list}${who} · 会真的发到 TikTok`;
+          }
+          return `只发点名的 ${picks.length} 条（${picks.slice(0, 4).join('、')}）${who}\n⚠️ 但没对上待发队列：${res.error}`;
+        }
+        return `只发点名的 ${picks.length} 条（${picks.slice(0, 4).join('、')}${picks.length > 4 ? '…' : ''}）${who} · 会真的发到 TikTok`;
+      }
+      if (a.all === true) return `发当天全部待发内容${who} · 会真的发到 TikTok`;
+      const n = clampPublishCount(a.maxCount);
       return `发布 ${n} 条${who}${a.includeOld ? '（含历史日期会话！）' : '（只发当天）'} · 会真的发到 TikTok`;
     }
     case 'run_collect':
@@ -552,6 +587,91 @@ function fmt(v) {
   return String(v);
 }
 
+/**
+ * 把"用户点名的那几条"解析成发布队列里的真实条目（纯函数，有单测）。
+ *
+ * 为什么要这一步：模型只会说人话（「第 2 条」「发《为什么同样的100粉…》那条」「pm_2014」），
+ * 而 `publish:run` 只认 `date/session`。**匹配不上就报错，绝不退回"那就发第一条"** ——
+ * 那正是 2026-10-19 发错内容/发错号的同类事故。
+ *
+ * @param {Array<string>} selectors 序号（"2"/"第2条"）、"日期/会话"、"会话名"、标题片段
+ * @param {Array<{date:string,session:string,title?:string,time?:string,old?:boolean}>} queue 待发队列（新→旧）
+ * @returns {{ok:boolean, keys:string[], matched:Array, error?:string, candidates?:Array}}
+ */
+export function resolvePublishSelectors(selectors, queue) {
+  const list = Array.isArray(queue) ? queue.filter((x) => x && x.session) : [];
+  const raw = Array.isArray(selectors) ? selectors : (selectors == null || selectors === '' ? [] : [selectors]);
+  const brief = (x, i) => ({
+    n: i + 1,
+    key: `${x.date}/${x.session}`,
+    title: String(x.title || '').slice(0, 40),
+    old: !!x.old,
+  });
+
+  if (!raw.length) return { ok: false, error: '没给要发哪一条', keys: [], matched: [] };
+  if (!list.length) return { ok: false, error: '待发队列是空的（没有可发的内容）', keys: [], matched: [] };
+
+  const picked = [];
+  for (const sel0 of raw) {
+    const sel = String(sel0 == null ? '' : sel0).trim();
+    if (!sel) continue;
+
+    let hits = [];
+    const num = sel.match(/^#?\s*第?\s*(\d{1,3})\s*条?$/);
+    if (num) {
+      const n = Number(num[1]);
+      if (n < 1 || n > list.length) {
+        return {
+          ok: false,
+          error: `队列里没有第 ${n} 条（现在一共 ${list.length} 条待发）`,
+          keys: [],
+          matched: [],
+          candidates: list.slice(0, 12).map(brief),
+        };
+      }
+      hits = [list[n - 1]];
+    } else if (sel.includes('/')) {
+      const [d, s] = sel.split('/');
+      hits = list.filter((x) => String(x.date) === d.trim() && String(x.session) === s.trim());
+    } else {
+      hits = list.filter((x) => String(x.session) === sel);
+      if (!hits.length) {
+        const q = sel.toLowerCase();
+        hits = list.filter((x) => String(x.title || '').toLowerCase().includes(q));
+      }
+    }
+
+    if (!hits.length) {
+      return {
+        ok: false,
+        error: `待发队列里找不到「${sel}」这一条`,
+        keys: [],
+        matched: [],
+        candidates: list.slice(0, 12).map(brief),
+      };
+    }
+    if (hits.length > 1) {
+      const idx = hits.map((h) => list.indexOf(h));
+      return {
+        ok: false,
+        error: `「${sel}」匹配到 ${hits.length} 条，请说得更具体（用序号或完整标题）`,
+        keys: [],
+        matched: [],
+        candidates: idx.slice(0, 12).map((i) => brief(list[i], i)),
+      };
+    }
+    if (!picked.includes(hits[0])) picked.push(hits[0]);
+  }
+
+  if (!picked.length) return { ok: false, error: '没解析出要发哪一条', keys: [], matched: [] };
+  // 发布顺序按队列顺序（新→旧），不按用户列举顺序 —— 和界面「按生成时间新→旧」一致
+  picked.sort((a, b) => list.indexOf(a) - list.indexOf(b));
+  return {
+    ok: true,
+    keys: picked.map((p) => `${p.date}/${p.session}`),
+    matched: picked.map((p) => brief(p, list.indexOf(p))),
+  };
+}
 /** 发布条数兜底：无论模型传什么，都夹到 1~PUBLISH_MAX_PER_TURN */
 export function clampPublishCount(v) {
   const n = Math.round(Number(v));
@@ -751,6 +871,11 @@ export function buildSystemPrompt({ today = '', appVersion = '', model = '', mem
     '8. **用户点名了账号/环境（「发 TK02」「账号 02」「发到 03 号」）时，run_engine / run_publish 必须带 account**。',
     '   不传就等于"发到默认账号 01"，发出去撤不回来 —— 2026-10-19 真出过这事故。拿不准就先问，',
     '   宁可多问一句，也不许先跑再报告「发错号了」。',
+    '9. **用户点名了"具体哪一条"（标题、第几条、某个生成时间）时，run_publish 必须带 pick**：',
+    '   先用 get_pending 拿到序号 n 和标题，再把序号或标题照抄进 pick。',
+    '   绝不许"待发里随便挑一条发"再报告发了哪条 —— 用户说要哪条就发哪条，找不到就直说找不到。',
+    '   只有用户说「全发」才传 all: true。',
+    '   pick 点名的条目即使是历史日期也照发（不需要 includeOld），别再追问"要不要 includeOld"。',
     '',
     '事实口径（很重要，别搞错）：',
     '- 「未确认」= 点过发布按钮但没能证明已公开：不算成功、也不会重发，需要人工去后台核对。',
