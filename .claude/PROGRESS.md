@@ -1,6 +1,93 @@
 # 接力开发 — 新对话从这里开始
 
-> 更新：2026-10-19 23:08 ｜ 版本 **1.6.39**（已打包、已部署、已重启验证）
+> 更新：2026-10-19 23:12 ｜ 版本 **1.6.39**（已打包 / 已部署 E:\software\XNOWPost / 已重启）
+> 状态：`npm run verify` **505 pass / 0 fail**；git HEAD `e132941`，工作区干净；
+> 应用已在跑（PID 33144），调度器 ready 21 个任务；今天已发 **16 条**（TK01×3、TK05×3，其余各 1~2）。
+
+## 0. 这个项目当前长什么样（新对话先读这一段）
+
+Electron 43 + Vue 3 的 TikTok 自动化工具：10 个 FoxProfile 指纹环境（TK01–TK10）↔ `config/user.json`
+的 `accounts[].name`（`01`…`10`）；主进程 `electron/main.js`（约 5000 行，IPC + 引擎托管 + AI 助手会话），
+引擎 `src/index.js`（生成流水线，子进程跑），发布器 `src/publisher/*`（Playwright 形状的 FoxProfile 代理），
+调度器 `src/scheduler.js`（独立长驻进程，**应用不开 = 闹钟不跑**）。
+
+三条最近才立住的规矩（改代码前必须知道）：
+1. **一个动作只有一个主按钮**；别处只能引用，且参数必须与主按钮一致。
+2. **日志不许说谎**：没发生的不要说成发生（「检查已通过」vs「超时放行」、「还在生成」vs「早就被取消」）。
+   这两类假话各踩过一次，现在都有单测守着（`tests/unit/check-wording.test.js`、`get_last_task` 的 stalled 判定）。
+3. **结果要自己送到用户面前**：跑完的生成/发布要主动回报进 AI 助手对话，不能让用户守着时间问
+   （`reportEngineRun()` + `pushAssistantNote()`）。
+
+## 1. 下一步（按优先级，接着做就行）
+
+**P1 — 把 A/B 在真机上撞一次（唯一还没真触发的验收）**
+A（`tiktok.js` 超时放行的日志口径）和 B（`dialogs.js`/`page-sense.js` 的「Continue to post?」弹窗）
+只在**内容检查超过 90 秒**时才出现。今晚两轮检查分别 40 秒 / 21 秒就真通过了，所以没撞上。
+强制触发的办法（会真发一条、约 ¥0.03、7 分钟）：
+```powershell
+$env:XNOWPOST_DATA_DIR = "$env:APPDATA\xnowpost"
+$env:XNOWPOST_CHECKS_WAIT = "5"      # 5 秒就"超时放行"，最可能逼出 Continue to post
+node src\publisher\index.js --env TK05 --max 1
+```
+看两处日志：`⏳ 检查未完成（等了 Ns 就放行）` + `弹窗「检查未完成确认框」→ 点了「post now」`。
+
+**P1 — 调度器跑的轮次回报不进来**（当前唯一的功能缺口）
+`src/scheduler.js` 是独立进程，`finish()` 钩子拿不到它的结果 → 00:30 / 08:30 那些闹钟轮次跑完
+**不会**进 AI 助手对话（只有界面按钮和助手叫的会）。两条路选一条：
+① 主进程 `fs.watch` 调度器日志里的收尾行 → 推一条（便宜，但只能拿到日志文本）；
+② 让调度器把每轮结果写一个小 JSON（`data/runs/<日期>-<jobId>.json`），主进程读完推送（准，建议这条）。
+
+**P2 — `.published` 补 `confirmedAt`**
+现在账本/标记里的时间是"点 Post 的时刻"，公开确认往往晚 20~60 秒（今晚 22:59:12 点、22:59:45 确认）。
+账号页「最后发布」和 `get_last_task` 都只报点击时刻。发布器里拿到 `✅ 审查完成` 时补写 `confirmedAt` 即可。
+
+**P2 — 历史遗留（长期挂账，做之前先确认还有没有人疼）**
+`spawnSync` → `spawn`（调度器）；采集 0 成功时的退出码；`/login` 失败原因上报；子进程看门狗；
+`asarUnpack: node_modules/**` 体积；28 条 npm audit；单条视频播放量采集；账号资料自动刷新；
+删 24 个 `scripts/_*` 调试脚本；BitBrowser 残留代码；68 处内联重复测试；配置页「测试连接」用已保存 Key；
+「TG 没配」不该把整轮采集+日报判成 ❌ 失败（用户明确说先不做）。
+
+## 2. 怎么跑 / 怎么验收（照抄）
+
+```powershell
+# 1) 改完先全量验证（check-leaks → check-windows-hide → 505 个单测 → vite build）
+cd F:\summer\vs-code\xnowpost; npm run verify
+
+# 2) 版本号 + 打包 + 部署 + 重启（每次打包都要 bump 版本）
+(Get-Content package.json -Raw) -replace '"version": "1.6.39"', '"version": "1.6.40"' | Set-Content package.json -NoNewline
+npm run package
+Get-Process XNOWPost -EA SilentlyContinue | Stop-Process -Force
+robocopy release\win-unpacked E:\software\XNOWPost /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+Remove-Item Env:ELECTRON_RUN_AS_NODE -EA SilentlyContinue      # ← 不清它，exe 会秒退、日志一个字不写
+Start-Process E:\software\XNOWPost\XNOWPost.exe
+
+# 3) 看界面 / 点按钮（窗口内相对坐标，1274x925，屏幕偏移 +42/+39）
+powershell -ExecutionPolicy Bypass -File scripts\win-shot.ps1 -Out output\shot.png
+powershell -ExecutionPolicy Bypass -File scripts\win-shot.ps1 -ClickX 84 -ClickY 389 -Out output\ai.png  # 侧栏 AI 助手
+
+# 4) 跟 AI 助手对话（SendKeys 打不了中文，必须剪贴板 + 点击聚焦）
+Set-Clipboard -Value "今天发了几个？"; # 点输入框(窗口 660,800 / 屏幕 742,839)后 SendKeys "^v" 再 "{ENTER}"
+```
+
+**CLI 直接跑引擎/发布器时必须带数据目录**：`$env:XNOWPOST_DATA_DIR = "$env:APPDATA\xnowpost"`
+（否则 `src/paths.js` 在开发模式会读仓库里那份旧配置，报「FoxProfile 里没有名为…的环境」）。
+
+**AI 助手怎么调用的**：`electron/lib/assistant-tools.js`（22 个工具的声明 + 确认卡文案，纯函数可单测）
+→ `electron/assistant.js`（`createAssistantSession`：`MAX_STEPS=6`、`view[]`、`pending`、`notify()`）
+→ `electron/main.js` 的 `assistantExec()` / `setupIPC()`（会话按 `${日期}|${模型}|${版本}` 重建，
+**每次部署都会清空对话**）。`read`/`note` 自动跑，`write`/`spend` 要用户点「执行」。
+
+## 3. 别踩的坑（都在 CLAUDE.md 有原因，这里只留最短版）
+
+- 时间显示一律 `localHHMM()`，**不许** `toISOString().slice(11,16)`（那是 UTC，少 8 小时）。
+- 耗时/金额说人话：<90 秒报秒（`fmtSpent`），<¥0.1 保留三位（`¥0.004` 别写成 `¥0.00`）。
+- `assistantRunWatch` / `onEngineRunDone` 必须在**模块顶层**：`setupIPC()` 里的变量，顶层 `doRunEngine()` 读不到。
+- 钩子要在函数定义**之后**赋值（写在函数体第一行 = 只有回报过一次之后才挂上，永远回报不了）。
+- 规则里要豁免危险词（如「Post now」含 `post`）必须同时改两处：`DIALOG_RULES` 的 `allowDanger`
+  **和** `handleDialogs()` 里给页面侧的那份映射（漏传就"命中但一个按钮都点不到"）。
+- `handleDialogs` / `page-sense` 是同一个框的两层判定，**加规则要两层一起加**，否则日志里还是「未知浮层」。
+- 任何 `spawn` 都要 `windowsHide: true`；发布器 `finally` 里必须 `closeFoxProfile`。
+- 永远别 `git checkout -- .` / `git stash`（HEAD 停在 1.2.18，工作区已到 1.6.39）。
 
 ## 1S（v1.6.35–1.6.37）第二轮实测 + 「跑完自动回报」
 用户口径：「修 A B，另外截图的，能不需要我重复问吗，发布完成后 自动返回结果状态，
@@ -1020,7 +1107,7 @@ Get-CimInstance Win32_Process -Filter "Name='camoufox.exe'" | ForEach-Object {
   - `isRetryableError` 分类：网络/环境/超时可重试，未登录/没视频不重试
 - **[更新小红点] v1.2.18** — 更新检查改为每 30 分钟自动查，不用重启才看到红点
 
-## 下个对话待办
+## 远期待办（多平台，长期；近期优先级见文件顶部「## 1. 下一步」）
 
 1. **多平台发布扩展** — 小红书/Facebook/Instagram/YouTube/X 的 publisher 模块
 2. **TikTok 发布器重构** — 当前 663 行，超规则 300 行上限 2 倍，需拆文件
