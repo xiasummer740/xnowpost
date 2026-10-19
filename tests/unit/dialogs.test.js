@@ -349,6 +349,34 @@ test('「Turn on automatic content checks?」标题与按钮分离 → 点 Turn 
   }
 });
 
+test('「Continue to post? 检查还没跑完」→ 点 Post now 继续发，绝不点 Cancel', async () => {
+  // 2026-10-19 22:17 实测（TK04 / pm_2214）：内容检查卡满 90 秒被"超时放行"后点 Post，
+  // TikTok 弹「Continue to post? We're still checking your video for potential issues.」
+  // 按钮 [Cancel | Post now]。当时规则表里没有它 → 日志写成「未知浮层（不点，只记录）」，
+  // 靠二次兜底才点成功。点 Cancel = 放弃这次发布，所以必须点 Post now。
+  // 注意 'post' 在 DANGER_LABELS 里，这条规则靠 allowDanger 豁免。
+  const postNow = btn('Post now');
+  const cancel = btn('Cancel');
+  const title = el({ text: "Continue to post? We're still checking your video for potential issues. Do you want to continue posting before the check is complete?", width: 420, height: 100 });
+  const footer = el({ children: [cancel, postNow], width: 420, height: 60 });
+  const modal = el({ children: [title, footer], width: 540, height: 320 });
+  const restore = installDom([modal]);
+  try {
+    const page = fakePage();
+    const rule = DIALOG_RULES.find((r) => /检查未完成/.test(r.name));
+    assert.ok(rule, '规则必须存在（否则会被当成未知浮层）');
+    const { actions } = await handleDialogs(page, {});
+    const clicked = actions.find((a) => a.kind === 'clicked');
+    assert.ok(clicked, '必须真点掉，否则 Post 一直被遮罩挡住');
+    assert.match(clicked.rule, /检查未完成/, '要认成「检查未完成确认框」，不许报未知浮层');
+    assert.equal(postNow.clicked, 1, '必须点 Post now');
+    assert.equal(cancel.clicked, 0, 'Cancel 会取消发布，绝不能点');
+    assert.ok(!actions.some((a) => a.kind === 'unknown-dismissed'), '不许走"未知弹窗"兜底');
+  } finally {
+    restore();
+  }
+});
+
 test('「Cancel post now?」提示条上的 Cancel post 绝不能被当成安全按钮点掉', async () => {
   // 复刻 21:22 的翻车：点完 Post 后 TikTok 弹 "Posting… Cancel post"，
   // 老逻辑按 includes('cancel') 判定 → 点了 Cancel post → 视频没发出去

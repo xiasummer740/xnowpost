@@ -17,6 +17,15 @@ contextBridge.exposeInMainWorld('xnowpost', {
   assistantReset: () => ipcRenderer.invoke('assistant:reset'),
   // 撤销一次写操作（30 分钟内有效，只能撤改配置/改定时）
   assistantUndo: (id) => ipcRenderer.invoke('assistant:undo', id),
+  /**
+   * 订阅「助手主动回报」（跑完的生成/发布任务自动把结果推回对话）。
+   * 返回取消订阅函数，页面卸载时调用，避免热更新后重复累积监听。
+   */
+  onAssistantUpdate: (callback) => {
+    const handler = (_event, payload) => { try { callback(payload); } catch (_) { /* 忽略渲染错误 */ } };
+    ipcRenderer.on('assistant:update', handler);
+    return () => ipcRenderer.removeListener('assistant:update', handler);
+  },
   testBit: (apiKey, opts) => ipcRenderer.invoke('config:testBit', apiKey, opts),
   listFoxProfiles: () => ipcRenderer.invoke('config:foxProfiles'),
   getDataDir: () => ipcRenderer.invoke('config:getDataDir'),

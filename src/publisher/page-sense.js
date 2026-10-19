@@ -380,6 +380,17 @@ const OVERLAY_POLICY = [
     danger: ['Discard', 'Exit', 'Leave'],
   },
   {
+    // 2026-10-19 22:17 实测：检查超时放行后点 Post，TikTok 会问「Continue to post?」。
+    // 反应器认得它才不会打成「未知浮层（不点，只记录）」；正确动作是 Post now。
+    // 必须排在「通用确认」前面：这框里要是也带了 OK/Got it 之类按钮，
+    // 先命中 confirm 就会点错（它点的 Cancel 等于取消发布）。
+    id: 'checksPending',
+    name: '检查未完成确认框',
+    test: (t) => /still checking your video|continue to post\?|want to continue posting/i.test(t),
+    click: ['Post now', '仍然发布', '继续发布'],
+    danger: ['Cancel', 'Discard'],
+  },
+  {
     id: 'confirm',
     name: '通用确认',
     test: (t) => /\b(got it|ok)\b/i.test(t),

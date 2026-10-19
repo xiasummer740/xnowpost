@@ -764,6 +764,10 @@ async function publishToTikTokCore(options) {
       ? Math.max(0, Number(process.env.XNOWPOST_CHECKS_WAIT) * 1000)
       : 90000;
     let checksPassed = false;
+    // 「放行」有两种：真通过 vs 等够 CHECKS_MAX_WAIT 就发。日志必须分开说，
+    // 否则复盘时会以为检查正常通过（2026-10-19 22:17 实测：检查根本没跑完，
+    // 日志先写「⏭️ 检查还在跑…放行」，下一行又写「✅ 检查已通过」）。
+    let checksTimedOut = false;
     let readyStreak = 0;
     let loggedShape = false;
     for (let i = 0; i < 180; i++) {  // 最长等 15 分钟（受发布总预算约束，会更早结束）
@@ -827,7 +831,9 @@ async function publishToTikTokCore(options) {
           const waitedMs = (i + 1) * 5000;
           if (waitedMs >= CHECKS_MAX_WAIT_MS) {
             console.log(`  ⏭️ 检查还在跑但 Post 已可点（等了 ${Math.round(waitedMs / 1000)}s），放行发布（可用 XNOWPOST_CHECKS_WAIT 调）`);
+            console.log('     ⚠️ 注意：这次不是"检查通过"，是超时放行 —— 点 Post 后 TikTok 可能再弹一次「Continue to post?」');
             checksPassed = true;
+            checksTimedOut = true;
             break;
           }
         }
@@ -842,8 +848,10 @@ async function publishToTikTokCore(options) {
       // 等了 15 分钟还没过 → 可能卡检查或违规了
       throw new Error('检查超时（15分钟），两项"未发现问题"未全部出现，请手动检查 TikTok 页面');
     }
-    // 检查通过后等 3s 再发，给 TikTok 留一点缓冲时间（原来 10s，配合上面的判定没必要这么久）
-    console.log('  ⏳ 检查已通过，等 3s 后发布...');
+    // 检查后等 3s 再发，给 TikTok 留一点缓冲时间（原来 10s，配合上面的判定没必要这么久）
+    console.log(checksTimedOut
+      ? '  ⏳ 检查未完成（超时放行），等 3s 后发布...'
+      : '  ⏳ 检查已通过，等 3s 后发布...');
     await budgetedWait(page, 3000, deadline, '发布前缓冲等待');
     console.log('  📤 开始发布...');
 

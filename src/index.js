@@ -72,28 +72,13 @@ function readUserImages() {
   }
 }
 
-async function runVideoPipeline(sessionDir, index, topic) {
-  let workDir;
-  console.log(`\n🎬 === 视频 ===`);
-
-  // 用户这次上传了截图 → 先读图，再写文案。
-  // 顺序很关键：必须在 generateVideoContent 之前，否则文案还是凭空写的，
-  // 画面和文案两张皮（这正是之前的问题）。
-  const shots = readUserImages();
-  if (shots.length) {
-    const desc = await describeScreenshots(shots, { apiKey: process.env.SILICONFLOW_API_KEY });
-    setScreenshotContext(desc);
-    if (desc) console.log(`  🧠 文案将围绕截图内容展开`);
-  } else {
-    setScreenshotContext('');
-  }
-
-  const c = await generateVideoContent(topic);
-  console.log(`  ✅ ${c.title_zh}`);
-
-  await fs.ensureDir(sessionDir);
-
-  // 先保存文案（原子写：进程被杀不会留下半截文案）
+/**
+ * 把文案写成 `文案.txt`（发布器当标题用）+ `描述.txt`（中英双语 Description）。
+ * 抽成独立函数是为了让「只生成文案」模式（--text-only）和视频流程**共用同一份写法** ——
+ * 复制一份迟早会漂移（一边改了标签规则、另一边没改）。
+ * @returns {{tagLine:string, bilingual:string}}
+ */
+async function writeContentFiles(sessionDir, c) {
   // 标签规范化：英文标签原文常带空格（"#secure browsing"），TikTok 只把空格前那段当标签，
   // 后面变成普通文字 → 白写。统一去掉空格（#SecureBrowsing / #securebrowsing 都能被索引），
   // 并按小写去重，避免 #VPN 和 #vpn 重复占位。
@@ -110,7 +95,7 @@ async function runVideoPipeline(sessionDir, index, topic) {
     })
     .map((t) => '#' + t)
     .join(' ');
-  const desc = `${c.title_zh}\n${c.title_en}\n\n${c.scenes.map((s,i)=>`${i+1}. ${s.scene_text_zh}`).join('\n')}\n\n${tagLine}${brandLine()}`;
+  const desc = `${c.title_zh}\n${c.title_en}\n\n${(c.scenes || []).map((s, i) => `${i + 1}. ${s.scene_text_zh}`).join('\n')}\n\n${tagLine}${brandLine()}`;
   await writeFileAtomic(path.join(sessionDir, '文案.txt'), desc, 'utf-8');
 
   // 发布用 Description（中英双语）：国内用户看中文、海外用户看英文。
@@ -140,6 +125,32 @@ async function runVideoPipeline(sessionDir, index, topic) {
     .filter((s) => String(s || '').trim())
     .join('\n\n');
   await writeFileAtomic(path.join(sessionDir, '描述.txt'), bilingual, 'utf-8');
+  return { tagLine, bilingual };
+}
+
+async function runVideoPipeline(sessionDir, index, topic) {
+  let workDir;
+  console.log(`\n🎬 === 视频 ===`);
+
+  // 用户这次上传了截图 → 先读图，再写文案。
+  // 顺序很关键：必须在 generateVideoContent 之前，否则文案还是凭空写的，
+  // 画面和文案两张皮（这正是之前的问题）。
+  const shots = readUserImages();
+  if (shots.length) {
+    const desc = await describeScreenshots(shots, { apiKey: process.env.SILICONFLOW_API_KEY });
+    setScreenshotContext(desc);
+    if (desc) console.log(`  🧠 文案将围绕截图内容展开`);
+  } else {
+    setScreenshotContext('');
+  }
+
+  const c = await generateVideoContent(topic);
+  console.log(`  ✅ ${c.title_zh}`);
+
+  await fs.ensureDir(sessionDir);
+
+  // 文案与双语描述的写法抽到 writeContentFiles()（--text-only 模式共用同一份）
+  await writeContentFiles(sessionDir, c);
 
   let ok = false;
   try {
@@ -418,7 +429,10 @@ async function runPostPipeline(sessionDir, index, topic, textName = '文案.txt'
 
 async function main() {
   const args = process.argv.slice(2);
-  const mode = args.includes('--video-only') ? 'video' : args.includes('--post-only') ? 'post' : 'auto';
+  const mode = args.includes('--video-only') ? 'video'
+    : args.includes('--post-only') ? 'post'
+      : args.includes('--text-only') ? 'text'
+        : 'auto';
 
   // 解析可选参数
   const topicIdx = args.indexOf('--topic');
@@ -437,15 +451,22 @@ async function main() {
     console.error('   请去掉 --auto-publish，或把该闹钟的模式改为"仅视频"。\n');
     return 1;
   }
+  // 只出文案当然没有东西可发（2026-10-19 助手实测：说"约 ¥0.01 只出文案"，
+  // 结果跑了整条视频流程 —— 因为 --text-only 当时根本不存在，mode=text 被当成了 auto）。
+  if (mode === 'text' && autoPublish && accountName) {
+    console.error('\n❌ --text-only 与 --auto-publish 不能同时使用：只出文案，没有成片可发。\n');
+    return 1;
+  }
 
   // 插画/视频模式要调用 DeepSeek 与硅基流动，占位符 Key 一定 401。
   // 放在任何花钱步骤之前：仓库里的 .env 是模板（sk-your-api-key-here），
   // 命令行直接跑会拿占位符去请求，报错信息里只有一句看不懂的 401。
-  if (mode === 'auto' || mode === 'video') {
-    const keyProblems = validateApiKeys([
-      { value: process.env.DEEPSEEK_API_KEY, label: 'DeepSeek Key（DEEPSEEK_API_KEY）' },
-      { value: process.env.SILICONFLOW_API_KEY, label: '硅基流动 Key（SILICONFLOW_API_KEY）' },
-    ]);
+  // text 模式只走 DeepSeek，不需要硅基流动（不配音、不生图）。
+  if (mode === 'auto' || mode === 'video' || mode === 'text') {
+    const keys = [{ value: process.env.DEEPSEEK_API_KEY, label: 'DeepSeek Key（DEEPSEEK_API_KEY）' }];
+    // text 模式不配音、不生图，硅基流动的 Key 用不到 → 没配也不该拦
+    if (mode !== 'text') keys.push({ value: process.env.SILICONFLOW_API_KEY, label: '硅基流动 Key（SILICONFLOW_API_KEY）' });
+    const keyProblems = validateApiKeys(keys);
     if (keyProblems.length > 0) {
       console.error('\n❌ API Key 未正确配置，已中止（未产生任何费用）:');
       keyProblems.forEach(p => console.error(`   · ${p}`));
@@ -504,7 +525,28 @@ async function main() {
   // auto 模式 = 视频 + 图文（调度器里这个模式就叫"视频+图文"，旧实现从不跑图文）
   // 两条流程各自捕获失败，任一条失败都要非零退出（P1-4）
   const failures = [];
-  if (mode !== 'post') {
+  if (mode === 'text') {
+    // 只出文案：DeepSeek 一轮 + 写 文案.txt/描述.txt，不配音、不生图、不合成、不发布。
+    // 这是助手 run_engine(mode='text') 承诺的"约 ¥0.01"。以前没有这个分支，
+    // mode=text 被当成 auto → 跑了整条视频流程（2026-10-19 22:29 实测，多花 ¥0.02、多等 3 分钟）。
+    try {
+      const shots = readUserImages();
+      if (shots.length) {
+        const desc = await describeScreenshots(shots, { apiKey: process.env.SILICONFLOW_API_KEY });
+        setScreenshotContext(desc);
+      } else {
+        setScreenshotContext('');
+      }
+      const c = await generateVideoContent(topic);
+      await fs.ensureDir(sessionDir);
+      await writeContentFiles(sessionDir, c);
+      console.log(`  ✅ 文案已生成（只出文案，不配音/不生图/不合成/不发布）: ${c.title_zh}`);
+    } catch (err) {
+      failures.push({ stage: '文案', err });
+      console.error(`\n❌ 文案生成失败: ${err.message}`);
+    }
+  }
+  if (mode !== 'post' && mode !== 'text') {
     try {
       await runVideoPipeline(sessionDir, 1, topic);
     } catch (err) {
@@ -512,7 +554,7 @@ async function main() {
       console.error(`\n❌ 视频流程失败: ${err.message}`);
     }
   }
-  if (mode !== 'video') {
+  if (mode !== 'video' && mode !== 'text') {
     try {
       // auto 模式图文文案另存，避免覆盖视频用的 文案.txt
       await runPostPipeline(sessionDir, 1, topic, mode === 'auto' ? '文案_图文.txt' : '文案.txt');

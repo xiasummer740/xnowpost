@@ -78,6 +78,19 @@ export const DIALOG_RULES = [
     why: '点 Not now 取消放弃（Discard 会丢掉已上传的作品和文案，绝不点）',
   },
   {
+    // 2026-10-19 22:17 实测（TK04 / pm_2214）：内容检查卡满 90 秒被"超时放行"后，
+    // 点 Post 立刻弹「Continue to post? We're still checking your video for potential
+    // issues.」，按钮 [Cancel | Post now]。以前规则表里没有它 → 日志写成
+    // 「👁️ 未知浮层（不点，只记录）」，靠二次兜底才点成功，复盘时看不出到底点了什么。
+    // 正确动作是 **Post now**（Cancel = 放弃这次发布）。注意 'post' 在 DANGER_LABELS 里，
+    // 所以这条规则要显式 allowDanger，否则 "Post now" 会被危险词一票否决。
+    name: '检查未完成确认框',
+    match: ['continue to post', 'still checking your video', 'want to continue posting'],
+    click: ['post now', '仍然发布', '继续发布', '继续发布视频'],
+    allowDanger: ['post'],
+    why: '检查还没跑完但已经决定发 → 点 Post now（Cancel 会取消这次发布）',
+  },
+  {
     name: '操作频繁 / 限流',
     match: ['too many', 'try again later', '操作过于频繁', '稍后再试', 'rate limit', 'temporarily blocked'],
     click: ['got it', '知道了', 'ok', '确定', '关闭', 'close'],
@@ -168,7 +181,7 @@ function pageSide({ rules, safe, danger, allowDiscard }) {
   };
 
   /** 按文本签名找到「标题」，再往上爬到能看到目标按钮的那一层并点击 */
-  const clickByAnchoredText = (keywords, wantLabels) => {
+  const clickByAnchoredText = (keywords, wantLabels, avoidLabels) => {
     const els = document.querySelectorAll('div,section,aside,header,footer,p,span,h1,h2,h3,h4,label,strong,b,li,form');
     let anchor = null;
     for (const el of els) {
@@ -190,7 +203,7 @@ function pageSide({ rules, safe, danger, allowDiscard }) {
       // 爬到「整页容器」就该停：再往上会点到页面上别的按钮（比如另一个弹窗的 Turn on）
       if (up > 0 && area(scope) > viewportArea * 0.55) break;
       // 规则命中的按钮同样要过一遍危险词（例如「Cancel post」不能因为含 cancel 就被点）
-      const btn = pickBtn(scope, wantLabels, danger);
+      const btn = pickBtn(scope, wantLabels, avoidLabels || danger);
       if (btn) {
         const label = norm(btn.innerText).slice(0, 40);
         const headText = norm(scope.innerText).slice(0, 220);
@@ -214,7 +227,12 @@ function pageSide({ rules, safe, danger, allowDiscard }) {
 
   // ---- 第一轮：按规则签名处理（覆盖「文字与按钮分离」的弹窗）----
   for (const rule of rules) {
-    const r = clickByAnchoredText(rule.match, rule.click && rule.click.length ? rule.click : []);
+    // 规则可以显式豁免个别危险词（例如「检查未完成确认框」必须点 Post now，
+    // 而 'post' 本身在 DANGER_LABELS 里）。豁免范围仅限这条规则。
+    const ruleDanger = Array.isArray(rule.allowDanger) && rule.allowDanger.length
+      ? danger.filter((d) => !rule.allowDanger.includes(d))
+      : danger;
+    const r = clickByAnchoredText(rule.match, rule.click && rule.click.length ? rule.click : [], ruleDanger);
     if (!r) continue;
     const base = { rule: rule.name, text: r.text, labels: [], keyword: rule.match[0], cx: r.cx, cy: r.cy, close: r.close };
     if (rule.blocked) {
@@ -321,6 +339,9 @@ export async function handleDialogs(page, { sessionPath, tag = 'stage', maxRound
       match: r.match,
       // 用户口径（2026-10-19）：发布前发现旧草稿，就该真的丢弃它，而不是留着一遍遍弹框。
       click: allowDiscardDraft && isDiscardRule ? ['discard', '放弃'] : (r.click || []),
+      // 逐条规则的"危险词豁免"（例如「检查未完成确认框」必须点 Post now，
+      // 而 'post' 在 DANGER_LABELS 里）。漏传这一项 → 规则命中但一个按钮都点不到。
+      allowDanger: Array.isArray(r.allowDanger) ? r.allowDanger : [],
       blocked: !!r.blocked,
       why: r.why || '',
     };

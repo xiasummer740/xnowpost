@@ -251,3 +251,24 @@ test('预览用得到旧值（改配置时能显示 从什么 → 什么）', as
   assert.match(r.pending[0].preview, /deepseek-flash/);
   assert.match(r.pending[0].preview, /deepseek-v4-pro/);
 });
+
+test('notify：助手主动回报会进对话（用户不用守着问 OK 了吗）', async () => {
+  const { session } = makeSession([assistantText('已启动，跑完我会自动回报')]);
+  const r1 = await session.send('TK04 生成一条');
+  assert.equal(r1.view.filter((v) => v.role === 'assistant').length, 1);
+
+  // 程序替助手说话（不是模型生成）
+  const snap = session.notify('✅ 好了（4 分钟）：pm_2214 已发布（TK04）');
+  assert.ok(snap, '必须返回新快照，界面才能立刻刷新');
+  const auto = snap.view.filter((v) => v.role === 'assistant' && v.auto);
+  assert.equal(auto.length, 1, '自动回报要带 auto 标记，界面上能和模型回答区分');
+  assert.match(auto[0].text, /已发布/);
+
+  // 也要进 messages：用户接着问「那这条数据怎么样」时模型得知道刚发生过什么
+  const msgs = session._messages();
+  assert.ok(msgs.some((m) => m.role === 'assistant' && /pm_2214/.test(m.content || '')), '自动回报必须写进模型上下文');
+
+  // 空文本不许塞进对话（否则界面上出现空气泡）
+  assert.equal(session.notify('   '), null);
+  assert.equal(session.notify(''), null);
+});

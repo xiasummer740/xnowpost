@@ -540,8 +540,13 @@ export function describeToolCall(name, args = {}, ctx = {}) {
       return `改定时任务：${who}\n  ${diffs.join('\n  ') || '（没有实际改动）'}`;
     }
     case 'run_engine': {
+      // 只出文案：没有成片，什么都不发 —— 卡上必须写清楚。
+      // 2026-10-19 实测：卡里写「账号按配置（通常是 01）· 会花钱」，用户以为会发到 01。
+      if (a.mode === 'text') {
+        return `跑一轮只出文案（约 ¥0.01，只调 DeepSeek）${a.topic ? `，主题「${a.topic}」` : ''} · 不配音、不生图、不合成、不发布 · 会花钱`;
+      }
       const who = a.account ? ` · 生成完直发账号 ${a.account}` : ' · 账号按配置（通常是 01）';
-      return `跑一轮${a.mode === 'text' ? '文案生成（约 ¥0.01）' : '视频生成（约 ¥0.03：文案 ¥0.01 + 封面生图 ¥0.02）'}${a.topic ? `，主题「${a.topic}」` : ''}${who} · 会花钱`;
+      return `跑一轮视频生成（约 ¥0.03：文案 ¥0.01 + 封面生图 ¥0.02）${a.topic ? `，主题「${a.topic}」` : ''}${who} · 会花钱`;
     }
     case 'run_publish': {
       const who = a.account ? ` · 发到账号 ${a.account}` : a.env ? ` · 发到 ${String(a.env).toUpperCase()}` : ' · 发到默认账号（01）';

@@ -278,6 +278,20 @@ export function createAssistantSession({ exec, callModel, systemPrompt, onLedger
     send,
     answer,
     reset,
+    /**
+     * 主动往对话里插一条助手消息（不是模型生成，是程序替他汇报）。
+     * 用途：助手启动了要跑几分钟的任务，结束后自动把结果推给用户，
+     * 用户不用守在旁边反复问「OK 了吗」（2026-10-19 用户口径）。
+     * 同时写进 messages（role=assistant），这样用户接着问「那这条数据怎么样」
+     * 时模型知道刚才发生了什么；不写的话它会莫名其妙。
+     */
+    notify: (text) => {
+      const body = String(text || '').trim();
+      if (!body) return null;
+      messages.push({ role: 'assistant', content: body });
+      view.push({ role: 'assistant', text: body, auto: true });
+      return snapshot({ ok: true });
+    },
     snapshot: () => snapshot({ ok: true }),
     /**
      * 换掉系统提示词（记忆写进去之后要立刻生效）。

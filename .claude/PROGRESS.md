@@ -1,6 +1,54 @@
 # 接力开发 — 新对话从这里开始
 
-> 更新：2026-10-19 22:12 ｜ 版本 **1.6.34**（已打包、已部署、已重启验证）
+> 更新：2026-10-19 22:40 ｜ 版本 **1.6.37**（已打包、已部署、已重启验证）
+
+## 1S（v1.6.35–1.6.37）第二轮实测 + 「跑完自动回报」
+用户口径：「修 A B，另外截图的，能不需要我重复问吗，发布完成后 自动返回结果状态，
+可以吗？不然我还要一直看着时间守着」。
+
+### A. 日志自己说谎（检查超时却写「检查已通过」）
+- 实测 pm_2214：829 行先打「⏭️ 检查还在跑但 Post 已可点（等了 90s），放行发布」，
+  846 行紧接着打「⏳ 检查已通过，等 3s 后发布」—— 同一件事两种结论。
+- `src/publisher/tiktok.js` 新增 `checksTimedOut`：超时分支置 true，放行后按它分两句
+  （「检查未完成（超时放行）」/「检查已通过」），并补一行提醒点 Post 后可能再弹确认框。
+
+### B. 「Continue to post?」弹窗被当成未知浮层
+- 实测 22:17（TK04）：检查卡满 90 秒放行 → 点 Post → TikTok 弹
+  「Continue to post? We're still checking your video…[Cancel | Post now]」，
+  规则表里没有 → 日志「👁️ 未知浮层（不点，只记录）」，靠二次兜底才点成功。
+- `dialogs.js` 新增规则**检查未完成确认框**（点 Post now，绝不点 Cancel）；
+  新增 `allowDanger` 机制：`post` 在 DANGER_LABELS 里，规则可逐条豁免危险词
+  （⚠️ `handleDialogs` 里给页面侧的映射必须带上 `allowDanger`，漏传就"命中但一个按钮都点不到"）。
+- `page-sense.js` 的 `OVERLAY_POLICY` 同步加 `checksPending`，**排在「通用确认」之前**
+  （否则同框里有 OK/Got it 会先命中它，点 Cancel = 取消发布）。
+- 单测：dialogs +1（20 个），assistant-loop +1（15 个），全量 **501 pass**。
+
+### C. 助手跑完自动回报（用户不用守着问）
+- 链路：`doRunEngine.finish()` → `onAssistantRunDone(outcome, error)` → `reportAssistantRun()`
+  → `session.notify(text)`（写 `messages` + `view`，带 `auto:true`）→ `assistant:update` IPC
+  → preload `onAssistantUpdate` → `Assistant.vue` 订阅后 `applyResult()`。
+- 内容全用落盘证据（`.published`/`FAILED`/`cost.json`/账本标题），六种结局：
+  已发布 / 失败 / 成片好了未发 / 只出文案 / 取消 / 异常退出。
+- **踩坑 1**：钩子赋值写成 `reportAssistantRun()` 的第一行 → 只有"回报过一次"之后才挂上，
+  于是永远不回报（22:30 pm_2229 跑完一条都没发）。必须放在函数定义之后。
+- **踩坑 2**：`assistantRunWatch` 一开始写在 `setupIPC()` 里，而读它的 `finish()` 在顶层
+  `doRunEngine()` → 作用域断裂。变量与钩子都放模块顶层。
+- 数字口径：11 秒别写「1 分钟」（<90 秒报秒）；¥0.0039 别写「¥0.00」（<0.1 保留三位）。
+
+### D. 顺带发现：`mode=text` 是假的（助手说 ¥0.01，实际跑了整条视频）
+- 22:29 实测：助手答「只生成文案（mode=text，约 ¥0.01），不发布」，日志却是
+  `node src/index.js`（无参数 = auto）→ 真跑了配音+封面+合成，多花 ¥0.02、多等 3 分钟。
+- 根因：`doRunEngine` 只映射 video/post，`text` 落到 `[]`；引擎也没有 `--text-only`。
+- 现在：引擎新增 **`--text-only`**（只调 DeepSeek + 写 `文案.txt`/`描述.txt`，
+  不配音/不生图/不合成/不发布；不要求硅基流动 Key；与 `--auto-publish` 组合直接报错）；
+  文案写法抽成 `writeContentFiles()` 供视频流程和 text 模式共用（别复制两份会漂移）。
+- 实测：22:31:44 → 22:31:55，**11 秒、¥0.01、目录里只有 文案.txt/描述.txt/cost.json**。
+- 确认卡也随之改口径：tag 只写「会花钱」，正文写「只出文案…不发布」，不再吓唬「会发布」。
+
+### 验收（真应用、真提问，output/ 里有图）
+- v1636-b/c.png：只出文案 → 4 秒后对话里自动出现「📝 文案好了（1 分钟）…¥0.00」（旧口径）
+- v1637-a.png：确认卡新口径；v1637-b.png：自动回报「📝 文案好了（4 秒）…¥0.004」
+- 未验证：A/B 要等一次"真发布且检查超时"的轮次才看得到（下一轮闹钟或手动发 pm_2229）。
 
 ## 1R（v1.6.32–1.6.34）AI 助手实测：它说了三句假话，全修了
 用户口径：「我准备发消息 你监测整个过程 找找问题」→「一起修」。

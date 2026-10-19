@@ -75,7 +75,7 @@
             </button>
           </p>
           <div v-for="p in pending" :key="p.id" class="confirm-item">
-            <span class="x-tag" :class="p.level === 'spend' ? 'warn' : 'brand'">{{ p.level === 'spend' ? '会花钱 / 会发布' : '改配置' }}</span>
+            <span class="x-tag" :class="p.level === 'spend' ? 'warn' : 'brand'">{{ p.level === 'spend' ? '会花钱' : '改配置' }}</span>
             <pre class="confirm-text">{{ p.preview }}</pre>
             <div class="confirm-actions">
               <button class="x-btn" :disabled="busy" @click="decide(p.id, true)">执行</button>
@@ -134,7 +134,7 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, ref } from 'vue';
+import { nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 const log = ref([]);
 const pending = ref([]);
@@ -161,6 +161,8 @@ const hints = [
 
 const thinkingMessages = ['看数据…', '读日志…', '算一下…'];
 let thinkingTimer = null;
+/** 取消订阅「助手主动回报」 */
+let offUpdate = null;
 
 function startThinking() {
   busy.value = true;
@@ -322,7 +324,16 @@ onMounted(async () => {
     const s = await window.xnowpost.assistantState();
     if (s) applyResult(s);
   } catch (_) { /* 首次进入拿不到状态就直接空白 */ }
+  // 助手跑完任务会主动回报（不用用户守着时间问「OK 了吗」）
+  offUpdate = window.xnowpost.onAssistantUpdate?.((s) => {
+    if (s) applyResult(s);
+  }) || null;
   input.value?.focus();
+});
+
+onUnmounted(() => {
+  if (typeof offUpdate === 'function') offUpdate();
+  clearInterval(thinkingTimer);
 });
 
 </script>
