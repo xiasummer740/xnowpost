@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('xnowpost', {
   testApi: (type, key) => ipcRenderer.invoke('config:test', type, key),
   // DeepSeek 模型列表 + 「请求的模型实际被路由到哪个模型」
   aiModels: () => ipcRenderer.invoke('ai:models'),
+  // AI 助手（对话 + 动作确认）。写操作只有经由 assistantAnswer 传 approve 才会执行。
+  assistantSend: (text) => ipcRenderer.invoke('assistant:send', text),
+  assistantAnswer: (approvals) => ipcRenderer.invoke('assistant:answer', approvals),
+  assistantState: () => ipcRenderer.invoke('assistant:state'),
+  assistantReset: () => ipcRenderer.invoke('assistant:reset'),
   testBit: (apiKey, opts) => ipcRenderer.invoke('config:testBit', apiKey, opts),
   listFoxProfiles: () => ipcRenderer.invoke('config:foxProfiles'),
   getDataDir: () => ipcRenderer.invoke('config:getDataDir'),

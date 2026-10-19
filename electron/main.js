@@ -39,6 +39,16 @@ import {
   planRestore,
   describeBytes,
 } from '../src/secrets-backup.js';
+// AI 助手的执行循环（纯逻辑，单测 tests/unit/assistant-loop.test.js）
+import { createAssistantSession } from './assistant.js';
+// AI 助手的工具白名单 / 参数校验 / 预览 / 脱敏（安全边界唯一实现，单测 assistant-tools.test.js）
+import {
+  publicTools,
+  buildSystemPrompt,
+  validateConfigPatch,
+  clampPublishCount,
+  getToolDef,
+} from './lib/assistant-tools.js';
 
 /** 日志页一次最多渲染多少行（再多 DOM 会卡；文件本身不截断，界面可以「显示更早」） */
 const LOG_LINE_LIMIT = 6000;
@@ -338,6 +348,23 @@ function addLog(type, message) {
 
 // 窗口状态持久化（尺寸/位置）
 const WIN_STATE_FILE = () => path.join(DATA_DIR, 'config', 'window-state.json');
+
+/**
+ * IPC 处理器登记表。
+ *
+ * 为什么要有它：AI 助手需要**直接调用**这些动作（跑运行、发布、采集…），
+ * 而 `ipcMain.handle` 注册完就拿不到函数引用了。如果为了助手再写一份"怎么跑引擎"，
+ * 两份实现迟早分叉（这就是 output-scan 当初三份实现的翻版）。
+ * 所以：处理器一律用 `handle(channel, fn)` 注册，既注册又存进 ACTIONS，
+ * 助手通过 `ACTIONS.get(channel)(null, ...args)` 复用**同一份实现**。
+ * 注意：被复用的处理器不许依赖第一个参数 `event`（这几个都不依赖）。
+ */
+const ACTIONS = new Map();
+function handle(channel, fn) {
+  ACTIONS.set(channel, fn);
+  ipcMain.handle(channel, fn);
+  return fn;
+}
 
 function loadWinState() {
   try {
@@ -901,7 +928,7 @@ function setupIPC() {
   }
 
   // 执行引擎（支持排队 + 用户主题）
-  ipcMain.handle('engine:run', async (_event, mode = 'auto', topic = '', options = {}) => {
+  handle('engine:run', async (_event, mode = 'auto', topic = '', options = {}) => {
     if (engineRunning || engineProcess) {
       addLog('info', `⏳ 已加入队列（当前有任务运行中），完成后自动执行`);
       return new Promise((resolve) => {
@@ -1296,7 +1323,7 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('schedule:save', async (_event, jobs) => {
+  handle('schedule:save', async (_event, jobs) => {
     try {
       if (!Array.isArray(jobs)) return { ok: false, message: '定时任务数据格式错误' };
       const { jobs: fixed, changed } = dedupeJobIds(jobs);
@@ -1614,6 +1641,416 @@ function setupIPC() {
     return { ok: false, message: '未知测试类型: ' + type };
   });
 
+  // ─────────────────────────────────────────────────────────────────────
+  // AI 助手（P0 只读问答 + P1 受控写操作）
+  //
+  // 三条红线（改动前先读完 `.claude/PROGRESS.md` 的 1G 节）：
+  //   ① 能力 = `electron/lib/assistant-tools.js` 里的白名单，没有「执行任意命令」这类工具；
+  //   ② 写操作（改配置/改闹钟/跑任务/发布）必须用户点「执行」才落盘；
+  //   ③ 每次工具调用写 `data/assistant-ledger.jsonl`，Key/密码走 redactDeep，永不进上下文。
+  // 这里只做"怎么执行"，不做"能不能执行"（那是纯逻辑层的事，有单测守）。
+  // ─────────────────────────────────────────────────────────────────────
+
+  const assistantLedgerFile = () => path.join(DATA_DIR, 'data', 'assistant-ledger.jsonl');
+
+  function assistantLedger(line) {
+    try {
+      fs.ensureDirSync(path.join(DATA_DIR, 'data'));
+      fs.appendFileSync(assistantLedgerFile(), `${JSON.stringify(line)}\n`, 'utf-8');
+    } catch (e) {
+      addLog('error', `AI 助手审计写入失败：${e.message}`);
+    }
+  }
+
+  /** 定时任务列表（供预览显示"旧的几点 → 新的几点"） */
+  function readScheduleJobs() {
+    try {
+      const file = scheduleFile();
+      return fs.existsSync(file) ? fs.readJsonSync(file) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /** 最近一次运行的 cost.json（和「历史」页同源） */
+  function latestCostInfo() {
+    const outputDir = path.join(DATA_DIR, 'output');
+    try {
+      if (!fs.existsSync(outputDir)) return null;
+      const day = fs.readdirSync(outputDir).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()[0];
+      if (!day) return null;
+      const dayDir = path.join(outputDir, day);
+      const session = fs.readdirSync(dayDir).filter((s) => {
+        try { return fs.statSync(path.join(dayDir, s)).isDirectory(); } catch (_) { return false; }
+      }).sort().reverse()[0];
+      if (!session) return null;
+      const costFile = path.join(dayDir, session, 'cost.json');
+      if (!fs.existsSync(costFile)) return { date: day, session, note: '这次运行没有 cost.json' };
+      return { date: day, session, ...fs.readJsonSync(costFile) };
+    } catch (e) {
+      return { note: `读不到花费：${e.message}` };
+    }
+  }
+
+  /** 某天的采集证据（日报页黄条同源）：判断"今天到底采到没有" */
+  function collectEvidence(date) {
+    const dir = path.join(DATA_DIR, 'output', date);
+    try {
+      if (!fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir)
+        .filter((f) => /^collect-\d{4}\.json$/.test(f))
+        .sort()
+        .map((f) => {
+          try {
+            const j = fs.readJsonSync(path.join(dir, f));
+            return { at: f.replace(/^collect-|\.json$/g, ''), ok: j.ok, total: j.total, collected: j.collected, insufficient: j.insufficient };
+          } catch (_) {
+            return { at: f, ok: null };
+          }
+        });
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /** 下一个要跑的闹钟 */
+  function nextEnabledJob() {
+    const jobs = readScheduleJobs().filter((j) => j && j.enabled !== false);
+    if (!jobs.length) return null;
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const mins = jobs.map((j) => {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(j.time || ''));
+      const t = m ? Number(m[1]) * 60 + Number(m[2]) : 0;
+      return { job: j, t, delta: (t - nowMin + 1440) % 1440 };
+    }).sort((a, b) => a.delta - b.delta);
+    const n = mins[0];
+    return n ? { id: n.job.id, time: n.job.time, label: n.job.label || n.job.mode, account: n.job.account, inMinutes: n.delta } : null;
+  }
+
+  /** 读日志尾部（调度器为主，应用日志补上应用自己的事件） */
+  function readRecentLogs({ level = 'error', limit = 60 } = {}) {
+    const date = localDateStr();
+    const files = [
+      path.join(DATA_DIR, 'logs', `scheduler-${date}.log`),
+      path.join(DATA_DIR, 'logs', `app-${date}.log`),
+    ];
+    const lines = [];
+    for (const f of files) {
+      if (!fs.existsSync(f)) continue;
+      try {
+        const raw = fs.readFileSync(f, 'utf-8').split('\n');
+        for (const line of raw) {
+          const t = line.trim();
+          if (!t) continue;
+          if (level === 'error' && !/❌|Error:|FAILED|timed out|失败：/.test(t)) continue;
+          if (level === 'warn' && !/⚠|🚫|warn/i.test(t)) continue;
+          lines.push(t);
+        }
+      } catch (_) { /* 单个文件读不到不影响另一个 */ }
+    }
+    return lines.slice(-Math.min(Number(limit) || 60, 200));
+  }
+
+  /** 把失败会话的原始证据取出来（AI 分析失败原因用） */
+  function readFailureEvidence({ date, session } = {}) {
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ? String(date) : localDateStr();
+    const dayDir = path.join(DATA_DIR, 'output', day);
+    const out = [];
+    try {
+      if (!fs.existsSync(dayDir)) return { date: day, failures: [], note: '这一天没有输出目录' };
+      const sessions = fs.readdirSync(dayDir).filter((s) => {
+        if (session && s !== session) return false;
+        try { return fs.statSync(path.join(dayDir, s)).isDirectory(); } catch (_) { return false; }
+      });
+      for (const s of sessions) {
+        const failedFile = path.join(dayDir, s, 'FAILED');
+        if (!fs.existsSync(failedFile)) continue;
+        let info = {};
+        try { info = fs.readJsonSync(failedFile); } catch (_) { info = { note: 'FAILED 文件坏了' }; }
+        let logTail = [];
+        const logFile = path.join(dayDir, s, 'publish.log');
+        if (fs.existsSync(logFile)) {
+          try { logTail = fs.readFileSync(logFile, 'utf-8').split('\n').filter(Boolean).slice(-25); } catch (_) { logTail = []; }
+        }
+        out.push({
+          session: s,
+          published: info.published === true,
+          stage: String(info.stage || info.publishStage || ''),
+          reason: String(info.reason || '').slice(0, 400),
+          logTail,
+        });
+      }
+    } catch (e) {
+      return { date: day, failures: out, note: e.message };
+    }
+    return { date: day, failures: out.slice(0, 6), total: out.length };
+  }
+
+  /** 数据日报：直接查 analytics.db（和日报页同一个库、同一张表） */
+  async function dailyReportFor(date) {
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ? String(date) : localDateStr();
+    const dbPath = path.join(DATA_DIR, 'data', 'analytics.db');
+    if (!fs.existsSync(dbPath)) return { date: day, note: '还没有 analytics.db（从没采集过）', metrics: null };
+    const { openDB } = await import('../src/db.js');
+    const db = await openDB(dbPath, { readonly: true });
+    try {
+      const dates = db.all('SELECT DISTINCT date FROM daily_stats ORDER BY date DESC LIMIT 10').map((r) => r.date);
+      const rows = db.all(
+        'SELECT metric, SUM(value) AS total, COUNT(*) AS rows FROM daily_stats WHERE date = ? AND (platform IS NULL OR platform != \'\') GROUP BY metric',
+        [day],
+      );
+      const metrics = {};
+      for (const r of rows) metrics[r.metric] = r.total;
+      return {
+        date: day,
+        availableDates: dates,
+        metrics,
+        note: Object.keys(metrics).length ? '' : '这一天库里没有数据（可能是没采集到，不代表 0）',
+        collectEvidence: collectEvidence(day),
+      };
+    } finally {
+      try { db.close(); } catch (_) { /* 关不掉不影响结果 */ }
+    }
+  }
+
+  /** 执行一个工具（AI 说"要做什么"，这里负责"真的做"） */
+  async function assistantExec(name, args = {}) {
+    const today = localDateStr();
+    const outDir = path.join(DATA_DIR, 'output');
+
+    switch (name) {
+      case 'get_status': {
+        const st = getEngineStatus();
+        const pub = buildPublishDay(today);
+        let pendingCount = 0;
+        let skipped = '';
+        try {
+          const r = scanUnpublished({ outputDir: outDir, today, onlyToday: true, maxCount: 0 });
+          pendingCount = r.items.length;
+          skipped = summarizeSkips(r.skipped || []);
+        } catch (_) { /* 输出目录还没有 */ }
+        return {
+          ok: true,
+          summary: `今天已发 ${pub.published} / 未确认 ${pub.unconfirmed} / 失败 ${pub.failed}，待发 ${pendingCount}`,
+          engine: { running: st.running, configured: st.configured, consecutiveFailures: st.consecutiveFailures, recentErrors: st.recentErrors },
+          scheduler: { running: st.schedulerRunning },
+          today: { date: today, published: pub.published, unconfirmed: pub.unconfirmed, failed: pub.failed, sessions: pub.sessions },
+          pendingCount,
+          skipped,
+          nextJob: nextEnabledJob(),
+        };
+      }
+      case 'get_today_publish': {
+        const pub = buildPublishDay(args.date || today);
+        return { ok: true, summary: `${pub.date}：已发 ${pub.published} / 未确认 ${pub.unconfirmed} / 失败 ${pub.failed}（共 ${pub.sessions} 场）`, ...pub };
+      }
+      case 'get_pending': {
+        const r = scanUnpublished({
+          outputDir: outDir,
+          today,
+          onlyToday: args.includeOld === true ? false : true,
+          maxCount: 0,
+        });
+        return {
+          ok: true,
+          summary: `待发 ${r.items.length} 条${args.includeOld === true ? '（含历史日期）' : '（只算当天）'}`,
+          includeOld: args.includeOld === true,
+          count: r.items.length,
+          items: r.items.slice(0, 10).map((i) => ({ date: i.date, session: i.session, title: String(i.title || '').slice(0, 40) })),
+          skipped: summarizeSkips(r.skipped || []),
+        };
+      }
+      case 'get_schedule': {
+        const jobs = readScheduleJobs()
+          .filter((j) => (args.onlyEnabled ? j.enabled !== false : true))
+          .map((j) => ({ id: j.id, time: j.time, mode: j.mode, label: j.label, account: j.account, enabled: j.enabled !== false }))
+          .sort((a, b) => String(a.time).localeCompare(String(b.time)));
+        const on = jobs.filter((j) => j.enabled).length;
+        return { ok: true, summary: `共 ${jobs.length} 个闹钟，启用 ${on} 个`, jobs, nextJob: nextEnabledJob() };
+      }
+      case 'get_accounts': {
+        // 复用账号页那条 IPC（同一份登录态判定，不另写一套）
+        const r = await ACTIONS.get('accounts:list')(null);
+        if (!r || r.ok === false) return { ok: false, error: r?.message || '读不到账号列表' };
+        const rows = (r.accounts || r.list || []).map((a) => ({
+          env: a.env,
+          name: a.name || a.env,
+          username: a.username || '',
+          region: a.region || '',
+          loggedIn: a.loggedIn,
+          followers: a.followers,
+          lastPublish: a.lastPublish || a.publishedAt || '',
+          note: a.note || '',
+        }));
+        const out = rows.filter((a) => a.loggedIn === false);
+        return {
+          ok: true,
+          summary: `${rows.length} 个账号${out.length ? `，其中 ${out.length} 个掉登录：${out.map((a) => a.env).join('、')}` : '，登录态都正常'}`,
+          accounts: rows,
+        };
+      }
+      case 'get_logs':
+        return { ok: true, summary: `取了最近 ${readRecentLogs(args).length} 行日志`, lines: readRecentLogs(args) };
+      case 'get_cost': {
+        const c = latestCostInfo();
+        return c ? { ok: true, summary: `最近一次（${c.date}/${c.session}）花费 ¥${c.total ?? c.cost ?? '?'}`, ...c } : { ok: true, summary: '还没有花费记录', cost: null };
+      }
+      case 'get_daily_report': {
+        const d = await dailyReportFor(args.date);
+        return { ok: true, summary: d.metrics && Object.keys(d.metrics).length ? `${d.date} 有数据` : `${d.date} 没采到数据`, ...d };
+      }
+      case 'explain_failures': {
+        const e = readFailureEvidence(args);
+        return {
+          ok: true,
+          summary: e.failures?.length ? `${e.date} 有 ${e.total ?? e.failures.length} 个失败会话` : `${e.date} 没有失败记录`,
+          ...e,
+        };
+      }
+
+      case 'update_config': {
+        const v = validateConfigPatch(args.patch);
+        if (!v.ok) return { ok: false, error: v.error };
+        const config = loadConfig();
+        const next = { ...config, ...v.patch };
+        saveConfig(next);   // 与配置页「保存配置」同一份实现
+        addLog('info', `🤖 AI 助手修改配置：${Object.keys(v.patch).join(', ')}${args.reason ? `（${args.reason}）` : ''}`);
+        return { ok: true, summary: `已改 ${Object.keys(v.patch).join(', ')}`, applied: v.patch };
+      }
+      case 'schedule_action': {
+        const jobs = readScheduleJobs();
+        const idx = jobs.findIndex((j) => String(j.id) === String(args.id));
+        if (idx < 0) return { ok: false, error: `没有 id=${args.id} 的定时任务（先用 get_schedule 查）` };
+        const job = jobs[idx];
+        if (args.op === 'delete') {
+          jobs.splice(idx, 1);
+        } else if (args.op === 'enable' || args.op === 'disable') {
+          jobs[idx] = { ...job, enabled: args.op === 'enable' };
+        } else if (args.op === 'update') {
+          const patch = {};
+          for (const k of ['time', 'mode', 'label', 'account', 'enabled', 'topic']) {
+            if (args.patch && args.patch[k] !== undefined) patch[k] = args.patch[k];
+          }
+          if (patch.time && !/^\d{1,2}:\d{2}$/.test(String(patch.time))) return { ok: false, error: 'time 必须是 HH:MM' };
+          jobs[idx] = { ...job, ...patch };
+        } else {
+          return { ok: false, error: `不支持的 op：${args.op}` };
+        }
+        const saved = await ACTIONS.get('schedule:save')(null, jobs);
+        if (!saved || saved.ok === false) return { ok: false, error: saved?.message || '保存定时表失败' };
+        addLog('info', `🤖 AI 助手${args.op === 'delete' ? '删除' : args.op === 'enable' ? '启用' : args.op === 'disable' ? '停用' : '修改'}定时任务 ${job.time} ${job.label || job.mode}`);
+        return { ok: true, summary: `定时任务 ${job.time} 已${args.op === 'delete' ? '删除' : args.op === 'enable' ? '启用' : args.op === 'disable' ? '停用' : '修改'}`, jobs: saved.jobs?.length };
+      }
+
+      case 'run_engine': {
+        // 不 await：一轮生成要 5~15 分钟，等它结束对话就卡死了
+        Promise.resolve(ACTIONS.get('engine:run')(null, args.mode, args.topic || '', {})).catch((e) => {
+          addLog('error', `AI 助手启动生成失败：${e.message}`);
+        });
+        addLog('info', `🤖 AI 助手启动${args.mode === 'text' ? '文案' : '视频'}生成${args.topic ? `（主题：${args.topic}）` : ''}`);
+        return { ok: true, summary: `已启动${args.mode === 'text' ? '文案' : '视频'}生成，进度在控制台/日志页`, started: true };
+      }
+      case 'run_publish': {
+        const maxCount = clampPublishCount(args.maxCount);
+        Promise.resolve(ACTIONS.get('publish:run')(null, { maxCount, includeOld: args.includeOld === true })).catch((e) => {
+          addLog('error', `AI 助手启动发布失败：${e.message}`);
+        });
+        addLog('info', `🤖 AI 助手启动发布（最多 ${maxCount} 条${args.includeOld ? '，含历史日期' : ''}）`);
+        return { ok: true, summary: `已启动发布，最多 ${maxCount} 条`, started: true, maxCount };
+      }
+      case 'run_collect': {
+        const list = String(args.accounts || '').split(',').map((x) => x.trim()).filter(Boolean);
+        Promise.resolve(ACTIONS.get('collect:run')(null, list)).catch((e) => {
+          addLog('error', `AI 助手启动采集失败：${e.message}`);
+        });
+        addLog('info', `🤖 AI 助手启动数据采集${list.length ? `（${list.join(',')}）` : ''}`);
+        return { ok: true, summary: '已启动采集（约 2~3 分钟）', started: true };
+      }
+      default: {
+        const def = getToolDef(name);
+        return { ok: false, error: def ? `工具 ${name} 还没接执行器` : `未知工具 ${name}` };
+      }
+    }
+  }
+
+  /** 问模型（axios，不能用 OpenAI SDK：主进程里它的 fetch 必挂，见 CLAUDE.md） */
+  async function assistantCallModel(messages) {
+    const config = loadConfig();
+    const apiKey = String(config.deepseekApiKey || '').trim();
+    if (!apiKey) throw new Error('还没配 DeepSeek API Key（配置页 → DeepSeek）');
+    const model = String(config.deepseekModel || '').trim() || 'deepseek-chat';
+    const maxTokens = Number(config.deepseekMaxTokens) || 4096;
+    const axios = (await import('axios')).default;
+    const started = Date.now();
+    const r = await axios.post(
+      'https://api.deepseek.com/chat/completions',
+      {
+        model,
+        messages,
+        tools: publicTools(),
+        tool_choice: 'auto',
+        max_tokens: maxTokens,
+        temperature: 0.3,
+      },
+      {
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        timeout: 120000,
+        validateStatus: () => true,
+      },
+    );
+    if (r.status >= 400) {
+      const e = new Error(r.data?.error?.message || `HTTP ${r.status}`);
+      e.status = r.status;
+      throw e;
+    }
+    const message = r.data?.choices?.[0]?.message || {};
+    const usage = r.data?.usage || null;
+    if (usage) {
+      addLog('info', `🤖 AI 助手：${r.data?.model || model} ${Date.now() - started}ms · ${usage.prompt_tokens}+${usage.completion_tokens} tokens`);
+    }
+    return { message, usage };
+  }
+
+  let assistantSession = null;
+  let assistantSessionKey = '';
+
+  /** 会话按「日期 + 模型 + 版本」重建（日期/模型变了，系统提示里的口径也要跟着变） */
+  function ensureAssistantSession() {
+    const config = loadConfig();
+    const today = localDateStr();
+    const model = String(config.deepseekModel || '').trim() || 'deepseek-chat';
+    const key = `${today}|${model}|${app.getVersion()}`;
+    if (assistantSession && assistantSessionKey === key) return assistantSession;
+    const systemPrompt = buildSystemPrompt({ today, appVersion: app.getVersion(), model });
+    assistantSession = createAssistantSession({
+      callModel: assistantCallModel,
+      exec: assistantExec,
+      systemPrompt,
+      previewCtx: () => ({ config: loadConfig(), jobs: readScheduleJobs() }),
+      onLedger: assistantLedger,
+      log: (m) => addLog('info', m),
+    });
+    assistantSessionKey = key;
+    addLog('info', `🤖 AI 助手就绪（模型 ${model}，工具 ${publicTools().length} 个）`);
+    return assistantSession;
+  }
+
+  handle('assistant:send', async (_event, text) => {
+    const r = await ensureAssistantSession().send(text);
+    return r;
+  });
+  handle('assistant:answer', async (_event, approvals) => {
+    const r = await ensureAssistantSession().answer(approvals);
+    return r;
+  });
+  handle('assistant:state', () => ensureAssistantSession().snapshot());
+  handle('assistant:reset', () => {
+    const s = ensureAssistantSession();
+    s.reset();
+    return { ok: true };
+  });
+
   // 测试指纹浏览器（FoxProfile）连接
   // 默认只做只读检查（健康 + 环境列表 + 账号里配的环境名是否存在），
   // 只有显式传 opts.openEnv === true 才真的启动环境（有副作用）。
@@ -1785,7 +2222,7 @@ function setupIPC() {
   let editChild = null;
 
   // 账号列表：环境 · 用户名 · 登录态 · 出口 IP · 是否运行
-  ipcMain.handle('accounts:list', async () => {
+  handle('accounts:list', async () => {
     const cfg = loadConfig();
     const base = String(cfg.foxApiBase || 'http://127.0.0.1:8000/api/v1').replace(/\/+$/, '');
     const state = readAccountsState();
@@ -2420,7 +2857,7 @@ function setupIPC() {
   }
 
   // 手动触发发布
-  ipcMain.handle('publish:run', async (_event, opts = {}) => {
+  handle('publish:run', async (_event, opts = {}) => {
     const started = Date.now();
     // 发布预算：一条视频从上传到确认公开最长可能超过 30 分钟。
     // 原实现宿主超时只有 15 分钟 → 发布中途被杀、比特窗口残留、.published 未写 → 下轮重复上传。
@@ -2520,7 +2957,7 @@ function setupIPC() {
   });
 
   // 手动触发采集（可选指定账号列表）
-  ipcMain.handle('collect:run', async (_event, accounts) => {
+  handle('collect:run', async (_event, accounts) => {
     try {
       // 🔴 重入保护：原实现完全无追踪，连点几次就会并发跑多个采集器，
       //    抢同一个浏览器环境、互相覆盖写 analytics.db。
@@ -2820,7 +3257,8 @@ function setupIPC() {
   // 数据型日报在账号没数据时全是「—」，但"今天发了 N 条、失败 M 条"永远是实话，
   // 而且这是用户每天真正想知道的东西。
   // 成功来自发布账本（publish-ledger.jsonl），失败/未确认来自会话目录里的 FAILED 标记。
-  ipcMain.handle('report:publishDay', (_event, day) => {
+  // 发布日结果（发布账本 + FAILED 目录）。抽成函数：AI 助手要复用同一份口径。
+  const buildPublishDay = (day) => {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(day || '')) ? String(day) : localDateStr();
     const out = { date, published: 0, unconfirmed: 0, failed: 0, failures: [], accounts: [], sessions: 0 };
     try {
@@ -2860,7 +3298,9 @@ function setupIPC() {
       }
     } catch (_) { /* 目录读不到不抛 */ }
     return out;
-  });
+  };
+
+  ipcMain.handle('report:publishDay', (_event, day) => buildPublishDay(day));
 
   ipcMain.handle('report:trend', async (_event, days) => {
     try {

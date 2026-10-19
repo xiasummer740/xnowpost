@@ -1,6 +1,57 @@
 # 接力开发 — 新对话从这里开始
 
-> 更新：2026-10-19 13:0x ｜ 版本 **1.6.10**（已打包、已部署、已重启验证）
+> 更新：2026-10-19 13:20 ｜ 版本 **1.6.11**（已打包、已部署、已重启验证）
+
+## 1G. v1.6.11（2026-10-19 13:20）AI 助手（P0 只读问答 + P1 受控写操作）
+
+用户问「能不能加 AI 功能，能完成日常复杂的事，或按我的对话去执行 / 配置」。
+选了 **P0+P1 一起做**、入口用 **侧边栏新页面**（不是抽屉）。现在侧栏最后一项就是「AI 助手」。
+
+### 能做什么（14 个工具，白名单）
+- 只读（自动执行）：`get_status` / `get_today_publish` / `get_pending` / `get_schedule` /
+  `get_accounts` / `get_logs` / `get_cost` / `get_daily_report` / `explain_failures`
+- 要确认（弹卡片 → 点「执行」才动）：`update_config` / `schedule_action` / `run_engine` /
+  `run_publish` / `run_collect`
+- 全是**复用既有 IPC**（`ACTIONS` 登记表，见下），没有为助手另写"怎么发布 / 怎么采集"。
+
+### 实测证据（部署版 v1.6.11，13:09 起）
+- 问「今天发了几个？有失败吗？」→ `get_today_publish` 2ms → 答
+  **「今天共 10 场：已发 10 条 / 未确认 0 / 失败 0」**，两轮模型调用 931ms + 917ms。
+- 问「把 09:05 那个闹钟关掉」→ `get_schedule` 1ms → 弹确认卡
+  「停用定时任务：09:05 video · 账号 08」→
+  - 点**跳过**：`schedule.json` mtime 没变、09:05 仍 `enabled:true`、账本无执行记录，
+    模型回「你拒绝了，所以没有改动，它仍然启用」。
+  - 点**执行**：`schedule.json` 13:11:58 写入、09:05 变 `enabled:false`、
+    账本记 `{"tool":"schedule_action","level":"write","confirmed":true,"ok":true}`、
+    调度器 13:11:59 自动热重载。**验完已把备份逐字节还原**（11 个启用闹钟，与原状一致）。
+- 成本：一轮工具对话 ≈ 1900+2800 prompt tokens，约 **¥0.001/轮**（比生成一条视频便宜 10 倍）。
+
+### 改了什么
+- 新文件：`electron/lib/assistant-tools.js`（纯逻辑：白名单/分级/校验/预览/脱敏/审计/裁剪/系统提示）、
+  `electron/assistant.js`（执行循环，不依赖 electron 所以能假模型单测）、
+  `src/renderer/views/Assistant.vue`（聊天 + 工具 chip + 确认卡 + 清空）。
+- `electron/main.js`：新增 `handle(channel, fn)` + `ACTIONS` 登记表；`engine:run` / `publish:run` /
+  `collect:run` / `accounts:list` / `schedule:save` 改为经它注册（助手按 channel 直接调同一份实现）；
+  `report:publishDay` 的 body 抽成 `buildPublishDay(date)` 供助手复用；
+  新增 `assistantExec` / `assistantCallModel` / 会话单例 / 4 个 `assistant:*` IPC。
+- `electron/preload.js`：`assistantSend/Answer/State/Reset`；`router` + `App.vue` 侧栏加「AI 助手」。
+- 新测试 **+34**：`assistant-tools.test.js`(16) / `assistant-loop.test.js`(14) / `assistant-guard.test.js`(4)。
+  全部 **411 pass / 0 fail**，`✓ built`，打包后 asar 内已核到助手代码与文案。
+
+### 安全红线（改前端之前必读，`CLAUDE.md` 有同款）
+1. 工具 = 白名单，**没有**执行任意命令 / 读写任意文件的工具（单测逐条断言）。
+2. 写操作必须人点「执行」；没表态 = 拒绝；**非法配置在校验阶段就拦死，连卡片都不弹**。
+3. Key / 密码经 `redactDeep` 脱敏，永不进上下文；每次工具调用写 `data/assistant-ledger.jsonl`。
+4. 发布条数夹死 ≤3 条（预览和执行两处都夹）；长任务不 await（起完就返回）。
+
+### 已知边界
+- `run_engine` 没有「指定账号」参数：单次引擎运行的账号由配置决定（`doRunEngine` 只接
+  `--video-only/--post-only/--topic`），助手不会假装支持。
+- 会话按「日期 + 模型 + 版本」重建，改了模型 / 跨天会重开对话（历史不跨天，避免拿旧口径答新数据）。
+- 验收时发现 **win-shot 只能点不能打字**：`SendKeys` / 剪贴板粘贴在隐藏会话里都到不了窗口，
+  所以界面自动验收只能点页面上的「提示按钮」；要测任意输入得人工敲。
+  （为此把 5 个常用问题做成了提示按钮：今天发了几个 / 为什么失败 / 还有几条待发 /
+  哪个号掉登录 / 把 09:05 那个闹钟关掉。）
 
 ## 1F. v1.6.10（2026-10-19 13:00）模型可选 + 测试连接改稳
 

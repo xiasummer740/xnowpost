@@ -63,6 +63,13 @@
           <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z" /><path d="M9 9h6M9 13h6M9 17h4" /></svg>
           日志
         </router-link>
+        <router-link to="/assistant" class="nav-item" :class="{ active: $route.path === '/assistant' }">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9z" />
+            <path d="M18 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" />
+          </svg>
+          AI 助手
+        </router-link>
       </nav>
 
       <div class="sidebar-footer">

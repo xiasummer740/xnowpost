@@ -661,6 +661,39 @@ node src/publisher/index.js --env TK01 --max 1
   排查入口：失败时应用日志会写 `DeepSeek 请求失败（第 N 次）：<name> <message>`。
 
 
+## AI 助手（侧边栏「AI 助手」，2026-10-19 加的）
+用户要求：「能不能加 AI 功能，能完成日常复杂的事，或按我的对话去执行/配置」。
+答案是能 —— 因为项目已经把"能做的事"全拆成了明确的动作（发布/定时/采集/配置/日报/账号），
+助手只要学会调它们，不用另写一套逻辑。
+
+- **三块代码，各管一件事**（改哪块先看注释）：
+  - `electron/lib/assistant-tools.js`：**纯逻辑** —— 工具白名单、权限分级（read/write/spend）、
+    参数校验、确认卡片文案、脱敏、审计行、上下文裁剪、系统提示词。**安全边界只在这里定义。**
+  - `electron/assistant.js`：**执行循环**（问模型 → tool_calls → 执行 → 喂回 → 再问）。
+    不 import electron，所以能用假模型/假执行器完整单测。
+  - `electron/main.js` 的 `assistantExec()`：**怎么执行**（读真实数据、调既有 IPC）。
+  - 界面 `src/renderer/views/Assistant.vue`（路由 `/assistant`）。
+- **红线（改之前必须想清楚）**：
+  1. **没有**「执行任意命令 / 读写任意文件」的工具。能力 = 白名单，不多一个。
+     单测里逐条断言 `exec/shell/run_command/read_file/write_file/eval` 都不存在。
+  2. **写操作必须人确认**：模型只能"提议"，界面弹确认卡（显示改动前后）→ 用户点「执行」才落盘。
+     没表态 = 拒绝（宁可少做）。校验阶段就拦死配置白名单，**危险改动连确认卡都不会出现**
+     （否则用户可能顺手点执行 —— 这条有 4 个单测守着）。
+  3. 每次工具调用写 `data/assistant-ledger.jsonl`；Key/密码经 `redactDeep` 脱敏，
+     **永不进模型上下文**（`get_accounts` 返回的 password/emailPassword 会被自动替换成 `***`）。
+- **复用同一份实现**：`main.js` 里加了 `handle(channel, fn)` 登记表（`ACTIONS`），
+  `engine:run` / `publish:run` / `collect:run` / `accounts:list` / `schedule:save` 都改用它注册，
+  助手直接 `ACTIONS.get('publish:run')(null, opts)` 调用 —— **不要为助手另写一份"怎么发布"**。
+  被复用的处理器不许依赖第一个参数 `event`。
+- **发布条数被夹死**：模型传 99 也只发 3 条（`PUBLISH_MAX_PER_TURN` + `clampPublishCount`），
+  在预览和执行两处都夹（预览说 3、执行也发 3，不许出现"看到的和做的不是一回事"）。
+- **长任务不 await**：`run_engine` / `run_publish` / `run_collect` 起完就返回（`started: true`），
+  否则一轮生成 5~15 分钟会把对话卡死。
+- **上下文裁剪必须切在 user 边界**：从中间切会留下"孤立 tool 结果 / tool_calls 没结果"→ 服务端 400，
+  这一轮的钱白花（`trimHistory` 有单测）。
+- 主进程里**仍然只能用 axios 发 DeepSeek 请求**（`assistantCallModel`），原因见上一节。
+
+
 ## 凭据备份与恢复（`src/secrets-backup.js`）
 - 每天把 5 个文件（`data/env-accounts.json`、`account-profiles.json`、`account-meta.json`、
   `config/schedule.json`、`data/publish-ledger.jsonl`）+ 全部 cookie 打成
