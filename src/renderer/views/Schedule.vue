@@ -728,9 +728,13 @@ async function save() {
   flex: 0 0 auto;
   padding: 4px 10px;
 }
+.alarm .acc-picker {
+  flex: 0 1 200px;
+}
 /* 自动发布/仅生成 状态：只说明这一行会发生什么，不可点 */
 .auto-tag {
   flex: 0 0 auto;
+  margin-left: auto;   /* 状态 + 复制 + 删除贴右边，"自动发布"紧跟着账号框 */
   font-size: 11px;
   font-weight: 600;
   padding: 3px 8px;

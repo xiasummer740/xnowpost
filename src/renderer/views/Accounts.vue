@@ -85,8 +85,8 @@
             <th style="width: 34px">
               <input type="checkbox" class="chk" :checked="allChecked" :indeterminate.prop="someChecked && !allChecked" title="全选 / 取消全选" @change="toggleAllSelect" />
             </th>
-            <th style="width: 96px">环境</th>
-            <th>账号 / 邮箱</th>
+            <th style="width: 88px">环境</th>
+            <th style="width: 234px">账号 / 邮箱</th>
             <th style="width: 126px">
               密码
               <button class="eye all" :title="showAll ? '全部隐藏' : '全部显示'" @click="toggleAll">
@@ -96,9 +96,9 @@
             </th>
             
             <th style="width: 64px">状态</th>
-            <th style="width: 118px">出口 / 活动</th>
-            <th style="width: 132px">最后发布</th>
-            <th style="width: 196px; text-align: right">操作</th>
+            <th style="width: 104px">出口 / 活动</th>
+            <th style="width: 120px">最后发布</th>
+            <th style="width: 238px; text-align: right">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -158,7 +158,7 @@
               <span v-else class="status unknown"><i></i>{{ row.note || '未知' }}</span>
             </td>
             <td>
-              <div class="ip">{{ shortProxy(row.proxy) }}</div>
+              <div class="ip" :title="row.proxy">{{ shortProxy(row.proxy) }}</div>
               <div class="ip sub" :title="`最近活动 ${ago(row.lastActive)}前 · ${row.cookies} 条 TikTok cookie`">{{ ago(row.lastActive) }}前</div>
             </td>
             <td>
@@ -175,15 +175,13 @@
                   <svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z" /></svg>启动
                 </button>
                 <button v-else class="x-mini" :disabled="busy" @click="launch(row, 'stop')">停止</button>
-                <!-- 行内两个纯图标按钮以前只能靠 tooltip 分辨（🔄 抓资料 / ✏️ 改资料），现在都带文字 -->
-                <button class="x-mini" :disabled="busy || busyAll" title="只拉这个号的资料（头像 / 粉丝 / 关注 / 获赞）" @click="syncProfiles(row.env)">
-                  <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /><path d="M3 21v-5h5" /></svg>
-                  抓资料
-                </button>
-                <button class="x-mini" :disabled="busy || busyAll" title="改这个号的资料（头像 / 名字 / 用户名 / 简介）" @click="openEdit(row)">
-                  <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M14 6l4 4" /></svg>
-                  改资料
-                </button>
+                <!--
+                  行内这两个按钮以前是纯图标（只能靠 tooltip 分辨）。现在给了文字，
+                  图标就去掉了：有文字时图标只是重复信息，还要多占约 40px，
+                  而这一行有 10 列、总宽刚过 1240 —— 那 40px 正是邮箱/IP 被截断的原因。
+                -->
+                <button class="x-mini" :disabled="busy || busyAll" title="只拉这个号的资料（头像 / 粉丝 / 关注 / 获赞）" @click="syncProfiles(row.env)">抓资料</button>
+                <button class="x-mini" :disabled="busy || busyAll" title="改这个号的资料（头像 / 名字 / 用户名 / 简介）" @click="openEdit(row)">改资料</button>
                 <button class="x-mini hi" :disabled="busy || busyAll" @click="startLogin(row.env)">登录</button>
               </div>
             </td>
@@ -901,7 +899,7 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 .acct .u .handle { font-size: 10.5px; color: var(--text-3); font-weight: 400; }
 .acct .vf { width: 12px; height: 12px; stroke: var(--info); fill: none; stroke-width: 2; flex: 0 0 12px; }
 .acct .m {
-  font-size: 10.5px; color: var(--text-3);
+  font-size: 10px; color: var(--text-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cp { cursor: pointer; border-radius: 3px; }
@@ -940,14 +938,14 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 .status.unknown { color: var(--text-3); }
 .status.unknown i { background: var(--text-3); }
 
-.ip { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3); display: block; overflow: hidden; text-overflow: ellipsis; }
+.ip { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-3); display: block; overflow: hidden; text-overflow: ellipsis; }
 .ip.sub { font-size: 9.5px; opacity: 0.75; margin-top: 1px; }
 
 /* 最后发布时间：上面是日期时间，下面是「x 分钟前」 */
 .pub { line-height: 1.25; }
 .pub-at { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2); }
 .pub-ago { font-size: 9.5px; color: var(--text-3); opacity: 0.8; margin-top: 1px; }
-.rowact { display: flex; gap: 5px; justify-content: flex-end; }
+.rowact { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
 
 /* ── 进度抽屉 ── */
 .drawer {

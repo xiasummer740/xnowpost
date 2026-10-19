@@ -79,8 +79,10 @@
 
     <template v-else>
       <!-- ===== KPI 汇总行 ===== -->
-      <div class="kpi-row">
-        <div v-for="k in kpiList" :key="k.key" class="kpi-card" :style="{ '--accent': k.color }">
+      <!-- 只显示这天真的采到的指标（2026-10-19）：以前 5 张卡里 4 张是「—」，
+           等于用首屏告诉用户"什么都没有"。全都没采到时整行不渲染，直接看下面的表。 -->
+      <div v-if="kpiVisible.length" class="kpi-row">
+        <div v-for="k in kpiVisible" :key="k.key" class="kpi-card" :style="{ '--accent': k.color }">
           <span class="kpi-icon">{{ k.icon }}</span>
           <div class="kpi-body">
             <span class="kpi-label">{{ k.label }}</span>
@@ -91,7 +93,7 @@
           </div>
         </div>
       </div>
-      <p class="kpi-note">「—」= 这天没采到这项指标（不是 0）。粉丝/关注/获赞来自账号主页，播放/点赞/评论来自 TikTok 分析页。</p>
+      <p v-if="kpiVisible.length" class="kpi-note">「—」= 这天没采到这项指标（不是 0）。粉丝/关注/获赞来自账号主页，播放/点赞/评论来自 TikTok 分析页。</p>
 
       <!-- ===== 账号明细表 ===== -->
       <!--
@@ -220,6 +222,8 @@ const kpiList = computed(() => {
   })
 })
 
+// 只保留"这天真有数"的 KPI（null = 没采到，不占位）
+const kpiVisible = computed(() => kpiList.value.filter((k) => k.today !== null))
 // KPI 数值显示：null（没这项数据）显示 —，不冒充 0
 function kpiText(v) { return v === null || v === undefined ? '—' : fmt(v) }
 
@@ -659,11 +663,12 @@ onMounted(() => {
 .trend-note { margin: -6px 0 10px; color: #64748b; font-size: 12px; line-height: 1.5; }
 
 /* ===== KPI 汇总行 ===== */
+/* 用 flex 固定卡宽：只剩 1 张时不会被拉成"一张大卡占满整行" */
 .kpi-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px; margin-bottom: 24px;
+  display: flex; flex-wrap: wrap;
+  gap: 12px; margin-bottom: 20px;
 }
+.kpi-card { flex: 0 0 210px; }
 .kpi-card {
   display: flex; align-items: center; gap: 12px;
   background: linear-gradient(135deg, #1e293b, #1a1f2e);
