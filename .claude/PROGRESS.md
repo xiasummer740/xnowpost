@@ -1,7 +1,38 @@
 # 接力开发 — 新对话从这里开始
 
-> 更新：2026-10-19 21:30 ｜ 版本 **1.6.31**（已打包、已部署、已重启验证）
+> 更新：2026-10-19 22:12 ｜ 版本 **1.6.34**（已打包、已部署、已重启验证）
 
+## 1R（v1.6.32–1.6.34）AI 助手实测：它说了三句假话，全修了
+用户口径：「我准备发消息 你监测整个过程 找找问题」→「一起修」。
+监测手段：scripts\_watch-assistant.ps1 同时 tail logs\app-<日期>.log + data\assistant-ledger.jsonl
+（每次工具调用带 ms/ok/brief），配合 win-shot.ps1 抓界面。
+
+- **P0 时间少 8 小时**：助手答「已发布：TK03 · 13:43」，实际 21:43。
+  get_last_task 里 
+ew Date(at).toISOString().slice(11,16) 取的是 UTC。
+  新增 localHHMM()（main.js 模块级），**以后任何时间显示都不许再用 toISOString 切片**。
+- **P0 「还在生成」是假的**：21:40 助手说「pm_1911 还在生成」，实际那轮 19:11:27 起来、19:11:30 就被取消
+  （目录里只剩 cost.json，¥0）。原判定「没有成片/发布/失败标记 ⇒ 还在生成」。
+  现在 eadSessionRow() 带上 iles/ageMin/hasText，describeSession() 分五种状态，
+  15 分钟没动静且没有进程 ⇒ erdict='stalled'（黄色）。
+- **P0 「待发 0」与首页「27 项」矛盾**：get_status 原来 onlyToday:true 只数当天。
+  改用 .pending 口径（和首页/get_pending 同一份数据）：待发 当天 0 条（另有历史 27 条…）。
+  ⚠️ 用 pending 不要用 items：items 是"本轮能发的候选"，old 标记只在 pending 里。
+- **P1 费用少算 2/3**：确认卡写「约 ¥0.01」，实际 ¥0.03（DeepSeek 0.0116 + 封面 Kolors 0.02）。
+  三处文案统一成「一条视频约 ¥0.03 = 文案 ¥0.01 + 封面生图 ¥0.02」。
+- **P2 等待期看不到阶段**：currentStage() 读今天 app 日志尾部 80 行，映射成
+  写文案/配音/找素材/做封面/合成/上传/填文案/等检查/等审查，get_last_task 与 get_status 都带 stage。
+- **P2 点名某一轮答非所问**：实测助手把 21:43 的成功当成 pm_1911 的结果，还自己编「它只生成了文案」。
+  get_last_task 新增 session 参数（pm_1911 / 2026-10-19/pm_1911），命中只答那一场；
+  不带参数时也附一句 最近一场：…。system prompt 加第 10 条。
+- **P2 中文被画红波浪线**：Assistant.vue 输入框补 spellcheck="false" autocorrect="off"。
+- **额外：发布按钮双击**：19:11:13 与 19:11:15 各跑一次「手动发布开始」，各扫 307 条。
+  publish:run 加重入保护 + 3 秒去抖（publishInFlight / publishLastAt）。
+- **重复日志**：✅ video.mp4 (x.xMB) 曾打两遍（video.js 与 index.js 各一次）；
+  「TG 未配置」notifier 与调用方各打一条 —— index.js 两处删掉。
+- 验收（真应用、真提问）：output/v1633-assist-1.png（点名 pm_1911 → stalled 结论 + ¥0.03）、
+  output/v1634-assist-1.png（待发 当天 0 / 历史 27）、output/v1632-assist-1.png（21:43 本地时间）。
+- 未验证：重复日志那两行要等下一轮真生成（00:30 闹钟）才看得到。
 ## 1Q（v1.6.23–1.6.31）全项目「重复 / 啰嗦 / 功能不清楚」清理
 - 用户口径：「再全面审查整个项目 模块 按钮 功能 等等全方位，有没有像刚才一样重复 啰嗦，功能不清楚的」，
   确认「一起做」（两批一起改），只把「TG 没配就整轮记失败」留到后面单独做。
