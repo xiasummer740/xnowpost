@@ -156,7 +156,7 @@ export async function collectAll(filterAccounts = null) {
       let opened = null;
       try {
         opened = useFox
-          ? await openFoxProfile(envId, foxApi)
+          ? await openFoxProfile(envId, foxApi, { minimize: true })   // 采集只读，窗口缩到任务栏
           : await openBitProfile(envId, bitApiKey);
       } catch (e) {
         console.log(`  ⚠️ 跳过账号 ${acc.name}（${e.message}）`);
@@ -358,9 +358,19 @@ if (isMain && !process.argv[1].includes('src/index.js')) {
 
   if (filterAccounts) console.log(`📋 过滤账号: ${filterAccounts.join(', ')}`);
 
-  collectAll(filterAccounts).then(() => process.exit(0)).catch(err => {
+  collectAll(filterAccounts).then(async () => {
+    // ⚠️ 别在 collectAll 一 resolve 就 process.exit()：2026-10-20 10:00 那轮采完 10 个号、
+    // 证据已写成 ok/10/10，退出时却撞上 libuv
+    // `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`（退出码 0xC0000409），
+    // 调度器据此判失败重试了 3 次、白跑 25 分钟。根因是强制退出时还有 handle 在关闭中。
+    // 现在先把退出码挂上，给事件循环 1.5 秒把手柄关干净，再显式退出。
+    process.exitCode = 0;
+    await new Promise((r) => setTimeout(r, 1500));
+    process.exit(0);
+  }).catch(err => {
     console.error('\n❌ 采集失败:', err.message || err);
     // 退出码 2 = 只是"数据不足"（页面全是 -- 占位）：调度器据此不重试、不当成偶发故障
-    process.exit(err && err.insufficient ? 2 : 1);
+    process.exitCode = err && err.insufficient ? 2 : 1;
+    setTimeout(() => process.exit(process.exitCode), 800);
   });
 }

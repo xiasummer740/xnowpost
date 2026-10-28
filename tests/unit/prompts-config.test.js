@@ -81,11 +81,23 @@ describe('提示词模板', () => {
 });
 
 describe('引擎配置（P2-11：默认配置必须真的生效）', () => {
-  test('默认配置里 video.scenes 为 4（20 秒短视频）', () => {
+  test('默认配置里 video.scenes 为 7（v1.6.46：7 镜 × 2.4~3.6 秒 ≈ 20 秒）', () => {
     const cfg = fs.readJsonSync(path.join(ROOT, 'config', 'default.json'));
-    assert.equal(cfg.video.scenes, 4);
-    // 总时长目标：4 镜 × 5 秒
-    assert.ok(cfg.video.totalDuration <= 25, `总时长目标过长: ${cfg.video.totalDuration}`);
+    assert.equal(cfg.video.scenes, 7);
+    // 节奏：单镜 2.4~3.6 秒（4 镜 × 4s 在手机上信息密度太低，2026-10-20 用户确认改掉）
+    assert.equal(cfg.video.minDuration, 2.4);
+    assert.equal(cfg.video.maxDuration, 3.6);
+    // 总时长目标：含封面卡后落在 20~25 秒
+    assert.ok(cfg.video.totalDuration >= 18 && cfg.video.totalDuration <= 25,
+      `总时长目标不在 18~25 秒: ${cfg.video.totalDuration}`);
+  });
+
+  test('响度归一与字幕字号有默认值（旧片 -26 LUFS / 36px 是这一轮要修的缺陷）', () => {
+    const cfg = fs.readJsonSync(path.join(ROOT, 'config', 'default.json'));
+    assert.equal(cfg.video.loudness.target, -14);
+    assert.ok(cfg.video.loudness.truePeak <= -1);
+    assert.ok(cfg.video.subtitle.zhSize >= 44, '字幕字号下限 44px（手机可读）');
+    assert.equal(cfg.video.subtitle.zhSize, cfg.video.subtitle.enSize, '中英必须同字号');
   });
 
   test('getSceneCount() 返回 1..12 的整数且等于配置文件的值', () => {

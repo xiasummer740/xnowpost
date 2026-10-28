@@ -74,6 +74,25 @@ test('resultFromRunWithRetry：五个返回值各映射到一个结果码', () =
   assert.equal(resultFromRunWithRetry(undefined), 'failed');
 });
 
+test('养号部分成功 = partial，不能记成整轮失败，也不能记成完全成功', () => {
+  // 2026-10-23 凌晨真实数据：10 个号里 8 个养成了、TK04/TK05 被拦，脚本退出码 1 →
+  // 记录写成「已重试 2 次均失败」，用户以为整晚白跑。
+  assert.equal(resultFromRunWithRetry({ ok: true, partial: true }), 'partial');
+  assert.notEqual(resultFromRunWithRetry({ ok: true, partial: true }), 'failed');
+  assert.notEqual(resultFromRunWithRetry({ ok: true, partial: true }), 'ok');
+  const text = describeScheduledRun(
+    buildRunRecord({
+      job: { id: 23, label: '养号', mode: 'warmup' },
+      result: 'partial',
+      reason: '有账号没养成（播放被拦或白屏）',
+      date: '2026-10-23',
+    }),
+    {},
+  );
+  assert.match(text, /部分完成/);
+  assert.match(text, /没养成/);
+});
+
 test('结果码常量与文案分支对齐（新增结果码必须同时加文案分支）', () => {
   for (const code of RUN_RESULTS) {
     const text = describeScheduledRun(

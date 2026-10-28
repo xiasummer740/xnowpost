@@ -43,3 +43,9 @@ screenshot.png
 
 # === 导入的账号文件（含密码 / 2FA 密钥，绝不能进版本库）===
 import/
+
+# === 运行时数据 / 临时草稿 ===
+# data/ 是本机运行时数据（analytics.db、proxy-node.json 里含代理节点链接）
+data/
+# out/ 是临时改造脚本的草稿目录（add-plan-ipc.mjs 之类）
+out/

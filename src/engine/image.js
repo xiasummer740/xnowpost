@@ -69,6 +69,8 @@ const BRAND = {
   dark: '#000000',
   gray: 'rgba(255,255,255,0.5)',
 };
+// canvas 没有 emoji 字体（实测 💎⚡🔥 全渲染成方框），用这些能画出来的符号代替
+const POINT_MARKS = ['●', '●', '●', '●'];
 
 // Kolors 尺寸映射
 function toKolorsSize(w, h) {
@@ -95,7 +97,7 @@ function getBrandTag(strategyKey) {
     agent_recruit: '🤝 合伙人计划',
     multi_platform: '🌐 全平台矩阵',
   };
-  return map[strategyKey] || '⚡ XNOW';
+  return map[strategyKey] || 'XNOW';
 }
 
 // 增强图片 Prompt（含镜头语言和氛围）
@@ -193,34 +195,39 @@ function drawPortrait(ctx, w, h, title, subtitle, points, index, tags) {
   }
 
   // 卖点卡片
+  let pointsBottom = 0; // 卡片底边，软CTA 要跟着往下让位（否则 3 条卖点会压住软CTA）
   if (points?.length) {
     const pSize = Math.round(h * 0.024);
     ctx.font = `bold ${pSize}px ${FONT}`; ctx.textAlign = 'center';
-    const icons = ['💎','⚡','🔥','🎯'];
     const valid = points.filter(Boolean).slice(0, 4);
     const cardW = w * 0.82, cardX = (w - cardW) / 2;
-    const cardY = h * 0.52, cardH = valid.length * pSize * 1.8 + pSize;
+    const cardY = h * 0.52;
+    // 高度按行数算 + 上下内边距（原来少了一个行高，第 3 条会溢出卡片）
+    const cardH = valid.length * pSize * 1.8 + pSize * 1.6;
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     roundRect(ctx, cardX, cardY, cardW, cardH, 14); ctx.fill();
     ctx.fillStyle = BRAND.orange; ctx.fillRect(cardX + 16, cardY, cardW - 32, 2);
 
     valid.forEach((pt, i) => {
       ctx.fillStyle = BRAND.white;
-      ctx.fillText(`${icons[i]||'✅'}  ${pt}`, w/2, cardY + pSize * 1.2 + i * pSize * 1.8);
+      ctx.fillText(`${POINT_MARKS[i] || '·'}  ${pt}`, w/2, cardY + pSize * 1.4 + i * pSize * 1.8);
     });
+    pointsBottom = cardY + cardH;
   }
 
-  // 软CTA (64% 位置)
-  const softY = h * 0.64;
+  // 软CTA：固定在 64% 位置；但卖点卡片更高时必须下移，不能互相压住
   const softSize = Math.round(h * 0.02);
+  const softY = Math.max(h * 0.64, pointsBottom + softSize * 2.2);
   ctx.font = `${softSize}px ${FONT}`; ctx.textAlign = 'center';
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.fillText('👇 想知道具体价格？继续往下看', w/2, softY);
+  const softText = '想知道具体价格？继续往下看';
+  textPlate(ctx, softText, w / 2, softY, softSize, { alpha: 0.55 });
+  ctx.fillStyle = BRAND.white;
+  ctx.fillText(softText, w/2, softY);
 
   // 硬CTA 按钮 (78% 位置)
   const ctaY = h * 0.78, ctaSize = Math.round(h * 0.024);
   ctx.font = `bold ${ctaSize}px ${FONT}`;
-  const ctaText = '🔥 立即注册 · xnow.taikon.top';
+  const ctaText = '立即注册 · xnow.taikon.top';
   const ctaW = ctx.measureText(ctaText).width + 50, ctaH = ctaSize * 2.2;
   const ctaX = (w - ctaW) / 2;
 
@@ -231,10 +238,31 @@ function drawPortrait(ctx, w, h, title, subtitle, points, index, tags) {
 
   ctx.fillStyle = BRAND.dark; ctx.fillText(ctaText, w/2, ctaY + ctaH*0.62);
 
-  // 底部
+  // 底部：同样垫黑底条，否则在亮画面上读不出来
   ctx.font = `${Math.round(h*0.016)}px ${FONT}`;
-  ctx.fillStyle = BRAND.gray; ctx.textAlign = 'center';
-  ctx.fillText('秒级交付 · 无需密码 · 全网最低价', w/2, h - 25);
+  ctx.textAlign = 'center';
+  const bottomText = '秒级交付 · 无需密码 · 全网最低价';
+  textPlate(ctx, bottomText, w / 2, h - 25, Math.round(h * 0.016), { alpha: 0.5 });
+  ctx.fillStyle = BRAND.white;
+  ctx.fillText(bottomText, w/2, h - 25);
+}
+
+/**
+ * 在文字后面画一条半透明圆角黑底（提升对比度）。
+ * 必须在设置好 font / textAlign 之后调用，只画底不画字。
+ */
+function textPlate(ctx, text, cx, baselineY, size, { alpha = 0.55 } = {}) {
+  const tw = ctx.measureText(text).width;
+  const padX = size * 0.7, padY = size * 0.45;
+  const bw = tw + padX * 2;
+  const bh = size * 1.25 + padY * 2;
+  const x = cx - bw / 2;
+  const y = baselineY - size * 0.95 - padY;
+  ctx.save();
+  ctx.fillStyle = `rgba(0,0,0,${alpha})`;
+  roundRect(ctx, x, y, bw, bh, bh / 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 // ==== 横屏布局 (16:9) ====
@@ -278,11 +306,12 @@ function drawLandscape(ctx, w, h, title, subtitle, points, index, tags) {
   if (points?.length) {
     const pSize = Math.round(h * 0.03);
     ctx.font = `bold ${pSize}px ${FONT}`; ctx.textAlign = 'left';
-    const icons = ['💎','⚡','🔥','🎯'];
+    // canvas 里没有 emoji 字体（实测渲染成方框），改用能画出来的几何符号
+
     points.filter(Boolean).slice(0, 4).forEach((pt, i) => {
       const y = h * 0.45 + i * pSize * 1.8;
       ctx.fillStyle = BRAND.white;
-      ctx.fillText(`${icons[i]||'✅'}  ${pt}`, splitX + 30, y);
+      ctx.fillText(`${POINT_MARKS[i] || '·'}  ${pt}`, splitX + 30, y);
     });
   }
 
@@ -293,12 +322,15 @@ function drawLandscape(ctx, w, h, title, subtitle, points, index, tags) {
   const ctaW = Math.round((w - splitX) * 0.75), ctaH = ctaSize * 2;
   roundRect(ctx, splitX + 30, h - ctaH - 30, ctaW, ctaH, ctaH/2); ctx.fill();
   ctx.fillStyle = BRAND.dark;
-  ctx.fillText('🔥 立即注册 xnow.taikon.top', splitX + 50, h - 30 - ctaH*0.4);
+  ctx.fillText('立即注册 xnow.taikon.top', splitX + 50, h - 30 - ctaH*0.4);
 
-  // 底部
+  // 底部：垫黑底条（同竖屏，亮画面上细灰字读不出来）
   ctx.font = `${Math.round(h*0.022)}px ${FONT}`;
-  ctx.fillStyle = BRAND.gray; ctx.textAlign = 'center';
-  ctx.fillText('秒级交付 · 无需密码 · 全网最低价', w/2, h - 10);
+  ctx.textAlign = 'center';
+  const lsText = '秒级交付 · 无需密码 · 全网最低价';
+  textPlate(ctx, lsText, w / 2, h - 10, Math.round(h * 0.022), { alpha: 0.5 });
+  ctx.fillStyle = BRAND.white;
+  ctx.fillText(lsText, w/2, h - 10);
 }
 
 // === 主渲染 ===
@@ -376,7 +408,7 @@ function generateWithCanvas(opts) {
   roundRect(ctx, (width-260)/2, height - ctaH2 - 30, 260, ctaH2, ctaH2/2); ctx.fill();
   ctx.font = `bold ${Math.round(ctaH2*0.48)}px ${FONT}`; ctx.textAlign = 'center';
   ctx.fillStyle = BRAND.dark;
-  ctx.fillText('🔥 立即注册 xnow.taikon.top', width/2, height - 30 - ctaH2*0.4);
+  ctx.fillText('立即注册 xnow.taikon.top', width/2, height - 30 - ctaH2*0.4);
 
   return canvas.toBuffer('image/png');
 }

@@ -74,6 +74,7 @@
           <button v-if="collectRunning" class="x-btn sm danger" @click="stopCollect">取消采集</button>
           <span v-if="collectDone" class="x-tag ok">采集完成</span>
         </div>
+        <div v-if="collectMsg" class="collect-msg" :class="collectMsgKind">{{ collectMsg }}</div>
 
         <!-- 采集定时：和闹钟共用顶部「保存全部」（这里以前有个独立「保存」，会用磁盘旧数据盖掉未保存的闹钟改动） -->
         <div class="crow top-line">
@@ -96,7 +97,8 @@
         <span v-else class="x-ic">
           <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
         </span>
-        <h2>{{ group.account ? '账号 ' + group.account : '未指定账号（仅生成，不发布）' }}</h2>
+        <!-- 养号闹钟没有"发布到哪个号"，别被归到「未指定账号（仅生成，不发布）」那一组去 -->
+        <h2>{{ group.account ? '账号 ' + group.account : (group.onlyWarmup ? '养号队列（不发布）' : '未指定账号（仅生成，不发布）') }}</h2>
         <span class="x-spacer"></span>
         <span class="x-hint">{{ group.jobs.length }} 个闹钟</span>
       </div>
@@ -132,7 +134,40 @@
             </button>
           </div>
 
-          <div class="acc-picker">
+          <!-- 养号：一个闹钟管一批账号，多选即可，不用一个个填 -->
+          <div v-if="job.mode === 'warmup'" class="warm-picker">
+            <button
+              class="x-input warm-acc"
+              :class="{ empty: !warmCount(job) }"
+              :title="warmTitle(job)"
+              @click.stop="toggleWarmDrop(globalIndex(group, jIdx), $event.currentTarget)"
+            >
+              {{ warmCount(job) ? `已选 ${warmCount(job)} 个号` : '选择要养的账号' }}
+              <span class="warm-caret">▾</span>
+            </button>
+            <Teleport to="body">
+              <div v-if="warmOpen === globalIndex(group, jIdx)" class="acc-drop warm-drop" :style="warmStyle">
+                <div class="warm-head">
+                  <button class="warm-link" @click.stop="warmAll(globalIndex(group, jIdx), true)">全选</button>
+                  <button class="warm-link" @click.stop="warmAll(globalIndex(group, jIdx), false)">清空</button>
+                  <span class="warm-tip">{{ warmCount(job) }} / {{ accounts.length }}</span>
+                </div>
+                <label
+                  v-for="acc in accounts"
+                  :key="acc.name"
+                  class="warm-item"
+                  :class="{ on: isWarmSel(job, acc.name) }"
+                  @click.prevent="toggleWarmAcc(globalIndex(group, jIdx), acc.name)"
+                >
+                  <span class="warm-box">{{ isWarmSel(job, acc.name) ? '✓' : '' }}</span>
+                  <span class="an">{{ acc.name }}</span>
+                  <span class="env" :class="{ bad: !acc.bitEnvId }">{{ acc.bitEnvId || '未配置环境' }}</span>
+                </label>
+                <div v-if="!accounts.length" class="warm-item empty">还没有配置账号</div>
+              </div>
+            </Teleport>
+          </div>
+          <div v-else class="acc-picker">
             <input
               class="x-input"
               :value="displayAccountName(job.account)"
@@ -163,7 +198,26 @@
             </Teleport>
           </div>
 
-          <span class="auto-tag" :class="{ on: !!job.account }" :title="job.account ? '生成完自动发到这个账号' : '没选账号 = 只生成不发布'">
+          <!-- 养号模式：「每号随机多久」；其它模式仍显示自动发布/仅生成 -->
+          <div v-if="job.mode === 'warmup'" class="warm-dur" :title="warmEta(job)">
+            <select
+              class="x-select warm-min"
+              :value="warmMin(job)"
+              @change="setWarmRange(globalIndex(group, jIdx), Number($event.target.value), null)"
+            >
+              <option v-for="m in WARM_MIN_CHOICES" :key="'a' + m" :value="m">{{ m }} 分</option>
+            </select>
+            <span class="warm-tilde">~</span>
+            <select
+              class="x-select warm-min"
+              :value="warmMax(job)"
+              @change="setWarmRange(globalIndex(group, jIdx), null, Number($event.target.value))"
+            >
+              <option v-for="m in WARM_MAX_CHOICES" :key="'b' + m" :value="m">{{ m }} 分</option>
+            </select>
+            <span class="warm-unit">随机/号</span>
+          </div>
+          <span v-else class="auto-tag" :class="{ on: !!job.account }" :title="job.account ? '生成完自动发到这个账号' : '没选账号 = 只生成不发布'">
             {{ job.account ? '自动发布' : '仅生成' }}
           </span>
 
@@ -187,6 +241,7 @@
       <span>
         关闭开关 = 暂停（配置保留）· 选了账号 = 生成后自动发布到该账号，不选 = 仅生成内容 ·
         定时由后台调度器执行，应用需要保持运行；出发前会先查登录态，账号掉登录会跳过这一轮并写日志。
+      <br /><b>养号</b>：任何一行把模式切成「养号」，这一行的账号框就会变成「勾选要养的账号 + 随机时长」，可一次勾多个号按顺序养；切回发布模式会把原来的账号还回去。
       </span>
     </div>
   </div>
@@ -225,6 +280,10 @@ const collectExpanded = ref(false)
 const collectSelection = ref([])
 const collectRunning = ref(false)
 const collectDone = ref(false)
+// 采集的结果/失败原因必须写在界面上：以前只有 console.error，点了没反应 = 用户以为按钮坏了
+// （2026-10-24 用户实测「点击开始采集 没有反应吗」，日志里连请求都没进来）
+const collectMsg = ref('')
+const collectMsgKind = ref('info') // info | ok | err
 const collectTime = ref('21:00')
 const collectAuto = ref(true)
 // 采集任务在 jobs 里是否存在，决定「每天自动采集」是否真的在跑
@@ -251,18 +310,40 @@ function selectAllCollect() {
   collectSelection.value = uniqueAccounts.value.map(a => a.name)
 }
 async function startCollect() {
-  if (collectSelection.value.length === 0) return
+  if (collectRunning.value) return
+  if (collectSelection.value.length === 0) {
+    collectMsgKind.value = 'err'
+    collectMsg.value = '先勾选要采集的账号（或点「全选」）'
+    return
+  }
+  // 接口缺失要明说，不能静默 —— 这是「点了没反应」最常见的原因
+  if (typeof window.xnowpost?.runCollect !== 'function') {
+    collectMsgKind.value = 'err'
+    collectMsg.value = '❌ 当前版本没有接上采集接口（preload 里缺 runCollect），请重新安装'
+    return
+  }
   collectRunning.value = true
   collectDone.value = false
+  collectMsgKind.value = 'info'
+  collectMsg.value = `正在采集 ${collectSelection.value.length} 个账号…（逐个开环境，约 2–6 分钟，别关应用）`
   try {
-    const result = await window.xnowpost.runCollect(collectSelection.value)
-    if (!result.ok) {
-      console.error('采集失败:', result.message)
+    // ⚠️ 必须转成**纯数组**再送 IPC：collectSelection 是 Vue 的响应式代理（Proxy），
+    //    直接把 .value 传过去，Electron 43 的结构化克隆会抛 `An object could not be cloned.`
+    //    —— 错误只在 console 里，界面看起来就是「点了没反应」（2026-10-24 用户实际踩到）。
+    const accounts = [...collectSelection.value].map((s) => String(s))
+    const result = await window.xnowpost.runCollect(accounts)
+    if (result && result.ok) {
+      collectDone.value = true
+      collectMsgKind.value = 'ok'
+      collectMsg.value = '✅ 采集完成，去「日报」看数据'
+      setTimeout(() => { collectDone.value = false }, 3000)
+    } else {
+      collectMsgKind.value = 'err'
+      collectMsg.value = `❌ 采集失败：${(result && result.message) || '未知原因'}（详见「日志」页）`
     }
-    collectDone.value = true
-    setTimeout(() => { collectDone.value = false }, 3000)
   } catch (e) {
-    console.error('采集调用失败:', e)
+    collectMsgKind.value = 'err'
+    collectMsg.value = `❌ 采集没能启动：${e && e.message ? e.message : e}`
   } finally {
     collectRunning.value = false
   }
@@ -304,6 +385,7 @@ onMounted(async () => {
   // 下拉是 fixed 定位，滚动/改窗口大小就收起来，免得飘在错位置
   window.addEventListener('scroll', hideAllDrops, true)
   window.addEventListener('resize', hideAllDrops)
+  window.addEventListener('click', onDocClick)
 })
 
 function hideAllDrops(e) {
@@ -313,11 +395,13 @@ function hideAllDrops(e) {
   for (const job of jobs.value) {
     if (job && job._showDropdown) job._showDropdown = false
   }
+  warmOpen.value = -1
 }
 
 onUnmounted(() => {
   window.removeEventListener('scroll', hideAllDrops, true)
   window.removeEventListener('resize', hideAllDrops)
+  window.removeEventListener('click', onDocClick)
 })
 
 // modeOptions imported from constants.js
@@ -425,6 +509,104 @@ function selectAcc(i, name) {
   searchTexts.value[i] = ''
 }
 
+/* ===== 养号：多选账号 + 每号随机时长（2026-10-22 用户口径：
+   「一个账号一个账号设置比较麻烦，我选要养的账号，选随机时长，你就按顺序一个个养」） ===== */
+
+// 可选的随机区间（分钟）。默认 8~15：既不会一上来刷太久像机器，也不会短到看不出在干活。
+const WARM_MIN_CHOICES = [3, 5, 8, 10, 15, 20]
+const WARM_MAX_CHOICES = [5, 8, 10, 15, 20, 30]
+const warmOpen = ref(-1)
+const warmStyle = ref({})
+
+function warmList(job) {
+  return String((job && (job.warmupAccounts || job.account)) || '')
+    .split(',').map((s) => s.trim()).filter(Boolean)
+}
+function warmCount(job) { return warmList(job).length }
+function isWarmSel(job, name) { return warmList(job).includes(name) }
+function warmTitle(job) {
+  const l = warmList(job)
+  return l.length ? `按这个顺序养：${l.join(' → ')}` : '点一下勾选要养的账号（可多选，会按勾选顺序一个号一个号养）'
+}
+function setWarmList(i, list) {
+  const job = jobs.value[i]
+  job.warmupAccounts = list.join(',')
+  // 养号不需要 job.account（那是「生成完发到哪个号」），清掉免得被当成发布目标
+  job.account = ''
+}
+function toggleWarmAcc(i, name) {
+  const cur = warmList(jobs.value[i])
+  const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name]
+  setWarmList(i, next.sort())
+}
+function warmAll(i, on) {
+  setWarmList(i, on ? accounts.value.map((a) => a.name) : [])
+}
+function warmMin(job) {
+  const v = Number(job && job.warmupMinutesMin)
+  if (v > 0) return v
+  const old = Number(job && job.warmupMinutes)
+  return old > 0 ? old : 8
+}
+function warmMax(job) {
+  const v = Number(job && job.warmupMinutesMax)
+  if (v > 0) return Math.max(v, warmMin(job))
+  const old = Number(job && job.warmupMinutes)
+  return old > 0 ? old : 15
+}
+function setWarmRange(i, min, max) {
+  const job = jobs.value[i]
+  let lo = min === null ? warmMin(job) : min
+  let hi = max === null ? warmMax(job) : max
+  // 拖出「15~3」这种反区间时互相顶一下，别让界面上出现不可能的配置
+  if (hi < lo) { if (min !== null) hi = lo; else lo = hi }
+  job.warmupMinutesMin = lo
+  job.warmupMinutesMax = hi
+  delete job.warmupMinutes
+}
+function fmtSpan(mins) {
+  const h = Math.floor(mins / 60)
+  const m = Math.round(mins % 60)
+  return h ? `${h} 小时 ${m} 分` : `${m} 分钟`
+}
+function warmEta(job) {
+  const n = warmCount(job)
+  if (!n) return '还没选账号：先点「选择要养的账号」'
+  const lo = warmMin(job)
+  const hi = warmMax(job)
+  // 脚本里每个号之间还会歇 45~120 秒（避免两个号紧挨着活动）
+  return `${n} 个号依次养 · 每号随机 ${lo}~${hi} 分钟 · 预计 ${fmtSpan(n * lo + (n - 1) * 0.75)}~${fmtSpan(n * hi + (n - 1) * 2)}`
+}
+function toggleWarmDrop(i, el) {
+  if (warmOpen.value === i) { warmOpen.value = -1; return }
+  warmOpen.value = i
+  placeWarmDrop(el)
+}
+function placeWarmDrop(el) {
+  if (!el || typeof el.getBoundingClientRect !== 'function') return
+  const r = el.getBoundingClientRect()
+  const width = 232
+  const height = Math.min(300, Math.max(60, accounts.value.length * 28 + 46))
+  const below = window.innerHeight - r.bottom
+  const flipUp = below < height + 14 && r.top > height + 14
+  const top = flipUp ? r.top - height - 4 : r.bottom + 4
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8))
+  warmStyle.value = {
+    position: 'fixed',
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(Math.max(8, top))}px`,
+    width: `${width}px`,
+    maxHeight: `${height}px`,
+  }
+}
+// 点空白处收起（按钮上用了 @click.stop，所以不会刚开就被关）
+function onDocClick(e) {
+  if (warmOpen.value < 0) return
+  const t = e && e.target
+  if (t && t.closest && (t.closest('.warm-drop') || t.closest('.warm-acc'))) return
+  warmOpen.value = -1
+}
+
 // ===== 闹钟管理 =====
 
 async function load() {
@@ -471,12 +653,33 @@ function addJob() {
 
 // modeLabelMap imported from constants.js
 
-// 设置模式 + 自动更新标签
+// 设置模式 + 自动更新标签。
+// 2026-10-22 用户口径：「添加闹钟应该都是一样的，选择的功能不一样，就变换不一样」——
+// 所以每一行都是同一套 4 个模式按钮，只是选完之后下面出现的控件不同；
+// 切换必须**可逆**：切到养号时把原来的账号带进养号名单，切回发布时把账号还回去，
+// 不许出现「点了一下，08:30 那个号当天就不发了」这种事。
 function setMode(i, val) {
   const job = jobs.value[i]
+  const wasWarmup = job.mode === 'warmup'
   job.mode = val
   // 标签始终跟随模式选择
   job.label = modeLabelMap[val] || val
+
+  if (val === 'warmup') {
+    if (!wasWarmup) job._prevAccount = job.account || ''      // _ 开头的字段不会写盘
+    // 第一次切过来：原来选的账号直接进名单；没有就默认全选。时长默认 8~15 分钟随机。
+    if (!job.warmupAccounts) {
+      job.warmupAccounts = job._prevAccount || accounts.value.map((a) => a.name).join(',')
+    }
+    if (!(Number(job.warmupMinutesMin) > 0)) job.warmupMinutesMin = 8
+    if (!(Number(job.warmupMinutesMax) > 0)) job.warmupMinutesMax = 15
+    delete job.warmupMinutes
+    job.account = ''
+  } else if (wasWarmup && !job.account) {
+    // 切回发布：把账号还回去。名单里只有一个号就用它（跨重启也能还原，靠 warmupAccounts）
+    const list = warmList(job)
+    job.account = job._prevAccount || (list.length === 1 ? list[0] : '')
+  }
 }
 
 function cloneJob(i) {
@@ -513,7 +716,11 @@ const groupedJobs = computed(() => {
   const hasAccount = Object.entries(groups).filter(([k]) => k)
   const noAccount = Object.entries(groups).filter(([k]) => !k)
   hasAccount.sort(([a], [b]) => a.localeCompare(b))
-  return [...hasAccount, ...noAccount].map(([, v]) => v)
+  return [...hasAccount, ...noAccount].map(([, v]) => ({
+    ...v,
+    // 整组都是养号时用另一个标题：「未指定账号（仅生成，不发布）」对养号是误导
+    onlyWarmup: v.jobs.every((x) => x.mode === 'warmup'),
+  }))
 })
 
 // 获取组内闹钟在全局 jobs 中的索引
@@ -665,6 +872,19 @@ async function save() {
   flex-wrap: wrap;
   padding-top: 10px;
 }
+/* 采集的状态/失败原因（点了必须有回声，不能只写 console） */
+.collect-msg {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--stroke);
+  color: var(--text-2);
+  background: rgba(10, 16, 23, 0.45);
+}
+.collect-msg.err { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.collect-msg.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
 .crow.top-line {
   margin-top: 10px;
   border-top: 1px dashed var(--stroke);
@@ -726,10 +946,15 @@ async function save() {
 }
 .alarm .segbtn {
   flex: 0 0 auto;
-  padding: 4px 10px;
+  /* 2026-10-22 加了第 4 个模式「养号」后，4 个按钮把这一行挤爆，
+     账号输入框直接压住「养号」按钮（截图里只看得到字、点不到）。
+     收紧内边距 + 禁止换行，保证第 4 个按钮永远点得到。 */
+  padding: 4px 7px;
+  white-space: nowrap;
 }
 .alarm .acc-picker {
-  flex: 0 1 200px;
+  flex: 1 1 150px;
+  min-width: 130px;
 }
 /* 自动发布/仅生成 状态：只说明这一行会发生什么，不可点 */
 .auto-tag {
@@ -897,5 +1122,126 @@ async function save() {
 
 .x-tip {
   margin-top: 14px;
+}
+
+/* 养号：每号时长选择器（紧凑一点，别把一行挤爆） */
+.warm-min {
+  width: 62px;
+  flex: none;
+  font-size: 12px;
+  padding: 2px 4px;
+  height: 26px;
+}
+
+/* ── 养号：多选账号按钮 + 勾选浮层（2026-10-22 用户要求「选账号 + 随机时长，别再一个个设」） ── */
+.warm-picker {
+  flex: 1 1 150px;
+  min-width: 130px;
+}
+.warm-acc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.warm-acc.empty {
+  color: var(--text-3);
+}
+.warm-caret {
+  opacity: 0.55;
+  font-size: 10px;
+  flex: none;
+}
+.warm-drop {
+  overflow-y: auto;
+  padding: 4px;
+}
+.warm-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--stroke);
+  margin-bottom: 4px;
+}
+.warm-link {
+  background: none;
+  border: none;
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+.warm-tip {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.warm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.warm-item:hover {
+  background: var(--bg2);
+}
+.warm-item.on {
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+}
+.warm-item.empty {
+  color: var(--text-3);
+  cursor: default;
+}
+.warm-box {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--stroke-2);
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1;
+  color: #fff;
+}
+.warm-item.on .warm-box {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+.warm-item .an {
+  font-weight: 600;
+}
+.warm-item .env {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.warm-item .env.bad {
+  color: var(--warn);
+}
+.warm-dur {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.warm-tilde {
+  opacity: 0.6;
+}
+.warm-unit {
+  white-space: nowrap;
 }
 </style>

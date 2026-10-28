@@ -4,7 +4,7 @@ import path from 'path';
 import { generateVoice, getAudioDuration } from './voice.js';
 import { getPlatformConfig } from '../platforms/index.js';
 import { findFFmpeg } from './tools.js';
-import { getVideoStyleConfig } from './config.js';
+import { getVideoStyleConfig, getEngineConfig } from './config.js';
 import { resolveCodeRoot } from '../paths.js';
 
 const FFMPEG = findFFmpeg();
@@ -143,6 +143,53 @@ export function wrapCjk(text, maxCharsPerLine = 16, maxLines = 3) {
 }
 
 /** 英文按词折行（每行约 35 字符），避免一行超出画面 */
+/**
+ * 折行时**不切断 ASS 标记**（v1.6.46）。
+ *
+ * 踩过的坑：先折行再染色，关键词正好被折在 `\N` 两侧 → `includes(kw)` 找不到 → 不染色。
+ * 实测 7 镜只染上 2 镜。现在改成**先染色再折行**，并且折行时把 `{...}` 当作零宽、不可分割，
+ * 保证 `{\1c&H5B2EFF&}` 这类标记永远不会被劈开。
+ */
+export function wrapCjkTagged(text, maxCharsPerLine = 16, maxLines = 3) {
+  if (!text) return '';
+  const out = [];      // 输出片段（可见字符 + 原样标记）
+  let visible = 0;     // 当前行已占的可见字数
+  let lines = 1;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '{') {
+      const end = text.indexOf('}', i);
+      const tag = end === -1 ? text.slice(i) : text.slice(i, end + 1);
+      out.push(tag);
+      i = end === -1 ? text.length : end + 1;
+      continue;
+    }
+    if (visible >= maxCharsPerLine) {
+      if (lines >= maxLines) {
+        out.push('…');
+        return out.join('');
+      }
+      out.push('\\N');
+      visible = 0;
+      lines += 1;
+    }
+    const ch = [...text.slice(i)][0];
+    out.push(ch);
+    visible += 1;
+    i += ch.length;
+  }
+  let result = out.join('');
+  // 孤字兜底：只剩 1~3 个字被挤到第二行（"…不用密" / "码"）比超出一两个像素更难看。
+  // 只要总字数只多出 1~2 个、而且正好两行，就直接并成一行。
+  const segs = result.split('\\N');
+  if (segs.length === 2) {
+    const visibleOf = (s) => s.replace(/\{[^}]*\}/g, '').length;
+    if (visibleOf(segs[1]) <= 3 && visibleOf(segs[0]) + visibleOf(segs[1]) <= maxCharsPerLine + 3) {
+      result = segs.join('');
+    }
+  }
+  return result;
+}
 export function wrapEn(text, maxCharsPerLine = 35) {
   if (!text) return '';
   const words = text.split(' ');
@@ -156,37 +203,116 @@ export function wrapEn(text, maxCharsPerLine = 35) {
   return out.join('\\N');
 }
 
+export function createAssForTest(...a) {
+  return createAss(...a);
+}
+
 // durations: 每段占用的时间轴长度（秒，含段间静音）
 function createAss(scenes, outPath, w, h, lang, durations) {
-  // 竖屏字体比横屏大，但都不能太大避免溢出
+  // 2026-10-20（v1.6.46）：字幕重做，三处改动都是从样片实测来的 ——
+  //  ① 36px 在手机上基本看不清（用户旧片截图放大才勉强认得字）→ 竖屏 60px；
+  //  ② 英文原来缩到 0.85 倍当"注解"，中英不对等 → 中英**同字号**双行；
+  //  ③ 位置从居中偏下挪到**下三分之一安全区**（TikTok 底部有文案/按钮遮挡）。
+  const style = getVideoStyleConfig();
   const isPortrait = w < h;
-  const fontSize = Math.round(isPortrait ? 36 : 28);
+  const fontSize = isPortrait
+    ? Math.round(style.subtitle?.zhSize || 60)
+    : Math.round((style.subtitle?.zhSize || 60) * 0.55);
+  const enSize = isPortrait
+    ? Math.round(style.subtitle?.enSize || fontSize)
+    : Math.round((style.subtitle?.enSize || 60) * 0.55);
   // 左右边距给足，防止长文本戳出屏幕
-  const marginLR = Math.round(w * 0.08);  // 8% 画面宽度
-  // 底部边距
-  const marginV = Math.round(h * 0.06);
+  const marginLR = Math.round(w * 0.07);
+  // 底部边距：中文在上、英文在下（同字号，两块各占一行距）
+  const lineGap = Math.round(fontSize * 1.25);
+  const marginVEn = Math.round(h * 0.27);
+  const marginVZh = marginVEn + lineGap;
 
-  let ass = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${w}\nPlayResY: ${h}\nScaledBorderAndShadow: yes\nWrapStyle: 2\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: ZH,Microsoft YaHei,${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,3,3,1,2,${marginLR},${marginLR},${marginV},1\nStyle: EN,Arial,${Math.round(fontSize * 0.85)},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,3,2,1,2,${marginLR},${marginLR},${Math.round(marginV * 0.8)},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+  let ass =
+    `[Script Info]\nScriptType: v4.00+\nPlayResX: ${w}\nPlayResY: ${h}\n` +
+    `ScaledBorderAndShadow: yes\nWrapStyle: 2\n\n[V4+ Styles]\n` +
+    `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
+    // 描边 4 + 阴影 3：素材有亮有暗，细描边在浅色画面上会糊成一团
+    `Style: ZH,Microsoft YaHei,${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H90000000,1,0,0,0,100,100,1,0,1,4,3,2,${marginLR},${marginLR},${marginVZh},1\n` +
+    `Style: EN,Arial,${enSize},&H00FFFFFF,&H000000FF,&H00000000,&H90000000,0,0,0,0,100,100,0,0,1,4,3,2,${marginLR},${marginLR},${marginVEn},1\n\n` +
+    `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
 
   // lang 是平台的 subtitleLang（可能是 'cn+en'）：含 cn 出中文字幕，含 en 出英文字幕，
   // 两者都存在时**同时**输出两行（旧实现只会命中其中一种）
   const wantZh = /cn|zh|chinese|中文/.test(String(lang || '').toLowerCase());
   const wantEn = /en|english|英文/.test(String(lang || '').toLowerCase());
 
+  // 可用宽度换算成一行能放多少字（WrapStyle=2 不自动换行，必须自己折）
+  const usableW = w - marginLR * 2;
+  const zhPerLine = Math.max(6, Math.floor(usableW / (fontSize * 0.92)));
+  const enPerLine = Math.max(10, Math.floor(usableW / (enSize * 0.50)));
+  // 行高（ASS 行距≈字号的 1.2 倍）与两块之间的间隙
+  const lineH = Math.round(fontSize * 1.2);
+  const blockGap = Math.round(fontSize * 0.35);
+  // 中文块**底边**的绝对 y（从上算）：落在下三分之一、避开 TikTok 底部文案条
+  const zhBottomY = Math.round(h * (isPortrait ? 0.665 : 0.72));
+
   let t = 0;
   for (let i = 0; i < scenes.length; i++) {
     const s = scenes[i];
     const d = (durations && durations[i]) || s.duration || 7;
     const se = formatAssTime(t), ee = formatAssTime(t + d);
-    // 过长文本折行（WrapStyle=2 不会自动换行）：中文按字数、英文按词
-    const zhText = wrapCjk((s.scene_text_zh || '').replace(/[&{}]/g, ''));
-    const enText = wrapEn((s.scene_text_en || '').replace(/[&{}]/g, ''));
-    if (zhText && wantZh) ass += `Dialogue: 0,${se},${ee},ZH,,0,0,0,,${zhText}\n`;
-    if (enText && wantEn) ass += `Dialogue: 0,${se},${ee},EN,,0,0,0,,${enText}\n`;
+    const zhRaw = (s.scene_text_zh || '').replace(/[&{}]/g, '');
+    // 先染色再折行：折行函数会把 {...} 当零宽、不切开（否则关键词跨行就染不上）
+    const zhText = wrapCjkTagged(
+      highlightKeyword(zhRaw, s.keyword_zh || deriveKeyword(zhRaw)),
+      zhPerLine,
+    );
+    const enText = wrapEn((s.scene_text_en || '').replace(/[&{}]/g, ''), enPerLine);
+
+    // 每条字幕按**自己的行数**定位，而不是靠固定 MarginV。
+    // 2026-10-20 21:44 实测的坑：英文 40 字符折成 2 行时块向上生长，
+    // 直接盖住中文字幕，看起来像"中英顺序反了"（实际是重叠）。
+    const zhLines = zhText ? zhText.split('\\N').length : 0;
+    const enLines = enText ? enText.split('\\N').length : 0;
+    const zhPos = `{\\an2\\pos(${Math.round(w / 2)},${zhBottomY})}`;
+    const enBottomY = zhBottomY + blockGap + enLines * lineH;
+    const enPos = `{\\an2\\pos(${Math.round(w / 2)},${enBottomY})}`;
+
+    if (zhText && wantZh) ass += `Dialogue: 0,${se},${ee},ZH,,0,0,0,,${zhPos}${zhText}\n`;
+    if (enText && wantEn) ass += `Dialogue: 0,${se},${ee},EN,,0,0,0,,${enPos}${enText}\n`;
+    // 中文多行时英文跟着往下让位（zhLines 已在上面算出，留着给后面调参看）
+    void zhLines;
     t += d;
   }
   fs.writeFileSync(outPath, ass, 'utf-8');
   return outPath.replace(/\\/g, '/');
+}
+
+/**
+ * 把一句字幕里的关键词染成品牌红（#FF2E5B → ASS 的 &HBBGGRR& 是 &H5B2EFF&）。
+ *
+ * 只染**第一处**：一句话里重复出现同一个词时，全染会让画面很吵；
+ * 关键词没配或没命中时整句保持白色，不会出现"全句变红"。
+ */
+/**
+ * 文案没配 keyword_zh 时，自动挑一个"看着像重点"的片段：
+ * 优先「数字+量词/单位」（3 次 / 10 条专线 / 2 小时 / 30 秒），其次卖点词，
+ * 都没有就返回空串（整句白色，不乱染色）。
+ *
+ * 为什么需要兜底：提示词要求模型返回 keyword_zh，但实测 deepseek-flash 经常漏这个字段
+ * （2026-10-20 21:26 那条：7 镜一个字都没给，染色 0 行）。
+ */
+export function deriveKeyword(text) {
+  const t = String(text || '');
+  if (!t) return '';
+  // 长的组合词排在前面：「10 条专线」不能被截成「10 条」
+  const num = t.match(/[0-9]+(?:\.[0-9]+)?\s*(?:条专线|条视频|个平台|个账号|次|条|个|块|元|秒|分钟|小时|天|万|千|%|倍|步|招)?/);
+  if (num && num[0].trim().length >= 2) return num[0].trim();
+  const brand = t.match(/自动补|专线|多平台|一键|免密|秒级|不掉线|不封号/);
+  return brand ? brand[0] : '';
+}
+export function highlightKeyword(text, keyword) {
+  const kw = String(keyword || '').trim().replace(/[&{}]/g, '');
+  if (!kw || !text.includes(kw)) return text;
+  const RED = '{\\1c&H5B2EFF&}', WHITE = '{\\1c&HFFFFFF&}';
+  const at = text.indexOf(kw);
+  return `${text.slice(0, at)}${RED}${kw}${WHITE}${text.slice(at + kw.length)}`;
 }
 
 /**
@@ -364,11 +490,15 @@ async function synthOne({ dirPath, outputPath, pkey, config, voicePath, scenes, 
   parts.push(`[${chainLabel}]${fadeChain}subtitles=${assRel}[vout]`);
 
   // 音轨：配音 一定有；配乐可选（volume 淡入后与配音混合）
+  // 最后统一过一遍响度归一：实测旧片只有 -26.2 LUFS（社交平台标准约 -14），
+  // 同一个音量推子上看还行，手机上听着就是"又闷又轻"，划走率高。
+  const ln = style.loudness || { target: -14, truePeak: -1.5, lra: 11 };
+  const normalize = `loudnorm=I=${ln.target}:TP=${ln.truePeak}:LRA=${ln.lra},alimiter=limit=0.95`;
   if (bgmIdx >= 0) {
     parts.push(`[${bgmIdx}:a]volume=${style.bgmVolume}${style.fadeIn > 0 ? `,afade=t=in:st=0:d=${Math.min(1, style.fadeIn).toFixed(2)}` : ''}[bgm]`);
-    parts.push(`[${voiceIdx}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]`);
+    parts.push(`[${voiceIdx}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0,${normalize}[aout]`);
   } else {
-    parts.push(`[${voiceIdx}:a]anull[aout]`);
+    parts.push(`[${voiceIdx}:a]${normalize}[aout]`);
   }
 
   const styleBits = [];
@@ -383,7 +513,7 @@ async function synthOne({ dirPath, outputPath, pkey, config, voicePath, scenes, 
     '-filter_complex', parts.join(';'),
     '-map', '[vout]', '-map', '[aout]',
     '-t', totalDur.toFixed(3),
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-shortest',
     tmpOutput,
   ], { cwd: dirPath });
@@ -418,7 +548,10 @@ export async function generateVoiceTrack(dirPath, content) {
   const note = voiceLang === 'en' ? '英文配音读 scene_text_en' : '中文配音读 scene_text_zh';
   console.log(`  🗣️ 配音语言: ${voiceLang}（字幕: ${subLang}，${note}）`);
 
-  const voiceResult = await generateVoice(content.scenes, dirPath, voiceLang);
+  // 目标时长来自 config/default.json 的 video.totalDuration（默认 22s）：
+  // 超了让 voice.js 自动提速重录，避免 7 镜被拖成 26 秒
+  const targetSec = Number(getEngineConfig()?.video?.totalDuration) || 22;
+  const voiceResult = await generateVoice(content.scenes, dirPath, voiceLang, { targetSec });
   if (!voiceResult || !voiceResult.outputFile) {
     throw new Error('配音失败：没有产出音频文件，无法合成视频');
   }

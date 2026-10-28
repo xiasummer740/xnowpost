@@ -12,6 +12,7 @@
  *   page.waitForTimeout() → 本地 sleep（无需请求浏览器）
  */
 import axios from 'axios';
+import fs from 'node:fs';
 
 const DEFAULT_BASE = 'http://127.0.0.1:8000/api/v1';
 const NAME_SEG = (name) => encodeURIComponent(String(name || ''));
@@ -39,6 +40,64 @@ async function call(base, path, { method = 'GET', body, timeout = 60000 } = {}) 
     }
     throw new Error(`FoxProfile 接口失败 ${path}: ${e.message}`);
   }
+}
+
+/**
+ * 确保 FoxProfile 在跑：探不通就自己把服务拉起来，然后等它就绪。
+ *
+ * 为什么要有它（2026-10-24 真实事故）：FoxProfile 没有托盘，夜里自己退出/被关掉之后，
+ * 02:00 那轮养号 0/10、早上 08:30–09:15 十轮发布全部「FoxProfile 未运行」，
+ * 10:00 采集也全废 —— 而引擎那边已经把视频生成完了（钱花了，东西没发出去）。
+ * 调度器是独立进程，应用启动时的守护管不到它，所以每个"要开环境"的入口都得自己兜住。
+ *
+ * 返回 true = API 可用（原本就在跑，或刚被拉起来）。
+ */
+let _lastAutoStart = 0;
+export async function ensureFoxProfile(base, { waitSeconds = 90 } = {}) {
+  const alive = async () => {
+    try {
+      await call(base, '/browser', { timeout: 3000 });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  if (await alive()) return true;
+
+  // 多个账号/多轮任务会连着调，60 秒内只拉起一次，别把界面开成一堆
+  if (Date.now() - _lastAutoStart > 60000) {
+    _lastAutoStart = Date.now();
+    try {
+      const { spawn, execFileSync } = await import('node:child_process');
+      const path = await import('node:path');
+      const { resolveCodeRoot } = await import('../paths.js');
+      const script = path.join(resolveCodeRoot(), 'scripts', 'foxprofile-guard.ps1');
+      if (fs.existsSync(script)) {
+        console.log('  🧩 FoxProfile 没在运行 → 自动拉起（约 10 秒）');
+        const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
+          windowsHide: true,
+          detached: false,
+          stdio: 'ignore',
+        });
+        child.unref?.();
+      } else {
+        console.warn('  ⚠️ 找不到 scripts/foxprofile-guard.ps1，无法自动拉起 FoxProfile');
+      }
+    } catch (e) {
+      console.warn(`  ⚠️ 自动拉起 FoxProfile 失败: ${e.message}`);
+    }
+  }
+
+  const rounds = Math.max(1, Math.ceil(waitSeconds / 2));
+  for (let i = 0; i < rounds; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (await alive()) {
+      console.log('  ✅ FoxProfile 已就绪（自动拉起）');
+      return true;
+    }
+  }
+  return false;
 }
 
 /** 健康检查 */
@@ -78,6 +137,47 @@ export async function foxLaunch(name, base, { focus = false } = {}) {
 export async function foxStop(name, base) {
   if (!name) return { success: false };
   return call(base, `/browser/${NAME_SEG(name)}/stop`, { method: 'POST', timeout: 90000 });
+}
+
+/**
+ * 启动环境，并且把「Browser is still starting」当成"还没好"来处理。
+ *
+ * ⚠️ 2026-10-20 23:31 实测：`launch?wait=true` 仍可能立刻返回
+ * `{"success":false,"message":"Browser is still starting"}` —— 上一步刚 stop 掉别的环境时，
+ * Camoufox 进程还在收尾，下一个环境就抢不到。旧代码直接判失败，
+ * 结果那个号整轮没数据（用户手动抓资料时 TK02 就被跳过，资料停在 5 小时前）。
+ * 2026-10-22 起发布/采集/养号都走这一个函数，别再各写一份。
+ */
+export async function launchAndWait(name, base, { focus = false } = {}) {
+  let d = await foxLaunch(name, base, { focus });
+  if (!(d && d.success === false && /still starting|starting|starting up/i.test(String(d.message || '')))) {
+    return d;
+  }
+  console.log(`  ⏳ ${name} 还在启动中，等它就绪（最多 90 秒）...`);
+  const startedAt = Date.now();
+  for (let i = 0; i < 45; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    let running = [];
+    try {
+      running = await foxRunning(base);
+    } catch (_) { /* 状态查不到就继续等 */ }
+    if (running.includes(name)) {
+      d = { success: true };
+      break;
+    }
+    // 没在运行列表里就再补一次 launch（有些版本 stop 完成后 launch 才会真正接管）
+    if (i === 10 || i === 25) {
+      try {
+        const retry = await foxLaunch(name, base, { focus });
+        if (retry && retry.success !== false) { d = retry; break; }
+      } catch (_) { /* 继续等 */ }
+    }
+    if (Date.now() - startedAt > 90000) break;
+  }
+  if (d && d.success !== false) {
+    console.log(`  ✅ ${name} 已就绪（等了 ${Math.round((Date.now() - startedAt) / 1000)} 秒）`);
+  }
+  return d;
 }
 
 /**
@@ -178,9 +278,12 @@ class FoxPage {
 /**
  * 打开一个 FoxProfile 环境，返回与比特浏览器一致的 { context, page } 结构
  */
-export async function openFoxProfile(name, base) {
+export async function openFoxProfile(name, base, opts = {}) {
   const envName = String(name || '').trim();
   if (!envName) throw new Error('未配置浏览器环境名');
+
+  // 服务没在跑就先拉起来（夜里挂掉会让整轮任务白跑，见 ensureFoxProfile 注释）
+  await ensureFoxProfile(base);
 
   // 先校验环境存在，避免"打开了但名字拼错"的沉默失败
   const profiles = await listFoxProfiles(base);
@@ -195,12 +298,20 @@ export async function openFoxProfile(name, base) {
     console.log(`  🧹 已关闭其它还在运行的环境: ${others.join(', ')}（同 IP 只跑一个）`);
   }
 
-  const d = await foxLaunch(envName, base);
+  let d = await launchAndWait(envName, base);
   if (d && d.success === false) {
     throw new Error(d.message || `环境 ${envName} 启动失败`);
   }
 
   console.log(`  ✅ 指纹环境 ${envName} 已启动`);
+  // 采集全程只读（goto + evaluate，不发鼠标事件），所以可以把窗口缩到任务栏不挡屏幕。
+  // 注意：要点击的任务（养号/发布）不能最小化 —— 最小化后鼠标事件点不动。
+  if (opts.minimize) {
+    try {
+      const { minimizeEnvWindow } = await import('./fox-window.js');
+      if (minimizeEnvWindow(envName)) console.log(`  🗕 已把 ${envName} 的窗口缩到任务栏`);
+    } catch (_) { /* 缩不了不影响采集 */ }
+  }
   const page = new FoxPage(envName, base);
   return { name: envName, page, context: { newPage: async () => page }, browser: null };
 }

@@ -21,6 +21,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { openFoxPage, closeFoxPage } from '../src/collector/foxpw.js';
 import { avatarReadbackPlan, avatarRetryDelayMs } from '../src/avatar-verify.js';
@@ -249,6 +250,143 @@ async function downloadAvatar(url, env) {
 }
 
 /** 读主页三件套 + 头像地址 */
+/**
+ * 保存后的「二次确认」。
+ *
+ * 2026-10-20 实测（TK01/TK02）：点完 Save，编辑资料弹窗会先关掉，紧接着 TikTok 再弹一层
+ *   「Set nickname?」「You can only change your nickname once every 7 days」+ Cancel / Confirm
+ * 不点 Confirm 就等于放弃改动 —— 弹窗已经关了，看起来像成功，实际一个字段都没保存。
+ * 这个脚本以前只等「编辑弹窗关闭」就去年读主页，所以每次都读回旧值。
+ *
+ * 只在这种**明确签名**的确认框上点 Confirm；其它弹窗（放弃作品、未知框）一律不碰。
+ */
+const CONFIRM_SIG =
+  /Set (?:your )?nickname\?|Change (?:your )?nickname\?|Set (?:your )?username\?|Change (?:your )?username\?|change your nickname once every 7 days|change your username once every 30 days|Changing your nickname|Changing your username|昵称.{0,8}(7|七)\s*天|用户名.{0,8}(30|三十)\s*天/i;
+
+async function readConfirmSig(page) {
+  return page
+    .evaluate((src) => {
+      const re = new RegExp(src, 'i');
+      const txt = String(document.body.innerText || '').replace(/\s+/g, ' ');
+      return re.test(txt) ? txt.slice(0, 240) : '';
+    }, CONFIRM_SIG.source)
+    .catch(() => '');
+}
+
+async function confirmSavePrompts(page, maxWaitMs = 12000) {
+  const confirmed = [];
+  let locked = false;
+  const t0 = Date.now();
+  let clicks = 0;
+  while (Date.now() - t0 < maxWaitMs) {
+    const sig = await readConfirmSig(page);
+    if (!sig) {
+      if (confirmed.length) break; // 确认过且框没了 = 收工
+      // 前 4 秒没出现就认为这次改动不需要二次确认（只改简介时通常不弹）
+      if (Date.now() - t0 > 4000) break;
+      await page.waitForTimeout(600);
+      continue;
+    }
+    if (clicks >= 2) break; // 最多点两次，绝不连环点
+    const c = await clickButton(page, ['Confirm', '确认', '确定'], { scope: 'page', prefer: 'smallest' });
+    if (!c || !c.clicked) {
+      await page.waitForTimeout(800);
+      continue;
+    }
+    clicks++;
+    confirmed.push(String(sig).slice(0, 60));
+    // 点完只等「框消失」，不再无条件补点第二下。
+    // 2026-10-20 事故：旧版每 1.5 秒再点一次 Confirm，第二下把「刚改过的昵称」又提交一遍，
+    // TikTok 于是弹「You can't change your nickname because you just changed it in the last 7 days」——
+    // 那是我们自己点出来的假警报，第一次其实已经改成功（TK06 就是这样：日志报失败，主页已是新昵称）。
+    let gone = false;
+    for (let i = 0; i < 6 && !gone; i++) {
+      await page.waitForTimeout(1000);
+      gone = !(await readConfirmSig(page));
+    }
+    if (!gone) continue; // 框还在 = 可能真有第二层确认，允许再点一次
+    const refused = await page
+      .evaluate(() => {
+        const t = String(document.body.innerText || '').replace(/\s+/g, ' ');
+        return /can'?t change your nickname|can not change your nickname|昵称.{0,12}(不能|无法).{0,6}(改|修改)/i.test(t)
+          ? t.slice(0, 200)
+          : '';
+      })
+      .catch(() => '');
+    if (refused) {
+      locked = true;
+      console.log('     ⚠️ TikTok 拒绝改昵称：7 天内已经改过一次（本次昵称不会生效）');
+    }
+    break;
+  }
+  return { confirmed, locked };
+}
+
+/**
+ * 打开「编辑资料」弹窗，最多试 3 次。
+ *
+ * 2026-10-20 实测：主路径按文字点 Edit profile 有时点不到（页面上有两份同名按钮 +
+ * 隐藏在视口外的副本），以前靠一次兜底 locator，兜底也失败就整号判死
+ * （TK06 连续两次「编辑资料弹窗没出现」，其实再点一次就开）。
+ * 现在：规范选择器优先 → 文字兜底 → 都没开就等 1.5 秒重试，最多 3 轮。
+ */
+/**
+ * 打开页面，被"另一次导航"打断时重试。
+ * 2026-10-20 实测：头像上传/保存后紧接着 goto，FoxProfile 那边上一跳还没落地，
+ * 就报 `NS_BINDING_ABORTED` / `NS_ERROR_CONNECTION_REFUSED` —— 5 个号因为这一句被判失败，
+ * 其实头像已经换好了（只是没走到回读）。重试 3 次即可，别把它当成号坏了。
+ */
+/** 轮询等 Save 变亮（TikTok 改用户名时有异步可用性校验） */
+async function waitSaveEnabled(page, timeoutMs = 10000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const st = await page
+      .evaluate(() => {
+        const b = [...document.querySelectorAll('button')].find((x) => /^(save|保存)$/i.test(String(x.textContent || '').trim()));
+        return b ? !!b.disabled : null;
+      })
+      .catch(() => null);
+    if (st === false) return true;
+    await sleep(600);
+  }
+  return false;
+}
+
+async function gotoSafe(page, url, tries = 3) {
+  for (let i = 1; i <= tries; i++) {
+    try {
+      await page.goto(url, { waitUntil: 'commit' });
+      return true;
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      if (i === tries) throw e;
+      console.log(`     ↻ 页面打开被打断（${msg.slice(0, 40)}…），2 秒后重试`);
+      await sleep(2000);
+    }
+  }
+  return false;
+}
+
+async function openEditModal(page) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (await visible(page, SEL.bio, 800)) return { ok: true, attempt, how: 'already-open' };
+    let how = '';
+    const loc = page.locator('[data-e2e="edit-profile-entrance"]');
+    const n = await loc.count().catch(() => 0);
+    if (n > 0) {
+      const ok1 = await loc.click({ timeout: 12000 }).then(() => true).catch(() => false);
+      if (ok1) how = 'entrance';
+    }
+    if (!how) {
+      const e = await clickButton(page, ['Edit profile', '编辑资料'], { scope: 'page' });
+      if (e && e.clicked) how = 'text';
+    }
+    if (how && (await visible(page, SEL.bio, 20000))) return { ok: true, attempt, how };
+    await sleep(1500);
+  }
+  return { ok: false };
+}
+
 async function readProfilePage(page) {
   return page.evaluate(() => {
     const t1 = document.querySelector('[data-e2e="user-title"]');
@@ -386,6 +524,7 @@ async function main() {
   }
 
   let ok = 0;
+let failedLike = 0; // 保存成功但头像内容没变（假成功），单列一类
   let bad = 0;
   let skipped = 0;
 
@@ -408,25 +547,31 @@ async function main() {
       page = opened.page;
 
       // 0) 先记下改动前的头像/昵称，保存后要靠它判断到底成没成
-      await page.goto(`https://www.tiktok.com/@${encodeURIComponent(t.username)}`, { waitUntil: 'commit' });
+      await gotoSafe(page, `https://www.tiktok.com/@${encodeURIComponent(t.username)}`);
       await sleep(6000);
       const before = await readProfilePage(page);
       if (!before.handle) {
         console.log('     ⚠️ 主页没读到用户名，可能没登录或页面没加载完，继续尝试');
       }
 
-      // 1) 打开「编辑资料」
-      let entry = await clickButton(page, ['Edit profile', '编辑资料'], { scope: 'page' });
-      if (!entry || !entry.clicked) {
-        const ok2 = await page
-          .locator('[data-e2e="edit-profile-entrance"]')
-          .click({ timeout: 15000 })
-          .then(() => true)
-          .catch(() => false);
-        if (!ok2 && (!entry || !entry.clicked)) throw new Error('没找到可点击的 Edit profile 按钮');
-      }
-      if (!(await visible(page, SEL.name, 25000))) throw new Error('编辑资料弹窗没出现');
+      // 1) 打开「编辑资料」（规范选择器优先 → 文字兜底 → 重试，最多 3 轮）
+      const opened2 = await openEditModal(page);
+      if (!opened2.ok) throw new Error('编辑资料弹窗没出现（入口点了 3 次都没打开）');
+      if (opened2.attempt > 1) console.log(`     入口重试第 ${opened2.attempt} 次才打开（${opened2.how}）`);
 
+      // 1.5) 先给「现在的头像」拍个指纹：换完头像后文件哈希必须变，否则等于没换。
+      //      2026-10-20 事故：TK03/TK06/TK10 报「✅ 头像已生效」（只比了 URL，签名参数每跳都变），
+      //      实际头像还是那张老黄图 —— URL 变了不代表图变了。
+      const avatarFile = path.join(process.env.APPDATA || '', 'xnowpost', 'data', 'avatars', `${t.env}.jpg`);
+      const hashOf = (p) => {
+        try {
+          return crypto.createHash('sha1').update(fs.readFileSync(p)).digest('hex');
+        } catch {
+          return '';
+        }
+      };
+      const avatarHashBefore = hashOf(avatarFile);
+      let avatarSuspect = false;
       // 2) 头像：上传 → 等裁剪框 → Apply → 等裁剪框消失
       if (t.avatar) {
         if (!fs.existsSync(t.avatar)) throw new Error(`头像文件不存在：${t.avatar}`);
@@ -456,12 +601,32 @@ async function main() {
       }
 
       // 3) 名字
+      // TikTok 改了弹窗：昵称进入 7 天冷却后，Name 输入框会**整个不渲染**（只剩一行提示
+      // 「Your nickname can only be changed every 7 days. You can change it again after Oct 26, 2026.」），
+      // 这时 page 里只有 Username input 和 Bio textarea。
+      // 2026-10-20 事故：脚本还在等 input[placeholder="Name"]，于是 10 个号全报「弹窗没出现」，
+      // 其实弹窗开着、只是没有昵称框（这些号刚改过昵称）。
       if (t.name) {
-        const got = await setField(page, SEL.name, t.name);
-        if (String(got || '').trim() !== String(t.name).trim()) {
-          throw new Error(`名字没写进去（读回「${got}」）`);
+        const hasName = await visible(page, SEL.name, 3000);
+        if (!hasName) {
+          const when = await page
+            .evaluate(() => {
+              const t = String(document.body.innerText || '').replace(/\s+/g, ' ');
+              const m = t.match(/change it again after ([A-Za-z]{3,9} \d{1,2}, \d{4})/i);
+              return m ? m[1] : '';
+            })
+            .catch(() => '');
+          t.nameSkipped = true;
+          console.log(
+            `     ⚠️ 昵称框不在（TikTok 7 天冷却${when ? `，${when} 之后可再改` : ''}）→ 本轮跳过昵称，继续改其它字段`,
+          );
+        } else {
+          const got = await setField(page, SEL.name, t.name);
+          if (String(got || '').trim() !== String(t.name).trim()) {
+            throw new Error(`名字没写进去（读回「${got}」）`);
+          }
+          console.log(`     名字 → ${t.name}`);
         }
-        console.log(`     名字 → ${t.name}`);
       }
 
       // 4) 用户名
@@ -496,7 +661,21 @@ async function main() {
       for (let attempt = 1; attempt <= 3 && !closed; attempt++) {
         const saveBtn = await clickButton(page, ['Save', '保存'], { scope: 'dialog', prefer: 'largest' });
         if (!saveBtn) throw new Error('弹窗里没找到 Save 按钮');
-        if (saveBtn.disabled) throw new Error('Save 按钮是灰的（没有可提交的改动）');
+        if (saveBtn.disabled) {
+          // Save 是灰的有两种原因，必须分开：
+          //  ① 值已经等于服务端（幂等重跑 / 上次已写进去但回读失败）→ 直接去核实；
+          //  ② 改用户名时 TikTok 会做**异步可用性校验**（实测 ~3~5 秒），校验没回来之前按钮就是灰的。
+          // 2026-10-20 踩过：填完 xnow.matrix 立刻看按钮 → 灰 → 当成"已经是目标值"，
+          // 于是报「用户名已保存」其实一个字都没提交。
+          const okLater = await waitSaveEnabled(page, 10000);
+          if (okLater) {
+            console.log('     等可用性校验通过后 Save 亮了，重试提交');
+            continue;
+          }
+          console.log('     弹窗里已经是目标值（Save 一直灰）→ 直接去主页核实');
+          closed = true;
+          break;
+        }
         if (!saveBtn.clicked) {
           console.log(`     ⚠️ 第 ${attempt} 次没点到 Save（按钮被遮住或不在视口内），重试`);
           await sleep(1200);
@@ -543,9 +722,16 @@ async function main() {
         );
       }
 
+      // 7.5) 保存后 TikTok 还会弹一层「Set nickname? … Cancel / Confirm」的二次确认。
+      //      不点 Confirm = 放弃改动（弹窗已关，看起来成功，实际什么都没保存）。
+      const cp = await confirmSavePrompts(page);
+      if (cp.confirmed.length) {
+        console.log(`     已点确认（${cp.confirmed.length} 层）：${cp.confirmed[0]}`);
+      }
+
       // 8) 回主页读回校验（这是唯一可信的成功判据）
       const finalName = t.newUsername || t.username;
-      await page.goto(`https://www.tiktok.com/@${encodeURIComponent(finalName)}?lang=en`, { waitUntil: 'commit' });
+      await gotoSafe(page, `https://www.tiktok.com/@${encodeURIComponent(finalName)}?lang=en`);
       await sleep(7000);
       let after = await readProfilePage(page);
 
@@ -559,12 +745,39 @@ async function main() {
 
       const diffs = [];
       if (t.avatar && !avatarChanged) diffs.push('头像地址 45 秒内没变（可能只是延迟，稍后「拉取资料」可核实）');
-      if (t.name && after.name !== t.name) diffs.push(`名字读回「${after.name}」`);
+      if (t.name && !t.nameSkipped && after.name !== t.name) diffs.push(`名字读回「${after.name}」`);
       if (t.bio && after.bio !== t.bio) diffs.push(`简介读回「${after.bio.slice(0, 24)}」`);
       if (t.newUsername && after.handle !== t.newUsername) diffs.push(`用户名读回「${after.handle}」`);
 
+      // 昵称/简介/用户名的读回不一致要**反复读几次**才判失败。
+      // 2026-10-20 事故：TK06 明明改成功（主页已是新昵称），这里读到的是旧的缓存页 → 误报失败，
+      // 于是又白跑了两轮。所以：带随机参数重新打开（绕开缓存）+ 每次间隔 8 秒，最多读 3 次，
+      // 3 次都还是旧值才认账。
+      const hard = diffs.filter((d) => !d.startsWith('头像'));
+      let lastStill = [];
+      for (let i = 0; hard.length && i < 3; i++) {
+        await sleep(8000);
+        await gotoSafe(page, `https://www.tiktok.com/@${encodeURIComponent(finalName)}?lang=en&_r=${Date.now()}`).catch(() => {});
+        await sleep(6000);
+        const again = await readProfilePage(page);
+        lastStill = [];
+        if (t.name && !t.nameSkipped && again.name !== t.name) lastStill.push(`名字读回「${again.name}」`);
+        if (t.bio && again.bio !== t.bio) lastStill.push(`简介读回「${again.bio.slice(0, 24)}」`);
+        if (t.newUsername && again.handle !== t.newUsername) lastStill.push(`用户名读回「${again.handle}」`);
+        if (!lastStill.length) {
+          after = again;
+          diffs.length = 0;
+          break;
+        }
+      }
+      if (lastStill.length) {
+        // 三次都读到旧值才算真没写进去：不写本地缓存、不算成功（以前会既报 ⚠️ 又计 ✅）
+        const why = cp.locked ? '（TikTok 提示：昵称 7 天内只能改一次，本轮昵称被拒）' : '';
+        throw new Error(`保存后连读 3 次都不一致：${lastStill.join('，')}${why}${shot ? `（截图 ${shot}）` : ''}`);
+      }
+
       if (diffs.length) {
-        console.log(`  ⚠️ ${t.env} 已保存，但读回不一致：${diffs.join('，')}`);
+        console.log(`  ⚠️ ${t.env} 已保存，但${diffs.join('，')}`);
       }
 
       // 9) 更新本地缓存
@@ -582,6 +795,26 @@ async function main() {
       if (t.newUsername) {
         state[t.env] = { ...(state[t.env] || {}), username: t.newUsername };
         writeJson(STATE_FILE, state);
+        // 配置文件里还有一份 username（`config/user.json` 的 accounts[].username）。
+        // 2026-10-20 漏过这里：TK01 改名成 xnow.matrix 后只有 env-accounts 变了，
+        // 采集器仍按旧 handle 打开 `@ryloclyjdcf` → 404 → 「主页没读出粉丝/关注/获赞」。
+        try {
+          const cfg = readJson(CFG_FILE);
+          if (cfg && Array.isArray(cfg.accounts)) {
+            let touched = false;
+            for (const a of cfg.accounts) {
+              if ((a.bitEnvId || a.browserEnv) === t.env || `0${a.name}` === t.env.replace('TK', '0')) {
+                if (a.username !== t.newUsername) {
+                  a.username = t.newUsername;
+                  touched = true;
+                }
+              }
+            }
+            if (touched) writeJson(CFG_FILE, cfg);
+          }
+        } catch (e) {
+          console.log(`     ⚠️ 配置文件里的用户名没同步（${e.message}）`);
+        }
       }
 
       // 顺手把新头像存一份，界面能立刻看到（avatarFile 是界面读 data URI 的依据）
@@ -603,20 +836,37 @@ async function main() {
           }
         }
         if (dest) {
+          const hAfter = hashOf(dest);
           profiles[t.env].avatarFile = dest;
           profiles[t.env].hasAvatar = true;
           profiles[t.env].avatarUrl = after.avatar || profiles[t.env].avatarUrl || '';
+          // 记下"我们上传的这张"的哈希：以后任何一次资料同步都能据此回答
+          // 「线上这张还是不是我们换的那张」——只比 URL 会被签名参数骗过去。
+          if (!avatarSuspect) {
+            profiles[t.env].avatarSha = hAfter;
+            profiles[t.env].avatarIntendedSha = hAfter;
+            profiles[t.env].avatarIntendedAt = new Date().toISOString();
+            profiles[t.env].avatarChangedAt = new Date().toISOString();
+            profiles[t.env].avatarReverted = false;
+            profiles[t.env].avatarRevertedAt = '';
+          }
           writeJson(PROFILES_FILE, profiles);
-          console.log(`     🖼️ 头像缩略图已更新：${path.basename(dest)}`);
+          console.log(`     🖼️ 头像缩略图已更新：${path.basename(dest)}（哈希 ${hAfter.slice(0, 8)}）`);
+          // 内容比对：URL 变了不代表图变了（TikTok 的 CDN 会先返回旧图，签名参数每次都不同）
+          if (avatarHashBefore && hAfter === avatarHashBefore) {
+            avatarSuspect = true;
+            console.log('     ⚠️ 下载回来的头像和换之前一模一样（哈希相同）→ 实际没换成，需要重试这张');
+          }
         }
       }
 
       console.log(
-        `  ✅ ${t.env} 已保存 → 名字「${after.name}」${t.newUsername ? ` 用户名 @${after.handle}` : ''}${
-          t.avatar ? ` 头像${avatarChanged ? '已更新' : '未变化'}` : ''
+        `  ${avatarSuspect ? '⚠️' : '✅'} ${t.env} 已保存 → 名字「${after.name}」${t.newUsername ? ` 用户名 @${after.handle}` : ''}${
+          t.avatar ? ` 头像${avatarSuspect ? '⚠️ 可能没换成功（内容没变）' : avatarChanged ? '已更新' : '未变化'}` : ''
         }${t.bio ? ` 简介「${after.bio.slice(0, 24)}」` : ''}`,
       );
-      ok++;
+      if (avatarSuspect) failedLike++;
+      else ok++;
     } catch (e) {
       console.log(`  ❌ ${t.env} 失败：${e.message}`);
       bad++;
@@ -633,7 +883,11 @@ async function main() {
   }
 
   console.log('');
-  console.log(`  合计：成功 ${ok} 个${bad ? `，失败 ${bad} 个` : ''}${skipped ? `，跳过 ${skipped} 个` : ''}`);
+  console.log(
+    `  合计：成功 ${ok} 个${failedLike ? `，头像疑似没换成 ${failedLike} 个` : ''}${bad ? `，失败 ${bad} 个` : ''}${
+      skipped ? `，跳过 ${skipped} 个` : ''
+    }`,
+  );
   if (ok && !dryRun) {
     console.log('  提示：资料已改，头像缩略图已自动更新；账号页会自动刷新（也可手动点「刷新」）。');
   }

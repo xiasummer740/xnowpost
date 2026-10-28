@@ -406,6 +406,93 @@
       </div>
     </section>
 
+    <!-- ===== 网络节点（内置 xray 内核） ===== -->
+    <!-- 2026-10-28 用户口径：软件要给小白用，「用户只有一个 vless:// 节点」。
+         所以这里只做一件事：粘链接 → 保存并测试 → 绿色出口 IP。端口/内核全自动。 -->
+    <section class="x-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3v18" />
+            <path d="M3.5 8.5h17M3.5 15.5h17" />
+            <circle cx="12" cy="12" r="9" />
+          </svg>
+        </span>
+        <h2>网络节点</h2>
+        <span class="x-hint">内置代理内核，粘一条链接就行</span>
+        <div class="x-spacer"></div>
+        <span v-if="proxy.running" class="x-tag ok">内核运行中</span>
+        <span v-else-if="proxy.configured" class="x-tag warn">内核未启动</span>
+        <span v-else class="x-tag danger">未配置</span>
+      </div>
+      <div class="x-card-body">
+        <div class="x-field wide-act">
+          <span class="x-label"><b>节点链接</b></span>
+          <textarea
+            v-model="proxyInput"
+            class="x-input mono"
+            rows="3"
+            spellcheck="false"
+            placeholder="把服务商给你的链接整条粘进来：vless://xxxxxxxx@host:端口?security=reality&pbk=…#备注"
+          ></textarea>
+          <div class="x-actions">
+            <button class="x-btn primary" type="button" :disabled="proxyBusy" @click="saveProxyNode">
+              {{ proxyBusy ? '处理中…' : '保存并测试' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="x-field wide-act">
+          <span class="x-label">
+            <b>当前状态</b>
+            <span v-if="proxy.exitIp" class="x-tag ok">出口正常</span>
+            <span v-else-if="proxy.configured" class="x-tag warn">出口未测通</span>
+            <span v-else class="x-tag mute">还没节点</span>
+          </span>
+          <div class="stack">
+            <span class="res-line">{{ proxy.describe }}</span>
+            <span v-if="proxy.exitIp" class="res-line ok">出口 IP：{{ proxy.exitIp }}</span>
+            <span v-if="proxyMsg" class="res-line" :class="proxyMsgKind">{{ proxyMsg }}</span>
+          </div>
+          <div class="x-actions">
+            <button class="x-mini hi" type="button" :disabled="proxyBusy || !proxy.configured" @click="testProxyNode">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 3v5M15 3v5" />
+                <path d="M6 8h12v5a6 6 0 0 1-12 0z" />
+                <path d="M12 19v2" />
+              </svg>
+              <span>测出口</span>
+            </button>
+            <button class="x-mini" type="button" :disabled="proxyBusy || !proxy.configured" @click="restartProxyNode">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 12a8 8 0 1 1-2.4-5.7" />
+                <path d="M20 4.5V10h-5.5" />
+              </svg>
+              <span>重启内核</span>
+            </button>
+            <button class="x-mini" type="button" :disabled="proxyBusy || !proxy.configured" @click="clearProxyNode">
+              <span>清除节点</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="x-tip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5.5" />
+            <path d="M12 7.6h.01" />
+          </svg>
+          <span>
+            只粘一条就够了：软件自带代理内核，会自动在本机开 30 条通道（1080–1109），
+            一个环境用一条，永远不会共用。当前所有账号共用这一个出口 IP。
+            支持 vless / vmess / trojan / ss / socks5 / http 链接；
+            节点失效时这里会显示「出口未测通」，点「重启内核」再测一次；
+            换节点直接粘新的、再点「保存并测试」。
+          </span>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== 指纹浏览器（FoxProfile） ===== -->
     <section class="x-card">
       <div class="x-card-head">
@@ -652,6 +739,127 @@ const showKeys = reactive({ deepseek: false, siliconflow: false, pexels: false, 
 const foxProfiles = ref([])
 const foxLoadError = ref('')
 
+// ── 网络节点（内置 xray 内核，2026-10-28）──────────────────────────────
+// 用户口径：「软件要给到其它用户使用，用户都是小白……用户只有一个 vless:// 节点」
+// 所以这一块只有一个动作：粘链接 → 保存并测试 → 看到绿色出口 IP 就算配好了。
+const proxy = reactive({ configured: false, running: false, describe: '未配置', exitIp: '' })
+const proxyInput = ref('')
+const proxyBusy = ref(false)
+const proxyMsg = ref('')
+const proxyMsgKind = ref('mute')
+
+async function loadProxyStatus() {
+  try {
+    const s = await window.xnowpost.proxyStatus()
+    if (!s) return
+    proxy.configured = !!s.configured
+    proxy.running = !!s.running
+    proxy.describe = s.describe || '未配置'
+    proxy.exitIp = s.exitIp || ''
+    // 节点已配置但输入框还空着 → 回填（方便用户改了再存，不用去翻原链接文件）
+    if (s.url && !proxyInput.value) proxyInput.value = s.url
+  } catch (e) {
+    proxyMsg.value = '读取节点状态失败：' + ((e && e.message) || e)
+    proxyMsgKind.value = 'err'
+  }
+}
+
+async function saveProxyNode() {
+  const url = String(proxyInput.value || '').trim();
+  if (!url) {
+    proxyMsg.value = '先把节点链接粘进来（vless:// 开头那一整条）'
+    proxyMsgKind.value = 'err'
+    return
+  }
+  proxyBusy.value = true
+  proxyMsg.value = '正在解析节点、重启内核…'
+  proxyMsgKind.value = 'mute'
+  try {
+    const r = await window.xnowpost.proxyImportNode({ url })
+    if (!r?.ok) {
+      proxyMsg.value = '❌ ' + (r?.message || '保存失败')
+      proxyMsgKind.value = 'err'
+      return
+    }
+    proxy.configured = true
+    proxy.running = true
+    proxy.describe = r.describe || proxy.describe
+    proxy.exitIp = r.exitIp || ''
+    proxyMsg.value = r.exitIp
+      ? `✅ 已保存并生效，出口 IP：${r.exitIp}`
+      : `⚠️ 已保存，但没测到出口 IP：${r.probeError || '未知原因'}（点「重启内核」再试）`
+    proxyMsgKind.value = r.exitIp ? 'ok' : 'err'
+  } catch (e) {
+    proxyMsg.value = '❌ ' + ((e && e.message) || e)
+    proxyMsgKind.value = 'err'
+  } finally {
+    proxyBusy.value = false
+  }
+}
+
+async function testProxyNode() {
+  proxyBusy.value = true
+  proxyMsg.value = '正在测出口…'
+  proxyMsgKind.value = 'mute'
+  try {
+    const r = await window.xnowpost.proxyTest()
+    if (r?.ok) {
+      proxy.exitIp = r.ip || ''
+      proxyMsg.value = `✅ 出口通：${r.ip}`
+      proxyMsgKind.value = 'ok'
+    } else {
+      proxyMsg.value = '❌ ' + (r?.message || '出口不通')
+      proxyMsgKind.value = 'err'
+    }
+  } catch (e) {
+    proxyMsg.value = '❌ ' + ((e && e.message) || e)
+    proxyMsgKind.value = 'err'
+  } finally {
+    proxyBusy.value = false
+  }
+}
+
+async function restartProxyNode() {
+  proxyBusy.value = true
+  proxyMsg.value = '正在重启内核…'
+  proxyMsgKind.value = 'mute'
+  try {
+    const r = await window.xnowpost.proxyRestart()
+    if (r?.ok) {
+      proxy.exitIp = r.ip || ''
+      proxyMsg.value = r.ip ? `✅ 内核已重启，出口：${r.ip}` : `⚠️ 内核已重启，但出口没通：${r.probeError || ''}`
+      proxyMsgKind.value = r.ip ? 'ok' : 'err'
+    } else {
+      proxyMsg.value = '❌ ' + (r?.message || '重启失败')
+      proxyMsgKind.value = 'err'
+    }
+  } catch (e) {
+    proxyMsg.value = '❌ ' + ((e && e.message) || e)
+    proxyMsgKind.value = 'err'
+  } finally {
+    proxyBusy.value = false
+  }
+}
+
+async function clearProxyNode() {
+  proxyBusy.value = true
+  try {
+    await window.xnowpost.proxyClear()
+    proxy.configured = false
+    proxy.running = false
+    proxy.exitIp = ''
+    proxy.describe = '未配置'
+    proxyInput.value = ''
+    proxyMsg.value = '已清除节点，内核已停止（环境里的浏览器现在打不开外网）'
+    proxyMsgKind.value = 'err'
+  } catch (e) {
+    proxyMsg.value = '❌ ' + ((e && e.message) || e)
+    proxyMsgKind.value = 'err'
+  } finally {
+    proxyBusy.value = false
+  }
+}
+
 // ── 文案模型（2026-10-19）────────────────────────────────────────────
 // 背景：DeepSeek 把 `deepseek-chat` 静默路由到了 `deepseek-flash`，旗舰是 `deepseek-v4-pro`。
 // 所以这里既让人能选模型，也把"请求的"和"服务端实际跑的"分开显示 —— 否则永远看不见被换了。
@@ -783,6 +991,8 @@ onMounted(async () => {
   } catch (_) {}
   // 拉一次 FoxProfile 环境列表填充下拉（连不上就提示，不阻断页面）
   loadFoxProfiles()
+  // 网络节点状态（内核在不在跑、出口 IP）
+  loadProxyStatus()
   // 顺手探测一次「实际在跑哪个模型」（只花 1 个 token；慢也不阻塞页面）
   refreshModels()
 })

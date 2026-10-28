@@ -40,6 +40,13 @@
           <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5" /><path d="M4.5 20c1.2-3.6 4-5.5 7.5-5.5s6.3 1.9 7.5 5.5" /></svg>
           账号
         </router-link>
+        <router-link to="/envs" class="nav-item" :class="{ active: $route.path === '/envs' }">
+          <svg viewBox="0 0 24 24">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M3 9h18M7.5 6.5h.01M10.5 6.5h.01" />
+          </svg>
+          环境
+        </router-link>
         <router-link to="/config" class="nav-item" :class="{ active: $route.path === '/config' }">
           <svg viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="3" />

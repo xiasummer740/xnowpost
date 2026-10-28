@@ -66,7 +66,19 @@ export function getAudioDuration(filePath) {
   return dur;
 }
 
-export async function generateVoice(scenes, outputDir, lang = 'zh') {
+/**
+ * 自动适配语速（2026-10-20 v1.6.46）。
+ *
+ * 起因：改成 7 镜 × 2.4~3.6s 之后，模型仍会写 14~16 字的句子，
+ * 实测配音总长 25.2s（目标 22s）—— 多出来的时长会把"每镜 3 秒"的节奏整体拖垮。
+ * 所以给一个目标时长，超了就按比例提速重录一遍（edge-tts 免费，重录成本只是几秒时间）。
+ */
+function ratePctToNumber(rate) {
+  const m = String(rate || '').match(/^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*$/);
+  return m ? Number(m[1]) : 0;
+}
+
+export async function generateVoice(scenes, outputDir, lang = 'zh', { targetSec = 0 } = {}) {
   const config = getVoiceConfig(lang);
   const voiceDir = path.join(outputDir, 'voice');
   await fs.ensureDir(voiceDir);
@@ -88,36 +100,62 @@ export async function generateVoice(scenes, outputDir, lang = 'zh') {
   };
 
   // 为每个分镜生成语音 + 记录真实时长
-  const durations = [];   // 每段占用的时间轴长度（= 配音时长 + 段间静音）
-  const parts = [];       // 参与拼接的音频片段（按时间轴顺序）
+  let durations = [];     // 每段占用的时间轴长度（= 配音时长 + 段间静音）
+  let parts = [];         // 参与拼接的音频片段（按时间轴顺序）
 
-  for (let i = 0; i < scenes.length; i++) {
-    const text = lang === 'zh' ? scenes[i].scene_text_zh : scenes[i].scene_text_en;
+  /** 录一遍：返回该轮的 parts / durations / 总时长 */
+  const synthPass = async (rate) => {
+    const p = [];
+    const d = [];
+    for (let i = 0; i < scenes.length; i++) {
+      const text = lang === 'zh' ? scenes[i].scene_text_zh : scenes[i].scene_text_en;
 
-    if (!text || text.trim() === '') {
-      // ⚠️ 旧实现只 push 5 秒时长却**不产出任何音频**，
-      //    导致后续字幕/画面比音频快 5 秒 —— 现在补一段等长静音。
-      parts.push(await silenceFor(EMPTY_SCENE_SEC));
-      durations.push(EMPTY_SCENE_SEC);
-      continue;
+      if (!text || text.trim() === '') {
+        // ⚠️ 旧实现只 push 5 秒时长却**不产出任何音频**，
+        //    导致后续字幕/画面比音频快 5 秒 —— 现在补一段等长静音。
+        p.push(await silenceFor(EMPTY_SCENE_SEC));
+        d.push(EMPTY_SCENE_SEC);
+        continue;
+      }
+
+      const clipPath = path.join(voiceDir, `clip_${String(i + 1).padStart(2, '0')}_${lang}.mp3`);
+      console.log(`  🔊 配音 ${i + 1}/${scenes.length}: ${text}`);
+
+      // 文案作为单个 argv 参数传递：无论里面有引号、%VAR%、& 还是 | 都不会被解释
+      runTool(EDGE_TTS, [
+        '--voice', config.voice,
+        `--rate=${rate}`,
+        '--text', text,
+        '--write-media', clipPath,
+      ], { timeout: 60000, label: 'edge-tts' });
+
+      const dur = getAudioDuration(clipPath);
+      p.push(clipPath);
+      p.push(await silenceFor(SCENE_GAP_SEC));   // 真的把 0.5s 静音写进音频
+      d.push(dur + SCENE_GAP_SEC);
     }
+    return { parts: p, durations: d, total: d.reduce((s, x) => s + x, 0) };
+  };
 
-    const clipPath = path.join(voiceDir, `clip_${String(i + 1).padStart(2, '0')}_${lang}.mp3`);
-    console.log(`  🔊 配音 ${i + 1}/${scenes.length}: ${text}`);
+  let pass = await synthPass(config.rate);
 
-    // 文案作为单个 argv 参数传递：无论里面有引号、%VAR%、& 还是 | 都不会被解释
-    runTool(EDGE_TTS, [
-      '--voice', config.voice,
-      `--rate=${config.rate}`,
-      '--text', text,
-      '--write-media', clipPath,
-    ], { timeout: 60000, label: 'edge-tts' });
-
-    const dur = getAudioDuration(clipPath);
-    parts.push(clipPath);
-    parts.push(await silenceFor(SCENE_GAP_SEC));   // 真的把 0.5s 静音写进音频
-    durations.push(dur + SCENE_GAP_SEC);
+  // 超时自动提速：目标时长由 video.totalDuration 决定（默认 22s）。
+  // 只重录一次，且最多提到 +80%，避免听起来像快进。
+  if (targetSec > 0 && pass.total > targetSec + 0.8) {
+    const base = ratePctToNumber(config.rate);
+    const need = pass.total / targetSec;
+    const nextPct = Math.max(-10, Math.min(80, Math.round(((1 + base / 100) * need - 1) * 100)));
+    if (nextPct > base + 1) {
+      console.log(
+        `  ⏩ 配音 ${pass.total.toFixed(1)}s 超过目标 ${targetSec}s，语速 ${config.rate} → +${nextPct}% 重录一遍`,
+      );
+      pass = await synthPass(`+${nextPct}%`);
+      console.log(`  ✅ 重录后音频 ${pass.total.toFixed(1)}s`);
+    }
   }
+
+  parts = pass.parts;
+  durations = pass.durations;
 
   if (parts.length === 0) {
     console.log('  ⚠️ 没有可配音的分镜，跳过');

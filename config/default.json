@@ -12,18 +12,28 @@
     "retryDelay": 2000
   },
   "video": {
-    "scenes": 4,
-    "minDuration": 4,
-    "maxDuration": 6,
-    "totalDuration": 20,
+    "scenes": 7,
+    "minDuration": 2.4,
+    "maxDuration": 3.6,
+    "totalDuration": 22,
     "bgmVolume": 0.15,
     "fadeIn": 0.5,
-    "fadeOut": 1.0,
+    "fadeOut": 1,
     "motion": true,
-    "transitionSec": 0.5,
+    "transitionSec": 0.4,
     "heroI2V": false,
     "heroScenes": 1,
-    "materialsMaxScenes": 2
+    "materialsMaxScenes": 2,
+    "loudness": {
+      "target": -14,
+      "truePeak": -1.5,
+      "lra": 11
+    },
+    "subtitle": {
+      "zhSize": 60,
+      "enSize": 60,
+      "alignBottom": true
+    }
   },
   "voice": {
     "zh": {

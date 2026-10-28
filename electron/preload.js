@@ -126,11 +126,32 @@ contextBridge.exposeInMainWorld('xnowpost', {
   getSchedules: () => ipcRenderer.invoke('schedule:list'),
   saveSchedules: (jobs) => ipcRenderer.invoke('schedule:save', jobs),
   getScheduleProgress: () => ipcRenderer.invoke('schedule:progress'),
+  // 首页「今天要跑的任务」表（主进程算好状态，界面只显示）
+  getSchedulePlan: () => ipcRenderer.invoke('schedule:plan'),
+
+  // 网络节点（内置 xray 内核）：小白只做一件事 = 把 vless:// 链接粘进来
+  proxyStatus: () => ipcRenderer.invoke('proxy:status'),
+  proxyImportNode: (payload) => ipcRenderer.invoke('proxy:importNode', payload),
+  proxyTest: () => ipcRenderer.invoke('proxy:test'),
+  proxyRestart: () => ipcRenderer.invoke('proxy:restart'),
+  proxyClear: () => ipcRenderer.invoke('proxy:clear'),
+
+  // 浏览器环境（FoxProfile 托管面：新建 / 删除 / 启动 / 停止 / 测出口）
+  // 2026-10-28：整合成一个软件 —— 这个界面替代 FoxProfile 的窗口
+  listBrowserEnvs: () => ipcRenderer.invoke('envs:list'),
+  createBrowserEnv: (payload) => ipcRenderer.invoke('envs:create', payload),
+  startBrowserEnv: (env) => ipcRenderer.invoke('envs:start', env),
+  stopBrowserEnv: (env) => ipcRenderer.invoke('envs:stop', env),
+  deleteBrowserEnv: (payload) => ipcRenderer.invoke('envs:delete', payload),
+  ipCheckBrowserEnv: (env) => ipcRenderer.invoke('envs:ipCheck', env),
+  ensureBrowserService: () => ipcRenderer.invoke('envs:ensureService'),
 
   // 账号（批量登录可视化）
-  listAccounts: () => ipcRenderer.invoke('accounts:list'),
-  pickAccountFile: () => ipcRenderer.invoke('accounts:pickFile'),
+  listAccounts: () => ipcRenderer.invoke('accounts:list'),  pickAccountFile: () => ipcRenderer.invoke('accounts:pickFile'),
   openAccountInbox: () => ipcRenderer.invoke('accounts:openInbox'),
+  backupAccountFiles: () => ipcRenderer.invoke('accounts:backupFiles'),
+  saveAccountCredentials: (payload) => ipcRenderer.invoke('accounts:saveCredentials', payload),
+  backupAccountSecrets: () => ipcRenderer.invoke('accounts:backupSecrets'),
   runAccountLogin: (opts) => ipcRenderer.invoke('accounts:run', opts),
   cancelAccountLogin: () => ipcRenderer.invoke('accounts:cancel'),
   syncAccountProfiles: (opts) => ipcRenderer.invoke('accounts:syncProfiles', opts),

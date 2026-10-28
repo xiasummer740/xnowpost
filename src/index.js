@@ -6,6 +6,7 @@ import { generateImageToFile, generatePlaceholderToFile, imageQuality } from './
 import { getFontStatus } from './engine/fonts.js';
 import { synthesizeAllPlatforms, generateVoiceTrack } from './engine/video.js';
 import { prependCoverCard } from './engine/covercard.js';
+import { printQualityReport } from './quality.js';
 import { fetchBrollForScenes, attachUserMaterials } from './engine/material.js';
 import { generateHeroClip } from './engine/i2v.js';
 import { pushVideoContent, pushPostContent } from './notifier.js';
@@ -305,7 +306,11 @@ async function runVideoPipeline(sessionDir, index, topic) {
     console.log('  🎨 封面...');
     try {
       await generateImageToFile({
-        prompt: `${c.title_en}, dramatic lighting, movie poster style, bold composition`,
+// 封面底图**不许出文字**：2026-10-20 21:50 那片封面是 Kolors 按 "movie poster style"
+        // 生出来的乱码英文海报字（"TINKI DIVIDED SWIND ED 7"），底下再叠我们的标题就很乱。
+        // 海报感靠光影/构图给，字只能由 Canvas 叠加（那才是可控的中文标题 + 网址）。
+        prompt: `${c.title_en}, cinematic dark backdrop, neon rim light, shallow depth of field, ` +
+          `clean product-tech mood, no text, no letters, no words, no watermark, no logo`,
         filepath: path.join(sessionDir, '封面.png'),
         width: 1080, height: 1920, index: 0,
         title: c.title_zh, subtitle: c.title_en,
@@ -350,6 +355,20 @@ async function runVideoPipeline(sessionDir, index, topic) {
       }
     } else {
       console.log('  ⚠️ 没有 封面.png，跳过开头封面卡');
+    }
+
+    // 📋 成片自检卡（2026-10-20 v1.6.46）：响度/时长/字幕/文案一次全测，出片即出证据。
+    // 只测不改：任何一项没达标都只打印，不阻断发布。
+    try {
+      const assFile = (await fs.readdir(workDir).catch(() => []))
+        .find((f) => /^sub_.*\.ass$/i.test(f));
+      printQualityReport({
+        videoFile: vr,
+        scenes: c.scenes || [],
+        assFile: assFile ? path.join(workDir, assFile) : null,
+      });
+    } catch (err) {
+      console.log(`  ⚠️ 自检卡失败（不影响成片）: ${err.message}`);
     }
 
     // P2-12：视频产出后推送通知（此前 pushVideoContent 导入了却从未调用）

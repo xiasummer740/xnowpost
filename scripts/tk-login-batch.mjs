@@ -10,6 +10,12 @@
  *
  * 其它开关：--gap 60（间隔秒）、--no-create（环境不够不新建）、--no-config（不改应用配置）
  *
+ * 没有账号密码、只能用手机扫码登录的新号：
+ *   node scripts/tk-login-batch.mjs --qr                 # 下一个空号环境（TK11…），打开二维码等你扫
+ *   node scripts/tk-login-batch.mjs --qr --qr-count 3    # 连续加 3 个号（每个扫一次）
+ *   node scripts/tk-login-batch.mjs --qr --only TK12     # 指定环境
+ *   扫完自动读用户名 → 写 env-accounts.json / config → 备份 cookie → 关窗口
+ *
  * 账号文件格式（每行一个；全角/半角竖线、制表符、逗号都认；自动跳过表头）：
  *   用户名｜密码｜邮箱｜邮箱密码｜2FA密钥｜地区
  *
@@ -24,6 +30,9 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { openFoxPage, closeFoxPage } from '../src/collector/foxpw.js';
 import { listFoxProfiles, foxCreateProfile, foxExportCookies, foxHealth } from '../src/collector/foxprofile.js';
+import { allocateAccountEnvs } from '../src/account-env.js';
+import { applyUniformScreen } from '../src/collector/uniform-screen.js';
+import { nextRelayPort, proxyUrl, portListening } from '../src/collector/proxy-ports.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -59,6 +68,10 @@ const NO_CREATE = has('--no-create');
 const NO_CONFIG = has('--no-config');
 /** 遇到人机验证时，留多少秒给人工拖动（默认 5 分钟） */
 const CAPTCHA_WAIT = Number(val('--captcha-wait', '300')) || 300;
+/** 扫码登录模式：没有账号密码的号（手机 TikTok 扫二维码授权） */
+const QR = has('--qr');
+const QR_COUNT = Number(val('--qr-count', '1')) || 1;
+const QR_TIMEOUT = Number(val('--qr-timeout', '600')) || 600;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowStamp = () => {
@@ -221,6 +234,46 @@ function makeKit(page, env) {
  * 把人机验证的浏览器窗口顶到最前（用户要手动拖，得先看得到）。
  * 用 Win32 ShowWindow + SetForegroundWindow，windowsHide 必须带上，别弹黑框。
  */
+/**
+ * 新建环境后统一窗口尺寸 —— 必须紧跟在「建完」之后、开浏览器之前：
+ * Camoufox 的窗口大小是启动时从指纹里读的，晚一步就白改。
+ * （用户 2026-10-24 反馈：扫码加号开出来的窗口比别的号大一圈。）
+ */
+function unifyScreen(env) {
+  try {
+    const r = applyUniformScreen(env);
+    if (r.ok) console.log('  🖥️ ' + env + ' 窗口尺寸已统一：' + r.before + ' → ' + r.after);
+    else console.log('  ⚠️ ' + env + ' 窗口尺寸没改成：' + (r.note || '未知'));
+  } catch (e) {
+    console.log('  ⚠️ ' + env + ' 窗口尺寸没改成：' + e.message);
+  }
+}
+
+/**
+ * 给新环境分一条**自己的**本地代理端口（1080–1089 是老环境的，新号从 1090 起顺序递增）。
+ * 不能再照抄模板环境的代理：那样 TK11 和 TK01 挤同一个 127.0.0.1:1080，
+ * 一条中继出问题另一条跟着挂（用户 2026-10-24：「肯定不能共用一个端口呀，按顺序递增嘛」）。
+ *
+ * ⚠️ 2026-10-28 起端口由**内置内核 xray** 一次开满 1080–1109（src/proxy/engine.js），
+ *    这里只需要算号、不需要再补 relay 配置 —— 老的 proxy_relay.py 链路对小白不存在。
+ *    只有本机还留着老 relay（开发机兜底）时才补配置，见下面的 ensureRelayPort 分支。
+ */
+const allocatedProxies = [];
+async function allocateProxy() {
+  const fake = allocatedProxies.map((p) => ({ proxy: p }));
+  const port = nextRelayPort(fake);
+  // 端口归内置内核管（一次开满 1080–1109）。这里只做体检：
+  // 不通就说明"没配节点/内核没起来"，那要在「配置 → 网络节点」解决，不是在这儿补 relay。
+  const up = await portListening(port).catch(() => false);
+  if (!up) {
+    console.log(
+      `  ⚠️ 本地端口 ${port} 没在监听 —— 检查「配置 → 网络节点」是否配了节点、内核是否在跑`,
+    );
+  }
+  allocatedProxies.push(proxyUrl(port));
+  return proxyUrl(port);
+}
+
 function bringBrowserToFront() {
   const ps = [
     'Add-Type @"',
@@ -590,6 +643,276 @@ function writeReport({ results, skipped, created, filePath, configMsg }) {
   return f;
 }
 
+// ---------- 扫码登录（没有账号密码的号也能加）----------
+/**
+ * 读当前登录账号的 @用户名（TikTok Studio 里指向自己主页的那条链接）。
+ */
+async function readTkUsername(page) {
+  // ⚠️ 别用 /passport/web/account/info/ 的 screen_name：实测它是内部 id（user4837577922302），
+  //    不是 @handle（真名 xnow.matrix）。唯一可靠的来源是 TikTok Studio 里那条指向自己主页的链接。
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await page.goto('https://www.tiktok.com/tiktokstudio');
+      await page.waitForTimeout(attempt === 0 ? 7000 : 5000);
+      const hrefs = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('a[href^="/@"]')).map((a) => a.getAttribute('href') || ''),
+      );
+      const handles = [];
+      for (const h of hrefs) {
+        const m = /^\/@([^/?#]+)\/?$/.exec(h || '');
+        if (m && m[1] && !handles.includes(m[1])) handles.push(m[1]);
+      }
+      if (handles.length === 1) return decodeURIComponent(handles[0]);
+      if (handles.length > 1) {
+        // 多于一个时优先不含 video 的那种（上面正则已经排掉了），仍然取第一个并留痕
+        console.log('  ℹ️ Studio 里有多个主页链接：' + handles.slice(0, 4).join(', ') + '，取第一个');
+        return decodeURIComponent(handles[0]);
+      }
+    } catch (_) {
+      /* 再试一次 */
+    }
+  }
+  return '';
+}
+/**
+ * 一个环境用二维码登录。实测（2026-10-24）：
+ *   /login 有「Use QR code」（div 345x46）→ 点了跳 /login/qrcode
+ *   → 二维码是 170x170 的 <canvas>（不是 <img>）→ 手机 TikTok 扫 → 手机上点确认
+ *   → 页面离开 /login 即成功。
+ */
+async function loginEnvQr(env) {
+  const t0 = Date.now();
+  const shots = [];
+  const elapsed = () => Math.round((Date.now() - t0) / 1000);
+  let page;
+  try {
+    console.log('');
+    console.log('  ▶ ' + env + ' 打开环境…');
+    const opened = await openFoxPage(env, API, { minimize: false });
+    page = opened.page || opened;
+
+    await page.goto('https://www.tiktok.com/login');
+    await page.waitForTimeout(8000);
+
+    const startUrl = await page.evaluate(() => location.href).catch(() => '');
+    if (startUrl && !/\/login/.test(startUrl)) {
+      const username = await readTkUsername(page);
+      console.log('  ℹ️ ' + env + ' 打开时已经是登录状态，没扫码');
+      return { ok: true, env, username, url: startUrl, note: '已是登录状态，未扫码', shots, seconds: elapsed() };
+    }
+
+    // 点「Use QR code」：TikTok 的按钮是 div，取文字匹配的最内层那个
+    const clicked = await page
+      .evaluate(() => {
+        const want = /use qr code|qr code|二维码|扫码/i;
+        const cands = Array.from(document.querySelectorAll('div,button,a,span'))
+          .map((el) => ({ el, r: el.getBoundingClientRect() }))
+          .filter((x) => {
+            const t = (x.el.innerText || '').replace(/\s+/g, ' ').trim();
+            return t && t.length < 40 && want.test(t) && x.r.width > 40 && x.r.height > 15 && x.r.width < 520;
+          })
+          .sort((a, b) => a.r.width * a.r.height - b.r.width * b.r.height);
+        if (!cands.length) return { ok: false };
+        const el = cands[0].el;
+        el.click();
+        return { ok: true, text: (el.innerText || '').trim() };
+      })
+      .catch(() => ({ ok: false }));
+    if (!clicked.ok) {
+      return { ok: false, env, step: '找不到二维码入口', note: '登录页上没有「Use QR code」', shots, seconds: elapsed() };
+    }
+    console.log('  📷 已切到扫码页（点了「' + clicked.text + '」）');
+
+    let qrReady = false;
+    for (let i = 0; i < 20; i++) {
+      await page.waitForTimeout(1000).catch(() => {});
+      qrReady = await page
+        .evaluate(() => {
+          const big = Array.from(document.querySelectorAll('canvas,img')).filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.width >= 120 && r.height >= 120;
+          });
+          return big.length > 0;
+        })
+        .catch(() => false);
+      if (qrReady) break;
+    }
+
+    const focused = bringBrowserToFront();
+    console.log('  📱 二维码' + (qrReady ? '已显示' : '可能还没画出来') + '，浏览器窗口已' + (focused ? '顶到最前' : '打开'));
+    console.log('     手机 TikTok → 我 → 右上角扫码 → 扫这个窗口里的二维码 → 手机上点「确认」');
+    console.log('     最多等 ' + QR_TIMEOUT + ' 秒；不想加了就直接关掉浏览器窗口');
+
+    const deadline = Date.now() + QR_TIMEOUT * 1000;
+    let loggedIn = false;
+    let last = '';
+    let tick = 0;
+    let deadPoll = 0;
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(3000).catch(() => {});
+      tick += 3;
+      const now = await page.evaluate(() => location.href).catch(() => null);
+      if (now === null) {
+        deadPoll += 1;
+        if (deadPoll >= 8) {
+          return { ok: false, env, step: '窗口被关掉了', note: '等待扫码时环境窗口没了', shots, seconds: elapsed() };
+        }
+        continue;
+      }
+      deadPoll = 0;
+      if (now !== last) {
+        last = now;
+        console.log('     页面：' + now);
+        if (!/\/login/.test(now)) {
+          loggedIn = true;
+          break;
+        }
+      }
+      if (tick % 60 === 0) console.log('     …还在等你扫码（已 ' + elapsed() + ' 秒）');
+    }
+    if (!loggedIn) {
+      return { ok: false, env, step: '等二维码超时', note: QR_TIMEOUT + ' 秒内没有扫码确认', shots, seconds: elapsed() };
+    }
+
+    await page.waitForTimeout(4000).catch(() => {});
+    const username = await readTkUsername(page);
+    console.log('  ✅ ' + env + ' 已登录' + (username ? '：@' + username : '（没读到用户名，后面「抓全部资料」会补）'));
+
+    // 备份 cookie：环境坏了/换机器时导入就能恢复，不用再扫码。
+    // 刚跳转完立刻导出偶尔会失败（2026-10-24 TK11 那次就只留下一句警告、没落盘），
+    // 所以重试 3 次，每次间隔 3 秒；还失败就明说「要补一次」。
+    {
+      const dir = path.join(BACKUPS, today());
+      let backed = false;
+      for (let i = 0; i < 3 && !backed; i += 1) {
+        try {
+          const text = await foxExportCookies(env, API, 'json');
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, env + '.json'), text);
+          const n = (JSON.parse(text).cookies || []).length;
+          console.log('  💾 cookie 已备份：backups/cookies/' + today() + '/' + env + '.json（' + n + ' 条）');
+          backed = true;
+        } catch (e) {
+          if (i < 2) {
+            console.log('  …cookie 导出失败，3 秒后重试（' + (i + 1) + '/3）：' + e.message);
+            await sleep(3000);
+          } else {
+            console.log('  ❌ cookie 备份失败：' + e.message + '（登录是成功的，但要手动补备份一次）');
+          }
+        }
+      }
+    }
+
+    return { ok: true, env, username, url: last, note: '扫码登录', shots, seconds: elapsed() };
+  } catch (e) {
+    return { ok: false, env, step: '异常', note: String((e && e.message) || e), shots, seconds: elapsed() };
+  } finally {
+    await closeFoxPage(env, API).catch(() => {});
+    // 关掉之后再统一一次窗口尺寸：**创建后的第一次启动**，Camoufox 会按自己的
+    // "coherence" 重写 fingerprint.json（实测 TK11 被改成 avail 1280x976 / screen 1280x1024），
+    // 把创建时写进去的 1292x994 覆盖掉。关窗后再写一遍，下次开就是标准尺寸。
+    unifyScreen(env);
+  }
+}
+
+/** --qr 的整轮流程：确定要哪几个环境 → 缺的建出来 → 逐个等扫码 → 写状态/配置/报告 */
+async function runQrMode() {
+  const profiles = await listFoxProfiles(API);
+  const envNames = profiles.map((p) => String(p.name).toUpperCase());
+  const template =
+    profiles.find((p) => String(p.name).toUpperCase() === 'TK01') || profiles[0] || {};
+  console.log('  扫码模式：现有环境 ' + profiles.length + ' 个');
+
+  const targets = [];
+  if (ONLY) targets.push(ONLY);
+  else {
+    const st = readState();
+    // ① 先捡「已经建出来、但还没登记账号」的空环境（上次扫码中途关窗留下的），
+    //    否则每点一次「扫码加号」都会多建一个 TK12、TK13…，旧空环境永远没人用。
+    const orphans = envNames
+      .filter((e) => !(st[e] && st[e].username))
+      .sort((a, b) => Number(a.replace(/\D/g, '')) - Number(b.replace(/\D/g, '')));
+    for (const e of orphans.slice(0, QR_COUNT)) targets.push(e);
+    // ② 不够再按空号分配（TK11、TK12…）
+    const need = QR_COUNT - targets.length;
+    if (need > 0) {
+      const fake = Array.from({ length: need }, (_, i) => ({ username: '__qr_' + nowStamp() + '_' + i }));
+      for (const a of allocateAccountEnvs(fake, st, envNames)) targets.push(a.env);
+    }
+    if (targets.length > QR_COUNT) targets.length = QR_COUNT;
+  }
+  if (!targets.length) {
+    console.log('  ⚠️ 没有要处理的环境');
+    return 1;
+  }
+  console.log('  要处理的环境：' + targets.join(', '));
+  if (DRY) {
+    console.log('  （--dry-run：不建环境、不开浏览器、不扫码）');
+    return 0;
+  }
+
+  const created = [];
+  for (const env of targets) {
+    if (envNames.includes(env)) {
+      console.log('  ℹ️ 环境 ' + env + ' 已存在，直接扫码登录');
+      continue;
+    }
+    if (NO_CREATE) {
+      console.log('  ⚠️ 环境 ' + env + ' 不存在（--no-create），跳过');
+      continue;
+    }
+    try {
+      const proxy = await allocateProxy();
+      await foxCreateProfile(
+        {
+          name: env,
+          proxy,
+          osType: template.osType || template.os_type || 'windows',
+          timezone: template.timezone,
+          locale: template.locale,
+          engine: template.engine || 'camoufox',
+        },
+        API,
+      );
+      created.push(env);
+      console.log('  ➕ 已新建环境 ' + env + '（代理 ' + (proxy || '无') + '，时区 ' + (template.timezone || '自动') + '）');
+      unifyScreen(env);
+    } catch (e) {
+      console.log('  ⚠️ 新建环境 ' + env + ' 失败：' + e.message);
+    }
+  }
+
+  const results = [];
+  for (let i = 0; i < targets.length; i++) {
+    const r = await loginEnvQr(targets[i]);
+    results.push(r);
+    if (r.ok && r.username) writeState({ [r.env]: { username: r.username } });
+    if (i < targets.length - 1) {
+      if (!r.ok) console.log('  （上一个没成，继续下一个）');
+      console.log('  … 等 ' + GAP + ' 秒再下一个');
+      await sleep(GAP * 1000);
+    }
+  }
+
+  const mapping = {};
+  for (const r of results) if (r.ok && r.username) mapping[r.env] = { username: r.username };
+  const configMsg = Object.keys(mapping).length
+    ? writeAppConfig(mapping)
+    : '跳过（没读到用户名，用「抓全部资料」补）';
+  const report = writeReport({ results, skipped: [], created, filePath: '（扫码登录）', configMsg });
+
+  const okN = results.filter((r) => r.ok).length;
+  console.log('');
+  console.log('  ═══ 汇总：成功 ' + okN + ' / ' + results.length + ' ═══');
+  for (const r of results) {
+    console.log('   ' + (r.ok ? '✅' : '❌') + ' ' + r.env + '  ' + (r.username || '') + '  ' + (r.ok ? r.url || '' : r.step + ': ' + r.note));
+  }
+  console.log('');
+  console.log('  📄 报告：' + path.relative(ROOT, report).replace(/\\/g, '/'));
+  console.log('  ⚙️ 应用配置：' + configMsg);
+  return okN === results.length ? 0 : 2;
+}
+
 // ---------- 主流程 ----------
 (async () => {
   console.log('  ═══ TikTok 批量登录 ═══');
@@ -599,6 +922,12 @@ function writeReport({ results, skipped, created, filePath, configMsg }) {
     process.exit(1);
   }
   console.log(`  FoxProfile OK（${API}）`);
+
+  // ── 扫码登录模式（--qr）：没有账号密码的号也走这条 ──
+  if (QR) {
+    const code = await runQrMode();
+    process.exit(code);
+  }
 
   // 1) 取账号文件
   let accountFile = '';
@@ -621,7 +950,10 @@ function writeReport({ results, skipped, created, filePath, configMsg }) {
     text = fs.readFileSync(accountFile, 'utf8');
     console.log(`  收件箱最新文件：${files[0].f}`);
   } else {
-    console.log('  用法：--auto（扫收件箱） 或 --file <txt路径>，加 --dry-run 只出计划');
+    console.log(
+      '  用法：--auto（扫收件箱） | --file <txt路径> | --qr（没有密码、用手机扫码加号）' +
+        '，加 --dry-run 只出计划',
+    );
     process.exit(0);
   }
 
@@ -640,15 +972,19 @@ function writeReport({ results, skipped, created, filePath, configMsg }) {
   const created = [];
   const toCreate = [];
   const state = readState();
-  for (let i = 0; i < rows.length; i++) {
-    const index = i + 1;
+  // 账号 → 环境：已登记的用户名留在原环境，新用户名自动拿空号（TK11…），
+  // 规则只有一份，在 src/account-env.js（界面「导入账号文件」走的是同一份）。
+  const alloc = allocateAccountEnvs(rows, state, envNames);
+  for (const a of alloc) {
+    if (a.duplicate) continue;
+    const index = a.index;
     if (index < FROM) continue;
     if (TO && index > TO) continue;
-    const env = `TK${String(index).padStart(2, '0')}`;
+    const env = a.env;
     if (ONLY && env !== ONLY) continue;
     const exists = envNames.includes(env);
-    plan.push({ index, env, acct: rows[i], exists });
-    if (!exists && !NO_CREATE) toCreate.push(env);
+    plan.push({ index, env, acct: rows[index - 1], exists });
+    if (!exists && !NO_CREATE && !toCreate.includes(env)) toCreate.push(env);
   }
   if (!plan.length) { console.log('  ⚠️ 没有需要处理的环境（检查 --from/--to/--only）'); process.exit(0); }
 
@@ -685,16 +1021,18 @@ function writeReport({ results, skipped, created, filePath, configMsg }) {
   // 6) 新建缺失环境
   for (const env of toCreate) {
     try {
+      const proxy = await allocateProxy();
       await foxCreateProfile({
         name: env,
-        proxy: template.proxy,
+        proxy,
         osType: template.os_type || template.osType || 'windows',
         timezone: template.timezone,
         locale: template.locale,
         engine: template.engine || 'camoufox',
       }, API);
       created.push(env);
-      console.log(`  ➕ 已新建环境 ${env}（代理 ${template.proxy || '无'}，时区 ${template.timezone || '自动'}）`);
+      console.log(`  ➕ 已新建环境 ${env}（代理 ${proxy || '无'}，时区 ${template.timezone || '自动'}）`);
+      unifyScreen(env);
     } catch (e) {
       console.log(`  ⚠️ 新建环境 ${env} 失败: ${e.message}`);
     }

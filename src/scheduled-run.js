@@ -24,7 +24,7 @@ import path from 'node:path';
 import { writeJsonAtomicSync } from './fs-atomic.js';
 
 /** 轮次结果码（也是 `describeScheduledRun()` 的分支集合） */
-export const RUN_RESULTS = ['ok', 'unconfirmed', 'insufficient', 'timeout', 'failed', 'skipped'];
+export const RUN_RESULTS = ['ok', 'partial', 'unconfirmed', 'insufficient', 'timeout', 'failed', 'skipped'];
 
 /** 模式 → 人话（和 `electron/lib/assistant-tools.js` 的 SCHEDULE_MODE_LABEL 同口径） */
 export const RUN_MODE_LABEL = {
@@ -82,7 +82,7 @@ export function pickSession(lines) {
 /** `runWithRetry()` 的返回值 → 结果码（唯一映射，别在别处再写一份） */
 export function resultFromRunWithRetry(r) {
   if (!r) return 'failed';
-  if (r.ok) return 'ok';
+  if (r.ok) return r.partial ? 'partial' : 'ok';
   if (r.insufficient) return 'insufficient';
   if (r.unconfirmed) return 'unconfirmed';
   if (r.timeout) return 'timeout';
@@ -260,6 +260,10 @@ export function describeScheduledRun(record, ev = {}) {
       return `⚠️ 定时轮次未确认${where}：已点发布按钮但没能证明已公开（不重试、不重发），请到 TikTok 后台核对${withTook(logName ? [`日志 ${logName}`] : [])}。`;
     case 'insufficient':
       return `ℹ️ 定时轮次结束${where}：数据不足（TikTok 分析页只返回「--」占位，本轮不重试，账号有数据后会自己恢复）${withTook()}。`;
+    case 'partial':
+      // 养号有账号被拦/白屏，但别的号是真的养了。说「失败」会让用户以为整晚白跑，
+      // 说「完成」又不老实 —— 只按落盘证据说话：哪几个号没养成。
+      return `⚠️ 定时轮次部分完成${where}：${r.reason || '部分账号没养成'}，其余账号已正常养完（不重试，避免重复点赞）${withTook(logName ? [`日志 ${logName}`] : [])}。`;
     case 'timeout':
       return `⏱️ 定时轮次超时${where}：子进程被强制结束，产物/发布状态未知，本轮没重试 —— 请人工确认${withTook(logName ? [`日志 ${logName}`] : [])}。`;
     case 'skipped':

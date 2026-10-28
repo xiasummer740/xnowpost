@@ -15,7 +15,7 @@
  * 这样发布器的业务逻辑（等视频处理完、填标题、开 AIGC 开关、点发布…）一行都不用重写。
  */
 import axios from 'axios';
-import { foxBase, listFoxProfiles, foxLaunch, foxStop, foxStopOthers } from './foxprofile.js';
+import { foxBase, listFoxProfiles, foxLaunch, foxStop, foxStopOthers, launchAndWait, ensureFoxProfile } from './foxprofile.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, Number(ms) || 0)));
 
@@ -313,9 +313,12 @@ class FoxPage {
  * @param {string} envName 环境名（如 TK01）
  * @param {string} [base]  FoxProfile 接口地址
  */
-export async function openFoxPage(envName, base) {
+export async function openFoxPage(envName, base, opts = {}) {
   const name = String(envName || '').trim();
   if (!name) throw new Error('未配置浏览器环境名');
+
+  // FoxProfile 夜里挂掉会让整轮发布/养号白跑（2026-10-24 事故）→ 开环境前先确认服务在跑
+  await ensureFoxProfile(base);
 
   const profiles = await listFoxProfiles(base);
   if (!profiles.some((p) => p.name === name)) {
@@ -329,13 +332,22 @@ export async function openFoxPage(envName, base) {
     console.log(`  🧹 已关闭其它还在运行的环境: ${others.join(', ')}（同 IP 只跑一个）`);
   }
 
-  const launched = await foxLaunch(name, base);
+  const launched = await launchAndWait(name, base);
   if (launched && launched.success === false) {
     throw new Error(launched.message || `环境 ${name} 启动失败`);
   }
 
   const page = new FoxPage(name, base);
   await page.init();
+  // opts.minimize：只读任务（拉资料 / 采集读页面）可以把窗口缩到任务栏，不挡屏幕；
+  // 要点击的任务（养号点赞翻页、发布上传）绝对不能传 —— 最小化后鼠标事件点不动
+  // （2026-10-23 真机 A/B：可见时点「下一页」换片 ✅，最小化后同样点法不换 ❌）。
+  if (opts.minimize) {
+    try {
+      const { minimizeEnvWindow } = await import('./fox-window.js');
+      if (minimizeEnvWindow(name)) console.log(`  🗕 已把 ${name} 的窗口缩到任务栏（只读任务，不挡屏幕）`);
+    } catch (_) { /* 缩不了不影响任务 */ }
+  }
   return { page, name, context: null, browser: null };
 }
 

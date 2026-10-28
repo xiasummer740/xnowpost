@@ -20,10 +20,15 @@ const FALLBACK = {
   deepseek: { model: 'deepseek-chat', temperature: 0.8, retryTemperature: 0.3, max_tokens: 4096 },
   image: { width: 1080, height: 1920, model: 'Kwai-Kolors/Kolors', retries: 2, retryDelay: 2000 },
   video: {
-    scenes: 5, minDuration: 5, maxDuration: 7,
+    // 2026-10-20（v1.6.46）：4 镜 × 4s 在手机上信息密度太低、看过就走。
+    // 改成 7 镜 × 2.4~3.6s，正片约 20 秒（+封面 1.2s）—— 与用户确认的样片一致。
+    scenes: 7, minDuration: 2.4, maxDuration: 3.6,
     // 成片观感相关（此前 default.json 里配了却无人读取，等于死配置）
     bgmVolume: 0.15, fadeIn: 0.5, fadeOut: 1.0,
-    motion: true, transitionSec: 0.5,
+    motion: true, transitionSec: 0.4,
+    // 响度归一到社交平台标准（旧片实测 -26.2 LUFS，手机上听着又闷又轻）
+    loudness: { target: -14, truePeak: -1.5, lra: 11 },
+    subtitle: { zhSize: 60, enSize: 60, alignBottom: true },
     // 开场镜用 AI 图生视频（SiliconFlow Wan2.2 I2V）。默认关闭：它是唯一付费的画面增强
     heroI2V: false, heroScenes: 1,
   },
@@ -157,6 +162,18 @@ export function getVideoStyleConfig() {
       min: 0, max: 1, key: 'bgm', name: 'video.bgmVolume',
     }),
     fadeIn: num(v.fadeIn, FALLBACK.video.fadeIn, { min: 0, max: 5, key: 'fadein', name: 'video.fadeIn' }),
+    /** 响度归一：I=目标 LUFS / TP=真峰值上限 / LRA=响度范围（ffmpeg loudnorm 参数名照搬） */
+    loudness: {
+      target: num(v.loudness?.target, FALLBACK.video.loudness.target, { min: -40, max: -5, key: 'lnI', name: 'video.loudness.target' }),
+      truePeak: num(v.loudness?.truePeak, FALLBACK.video.loudness.truePeak, { min: -9, max: 0, key: 'lnTP', name: 'video.loudness.truePeak' }),
+      lra: num(v.loudness?.lra, FALLBACK.video.loudness.lra, { min: 1, max: 30, key: 'lnLRA', name: 'video.loudness.lra' }),
+    },
+    /** 字幕字号：中英**同字号**双行（英文不再缩成 0.85 当注解） */
+    subtitle: {
+      zhSize: Math.round(num(v.subtitle?.zhSize, FALLBACK.video.subtitle.zhSize, { min: 20, max: 120, key: 'subZh', name: 'video.subtitle.zhSize' })),
+      enSize: Math.round(num(v.subtitle?.enSize, FALLBACK.video.subtitle.enSize, { min: 20, max: 120, key: 'subEn', name: 'video.subtitle.enSize' })),
+      alignBottom: v.subtitle?.alignBottom !== false,
+    },
     fadeOut: num(v.fadeOut, FALLBACK.video.fadeOut, { min: 0, max: 5, key: 'fadeout', name: 'video.fadeOut' }),
     // 开场镜图生视频：默认关闭（这是唯一会额外花钱的画面增强）
     heroI2V,

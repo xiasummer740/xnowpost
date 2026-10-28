@@ -15,6 +15,14 @@
         <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
         批量登录
       </button>
+      <!-- 没有账号密码的号（只能手机扫码）走这条：建环境 → 弹二维码 → 你扫 → 自动收尾 -->
+      <button class="x-btn" :disabled="!hasIpc || busyAll" @click="startQrLogin()">
+        <svg viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+          <rect x="3" y="14" width="7" height="7" /><path d="M14 14h3v3h-3zM20 14v3M14 20h6" />
+        </svg>
+        扫码加号
+      </button>
     </div>
 
     <!-- 环境不可用提示 -->
@@ -76,7 +84,20 @@
           批量改资料<template v-if="selected.length"> · {{ selected.length }}</template>
         </button>
         <button class="x-mini" :disabled="!hasIpc || !list.length" @click="openInbox">收件箱</button>
-        <button class="x-mini" :disabled="!hasIpc || !list.length || busy" @click="backupAll">备份 cookie</button>
+        <!-- 三个备份放一个组里：按钮多了会换行，成组换行才不会孤零零掉一个到第二排 -->
+        <div class="head-tools">
+          <!-- 账号 txt 放在安装目录（<安装目录>\import\accounts），卸载/重装会跟着没；
+               这个按钮把它们复制到数据目录并打成一个 zip，方便挪走留底。 -->
+          <button class="x-mini" :disabled="!hasIpc" title="把收件箱里的账号 txt 复制到数据目录并打包成 zip（防止卸载/重装时丢掉）" @click="backupFiles">
+            <svg viewBox="0 0 24 24"><path d="M12 3v11" /><path d="M8 10l4 4 4-4" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></svg>
+            备份文件
+          </button>
+          <button class="x-mini" :disabled="!hasIpc" title="把账号凭据/资料/闹钟/发布账本写进当天的加密包（系统 DPAPI 加密，不落明文）" @click="backupSecrets">
+            <svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+            备份凭据
+          </button>
+          <button class="x-mini" :disabled="!hasIpc || !list.length || busy" title="重新导出所有环境的 TikTok cookie 到 backups\cookies\<日期>" @click="backupAll">备份 cookie</button>
+        </div>
       </div>
 
       <table>
@@ -118,7 +139,7 @@
                 </div>
                 <div class="acct-text">
                   <div class="u">
-                    <span class="cp" :title="`点击复制用户名：${row.username}`" @click="copy(row.username, '用户名')">
+                    <span class="cp" :title="`${row.nickname || '（无昵称）'}\n点击复制用户名：${row.username}`" @click="copy(row.username, '用户名')">
                       {{ row.nickname || row.username || '（未登记用户名）' }}
                     </span>
                     <svg v-if="row.verified" class="vf" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m8.5 12 2.5 2.5 4.5-5" /></svg>
@@ -129,28 +150,43 @@
                       @click="copy(row.username, '用户名')"
                       >@{{ row.username }}</span
                     >
+                    <span
+                      v-if="row.avatarReverted"
+                      class="rev-badge"
+                      :title="`头像已经不是我们换的那张了（平台换回）${row.avatarRevertedAt ? '，发现于 ' + shortTime(row.avatarRevertedAt) : ''}`"
+                      >头像被换回</span
+                    >
                   </div>
                   <div class="m">
                     <span v-if="row.email" class="cp mail" :title="`点击复制邮箱：${row.email}`" @click="copy(row.email, '邮箱')">{{ row.email }}</span>
                     <span v-else class="none">未导入邮箱</span>
-                    <span v-if="row.profileAt" class="counts mini" :title="`粉丝 / 关注 / 获赞`">
+                    <span v-if="row.profileAt" class="counts mini" :title="`粉丝 / 关注 / 获赞（资料抓取于 ${fullTime(row.profileAt)}）`">
                       {{ fmt(row.followers) }}<i>/</i>{{ fmt(row.following) }}<i>/</i>{{ fmt(row.likes) }}
+                    </span>
+                    <span v-if="row.profileAt" class="age mini" :class="{ stale: profileAgeHours(row.profileAt) > 12 }">
+                      {{ ageText(row.profileAt) }}
                     </span>
                   </div>
                 </div>
               </div>
             </td>
             <td>
+              <!-- 点击整格（有密码 / 未导入 都行）→ 直接改凭据，不用再造 txt 文件 -->
               <div v-if="row.password" class="pwd">
-                <span class="val cp" :title="revealed(row.env) ? `点击复制密码` : '点击复制密码'" @click="copy(row.password, '密码')">
+                <span class="val cp" :title="`点击复制密码；想改就点右边 ✎`" @click="copy(row.password, '密码')">
                   {{ revealed(row.env) ? row.password : '••••••••' }}
                 </span>
                 <button class="eye" :title="revealed(row.env) ? '隐藏' : '显示'" @click="toggleReveal(row.env)">
                   <svg v-if="!revealed(row.env)" viewBox="0 0 24 24"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" /><circle cx="12" cy="12" r="2.6" /></svg>
                   <svg v-else viewBox="0 0 24 24"><path d="M3 3l18 18" /><path d="M10.6 6.1A9.9 9.9 0 0 1 12 6c6.4 0 10 6 10 6a17 17 0 0 1-3.3 3.9" /><path d="M6.3 8.5A16.7 16.7 0 0 0 2 12s3.6 6.5 10 6.5c1.5 0 2.8-.3 4-.8" /></svg>
                 </button>
+                <button class="eye" title="修改凭据（密码/邮箱/2FA/地区）" @click="openCred(row)">
+                  <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M14 6l4 4" /></svg>
+                </button>
               </div>
-              <span v-else class="none">未导入</span>
+              <button v-else class="add-cred" title="添加密码（邮箱/2FA/地区也能一起填）" @click="openCred(row)">
+                <svg viewBox="0 0 24 24"><path d="M12 5v14" /><path d="M5 12h14" /></svg>添加
+              </button>
             </td>
             <td>
               <span v-if="row.loggedIn === true" class="status on"><i></i>{{ row.running ? '运行中' : '已登录' }}</span>
@@ -238,6 +274,65 @@
           <span class="x-spacer"></span>
           <button class="x-mini" :disabled="editing || !canSubmitEdit" @click="submitEdit(true)">演练</button>
           <button class="x-btn" :disabled="editing || !canSubmitEdit" @click="submitEdit(false)">保存并应用</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 凭据编辑（点密码格 / 未导入的「+ 添加」） -->
+    <div v-if="credForm" class="mask" @click.self="credForm = null">
+      <div class="panel">
+        <div class="ph">
+          <h3>账号凭据 · {{ credForm.env }}<span v-if="credForm.username" class="cred-user">@{{ credForm.username }}</span></h3>
+          <button class="dbtn" @click="credForm = null">×</button>
+        </div>
+        <div class="pbody">
+          <label class="frow">
+            <span>密码</span>
+            <input
+              v-model="credForm.password"
+              class="x-input"
+              :type="credForm.showPwd ? 'text' : 'password'"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="TikTok 登录密码"
+            />
+          </label>
+          <div class="frow">
+            <span></span>
+            <div style="display: flex; gap: 8px; align-items: center">
+              <button class="x-mini" @click="credForm.showPwd = !credForm.showPwd">{{ credForm.showPwd ? '隐藏' : '显示' }}</button>
+              <span class="fhint" style="margin: 0">存在本机 `data\env-accounts.json`（明文，界面要能复制）；保存后自动更新加密备份。</span>
+            </div>
+          </div>
+          <label class="frow">
+            <span>邮箱</span>
+            <input
+              v-model="credForm.email"
+              class="x-input"
+              autocomplete="off"
+              spellcheck="false"
+              :placeholder="credForm.emailMasked ? `TikTok 只给脱敏串 ${credForm.emailMasked}，完整邮箱请填这里` : '完整邮箱（TikTok 只给脱敏串，这里填全的）'"
+            />
+          </label>
+          <label class="frow">
+            <span>邮箱密码</span>
+            <input v-model="credForm.emailPassword" class="x-input" autocomplete="off" spellcheck="false" placeholder="收验证码用，可留空" />
+          </label>
+          <label class="frow">
+            <span>2FA 密钥</span>
+            <input v-model="credForm.totpSecret" class="x-input" autocomplete="off" spellcheck="false" placeholder="base32 密钥，可留空（有它才能在异地重登）" />
+          </label>
+          <label class="frow">
+            <span>地区</span>
+            <input v-model="credForm.region" class="x-input" maxlength="6" placeholder="gb / us（TikTok 不提供，只能手填）" />
+          </label>
+          <p class="fhint">留空的格子会被清空（这是编辑器语义）；只想改密码，其它格保持原样不要动。</p>
+        </div>
+        <div class="pf">
+          <span class="x-tip">{{ credForm.hint || '保存只写本地凭据文件 + 加密备份，不会登录、不动 cookie。' }}</span>
+          <span class="x-spacer"></span>
+          <button class="x-mini" :disabled="credSaving" @click="credForm = null">取消</button>
+          <button class="x-btn" :disabled="credSaving" @click="saveCred">{{ credSaving ? '保存中…' : '保存' }}</button>
         </div>
       </div>
     </div>
@@ -457,11 +552,14 @@ async function loadAvatars(rows) {
   let changed = false;
   for (const r of rows) {
     if (!r.hasAvatar) continue;
-    if (next[r.env] && next[r.env + ':at'] === r.avatarAt) continue;
+    // 缓存键 = 内容哈希（没有哈希才退回时间戳）。只看时间戳时，
+    // 「同一张文件名、内容被换成另一张」不会触发重载，界面就会一直显示旧头像。
+    const key = r.avatarSha ? `sha:${r.avatarSha}` : `at:${r.avatarAt || ''}`;
+    if (next[r.env] && next[r.env + ':at'] === key) continue;
     const uri = await window.xnowpost.getAccountAvatar(r.env);
     if (uri) {
       next[r.env] = uri;
-      next[r.env + ':at'] = r.avatarAt;
+      next[r.env + ':at'] = key;
       changed = true;
     }
   }
@@ -512,6 +610,35 @@ function fmtPublishAt(iso) {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// ── 资料新鲜度（用户 2026-10-20 口径：「资料抓的不准，不及时」）─────────────
+// 光有数字不够，得让人一眼看出「这是什么时候抓的」。
+function profileAgeHours(iso) {
+  if (!iso) return Infinity;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return Infinity;
+  return (Date.now() - t) / 3600000;
+}
+function ageText(iso) {
+  const h = profileAgeHours(iso);
+  if (!Number.isFinite(h)) return '';
+  if (h < 1 / 60) return '刚刚';
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} 分钟前`;
+  if (h < 24) return `${Math.round(h)} 小时前`;
+  return `${Math.round(h / 24)} 天前`;
+}
+function shortTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function fullTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString('zh-CN', { hour12: false });
+}
+
 function publishTitle(env) {
   const t = publishTimes.value[env];
   if (!t) return '';
@@ -532,7 +659,14 @@ async function pickFile() {
     lines.value = [];
     push(`  ✅ 已导入 ${r.count} 个账号的凭据（用户名/密码/邮箱/地区）`);
     for (const m of r.mapping || []) push(`     ${m.env} → @${m.username}`);
-    push('  提示：这一步只读文件、不会重新登录；要登录请点「批量登录」。');
+    // 新号会自动拿 TK11、TK12…（按用户名对齐，不会覆盖已有环境）——这点必须说清楚，
+    // 否则用户会以为「导入就得把 10 个老号一起写进文件」。
+    const fresh = (r.mapping || []).filter((m) => Number(String(m.env).replace(/\D/g, '')) > (list.value?.length || 0));
+    if (fresh.length) {
+      push(`  🆕 ${fresh.length} 个新账号将用新环境：${fresh.map((m) => m.env).join(', ')}（点「批量登录」时自动创建）`);
+    }
+    push('  提示：老账号留在原环境、新账号自动排新环境；这一步只读文件、不会登录，要登录请点「批量登录」。');
+    push(`  📁 用的是这个文件：${p}（下次点「导入账号文件」还会打开这个目录）`);
     await refresh(true);
   } else {
     drawerOpen.value = true;
@@ -556,11 +690,108 @@ async function launch(row, action) {
   refresh(true);
 }
 
+/**
+ * 备份账号文件：收件箱（安装目录\import\accounts）里的 txt/csv 复制到数据目录并打包 zip。
+ * 为什么要它：文件放安装目录是用户要求的（好找），代价是**卸载/重装会跟着删掉**；
+ * 这个按钮一键留底，zip 在 %APPDATA%\xnowpost\backups\account-files\ 下，重装后随便挪回去。
+ */
+async function backupFiles() {
+  if (!hasIpc) return;
+  drawerOpen.value = true;
+  push('  正在备份收件箱里的账号文件…');
+  try {
+    const r = await window.xnowpost.backupAccountFiles();
+    if (!r.ok) {
+      push(`  ❌ ${r.message || '备份失败'}`);
+      return;
+    }
+    push(`  ✅ 已备份 ${r.count} 个账号文件（${(r.bytes / 1024).toFixed(1)} KB）`);
+    push(`  目录：${r.dir}`);
+    if (r.zip) push(`  压缩包：${r.zip}`);
+    else push('  ⚠️ 压缩包没生成（目录里的副本还在，可以直接拷走）');
+    push('  提示：这个备份**不含**密码/邮箱（那些在 data\\env-accounts.json 里），要连凭据一起备份请单独拷那个文件。');
+  } catch (e) {
+    push(`  ❌ ${e.message}`);
+  }
+}
+
+/**
+ * 凭据编辑弹窗（点密码格里的 ✎ / 未导入的「+ 添加」）。
+ * 目的：用户 2026-10-24「不能有按钮添加密码吗」—— 不再要求手写 txt 文件。
+ * 保存只写本地凭据文件（+ 自动重写加密备份），**不登录、不动 cookie**。
+ */
+async function openCred(row) {
+  // 邮箱要分清「完整邮箱」和 TikTok 给的脱敏串（k***e@outlook.com）：
+  // 脱敏串只当提示（placeholder），**绝不能预填进输入框** —— 否则一保存就把脱敏串当成真邮箱存下来。
+  const mail = String(row.email || '');
+  const masked = mail.includes('*') ? mail : '';
+  credForm.value = {
+    env: row.env,
+    username: row.username || '',
+    password: row.password || '',
+    email: masked ? '' : mail,
+    emailMasked: masked,
+    emailPassword: row.emailPassword || '',
+    totpSecret: row.totpSecret || '',
+    region: row.region || '',
+    showPwd: !row.password, // 没密码时直接显示输入框内容，省一次点击
+  };
+}
+
+async function saveCred() {
+  const f = credForm.value;
+  if (!f || credSaving.value) return;
+  credSaving.value = true;
+  try {
+    const r = await window.xnowpost.saveAccountCredentials({
+      env: f.env,
+      username: f.username,
+      password: f.password,
+      email: f.email,
+      emailPassword: f.emailPassword,
+      totpSecret: f.totpSecret,
+      region: f.region,
+    });
+    if (!r || !r.ok) {
+      notify(`保存失败：${(r && r.message) || '未知错误'}`);
+      return;
+    }
+    drawerOpen.value = true;
+    push(`  ✅ ${f.env} 凭据已保存${f.password ? `（密码 ${f.password.length} 位）` : '（密码为空）'}`);
+    if (r.backup && r.backup.ok) push(`  🔐 加密备份已更新：${r.backup.fileCount} 个文件`);
+    else push('  ⚠️ 加密备份没更新成功（凭据已写盘，备份下次再补）');
+    credForm.value = null;
+    await refresh(true);
+  } catch (e) {
+    notify(`保存失败：${e.message}`);
+  } finally {
+    credSaving.value = false;
+  }
+}
+
+/** 一键备份凭据（加密包，系统 DPAPI） */
+async function backupSecrets() {
+  if (!hasIpc) return;
+  drawerOpen.value = true;
+  push('  正在写凭据加密包…');
+  try {
+    const r = await window.xnowpost.backupAccountSecrets();
+    if (!r || !r.ok) {
+      push(`  ❌ 凭据备份失败：${(r && (r.reason || r.message)) || '未知原因'}`);
+      return;
+    }
+    push(`  ✅ 凭据备份完成：${r.fileCount} 个文件`);
+    push(`  文件：${r.file}`);
+    push(`  规则：每天一份、留最近 ${r.keepDays} 天；启动时若发现凭据文件丢了/坏了会自动从这里恢复。`);
+  } catch (e) {
+    push(`  ❌ ${e.message}`);
+  }
+}
+
 async function backupAll() {
   busy.value = true;
   drawerOpen.value = true;
-  push('  正在备份 cookie…');
-  const r = await window.xnowpost.backupAccountCookies(list.value.map((x) => x.env));
+  push('  正在备份 cookie…');  const r = await window.xnowpost.backupAccountCookies(list.value.map((x) => x.env));
   const ok = (r.out || []).filter((x) => x.ok).length;
   const bad = (r.out || []).filter((x) => !x.ok).length;
   push(`  ${bad ? '⚠️' : '✅'} cookie 备份完成：成功 ${ok} 个${bad ? `，失败 ${bad} 个` : ''}`);
@@ -608,24 +839,60 @@ async function startLogin(only) {
   } finally {
     running.value = false;
     await refresh(true);
-    // 刚登录完的号通常还没有资料 → 顺手补一次（只补没有/过期的）
-    if (list.value.some((r) => !r.profileAt)) syncProfiles(undefined, true);
+    // 同 startQrLogin：**不要**自动抓全部资料（那会开 10 个环境跑 5~6 分钟，属于没下指令的动作）。
+    // 新号缺资料就提示一句，由用户自己点行尾「抓资料」。
+    if (list.value.some((r) => !r.profileAt)) {
+      push('  提示：刚登录的号还缺头像/粉丝等资料，需要就点行尾「抓资料」（只抓那一个环境）。');
+    }
   }
 }
 
-async function syncProfiles(only, staleAuto = false) {
+
+/**
+ * 扫码加号：没有账号密码的号只能手机扫码。点一次 = 建/用一个空号环境（TK11…）→
+ * 浏览器弹出二维码 → 你手机扫 → 扫完自动读用户名、写配置、备份 cookie、关窗口。
+ * 一次加多个就多点几次（登录任务同时只允许一个在跑）。
+ */
+async function startQrLogin() {
+  if (!hasIpc || busyAll.value) return;
+  taskKind.value = 'login';
+  running.value = true;
+  lines.value = [];
+  drawerOpen.value = true;
+  push('  扫码加号：正在打开环境并生成二维码…');
+  push('  提示：浏览器窗口会自动顶到最前，手机 TikTok → 我 → 右上角扫码；');
+  push('        不想加了就直接关掉那个浏览器窗口（会当失败处理，不会占用环境）。');
+  try {
+    const r = await window.xnowpost.runAccountLogin({ qr: true, qrCount: 1, gap: 60 });
+    if (!r.ok && r.message) push(`  ❌ ${r.message}`);
+    else push(`  进程结束（退出码 ${r.code}）`);
+  } catch (e) {
+    push(`  ❌ ${e.message}`);
+  } finally {
+    running.value = false;
+    await refresh(true);
+    // 注意：这里**不要**自动去「抓全部资料」。
+    // v1.6.76 曾在这里 `if (list.value.some(r => !r.profileAt)) syncProfiles()`，
+    // 结果用户扫完码，程序自己把 10 个环境全开了一遍（每个 30 秒、窗口一个个闪），
+    // 用户根本没下过这个指令（2026-10-24 明确反问「为什么又拉取全部账号呀，我有下指令吗」）。
+    // 用户名登录流程自己已经读到了（/tiktokstudio 的 @ 链接），缺的只是头像/粉丝数，
+    // 需要就让用户自己点行尾「抓资料」。
+    if (list.value.some((r) => !r.profileAt)) {
+      push('  提示：新号还缺头像/粉丝/获赞等资料，需要就点行尾「抓资料」（只抓那一个环境）。');
+    }
+  }
+}
+
+async function syncProfiles(only) {
   if (!hasIpc || busyAll.value) return;
   taskKind.value = 'profile';
   syncing.value = true;
-  if (!staleAuto) {
-    lines.value = [];
-    drawerOpen.value = true;
-  }
+      lines.value = [];
+      drawerOpen.value = true;
   push('  正在拉取账号资料（头像/粉丝/关注/赞）…');
   try {
     const r = await window.xnowpost.syncAccountProfiles({
       only: typeof only === 'string' ? only : undefined,
-      stale: staleAuto ? 24 : undefined,
       gap: 3,
     });
     if (!r.ok && r.message) push(`  ❌ ${r.message}`);
@@ -647,6 +914,9 @@ async function cancelTask() {
 const selected = ref([]);
 const editForm = ref(null); // { env, username, name, newUsername, bio, avatar, avatarPreview, hint }
 const batchForm = ref(null); // { nameTpl, bioTpl, avatar, avatarPreview }
+// 凭据编辑（密码/邮箱/邮箱密码/2FA/地区）：点密码格里的 ✎ 打开
+const credForm = ref(null); // { env, username, password, email, emailPassword, totpSecret, region, showPwd }
+const credSaving = ref(false);
 
 const allChecked = computed(() => filtered.value.length > 0 && filtered.value.every((r) => selected.value.includes(r.env)));
 const someChecked = computed(() => filtered.value.some((r) => selected.value.includes(r.env)));
@@ -831,6 +1101,7 @@ onMounted(() => {
   }, POLL_MS);
 });
 
+
 onUnmounted(() => {
   if (offProgress) offProgress();
   if (offPublishTimes) offPublishTimes();
@@ -859,11 +1130,19 @@ onUnmounted(() => {
 .kpi .v.warn { color: var(--warn); }
 
 .list-card { display: flex; flex-direction: column; }
-.list-card .x-card-head { gap: 8px; }
+.list-card .x-card-head { gap: 8px; flex-wrap: wrap; row-gap: 6px; }
+/* 按钮一多就会把「账号列表」「自动同步」挤成竖排 —— 标题/提示和按钮都不许被压缩 */
+.list-card .x-card-head h2,
+.list-card .x-card-head .x-ic,
+.list-card .x-card-head .live-hint,
+.list-card .x-card-head > button { flex: 0 0 auto; white-space: nowrap; }
+/* 备份按钮成组：跟随整行一起换行，不会被拆散 */
+.head-tools { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; margin-left: 2px; }
+.head-tools .x-mini { white-space: nowrap; }
 .search { width: 180px; height: 30px; flex: 0 0 180px; font-size: 12px; }
 .live-hint {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11px; color: var(--text-3); margin-right: 2px;
+  font-size: 11px; color: var(--text-3); margin-right: 2px; white-space: nowrap;
 }
 
 table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
@@ -915,6 +1194,23 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 .eye:hover { color: var(--brand); }
 .eye svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.7; }
 .eye.all { margin-left: 4px; vertical-align: -2px; }
+/* 没有密码时那一格的「+ 添加」按钮（比一行灰字「未导入」明确：这里能点） */
+.add-cred {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--brand);
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--brand) 45%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.add-cred:hover { background: color-mix(in srgb, var(--brand) 12%, transparent); }
+.add-cred svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 2; }
+.cred-user { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--text-3); font-family: var(--font-mono); }
 
 .toast {
   position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
@@ -924,9 +1220,16 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.counts { display: flex; align-items: center; gap: 3px; font-family: var(--font-mono); font-size: 11px; color: var(--text-2); }
-.counts.mini { gap: 2px; font-size: 9.5px; color: var(--text-3); flex: 0 0 auto; margin-left: 8px; }
+.counts { display: flex; align-items: center; gap: 3px; font-family: var(--font-mono); font-size: 11px; color: var(--text-2); }.counts.mini { gap: 2px; font-size: 9.5px; color: var(--text-3); flex: 0 0 auto; margin-left: 8px; }
 .counts i { color: var(--text-3); font-style: normal; opacity: 0.6; }
+/* 资料新鲜度 + 「平台把头像换回了」标记（2026-10-20 用户报「资料不准、不及时」） */
+.age.mini { margin-left: 8px; font-size: 9.5px; color: var(--text-3); flex: 0 0 auto; }
+.age.mini.stale { color: var(--warn); }
+.rev-badge {
+  margin-left: 8px; padding: 0 5px; border-radius: 4px; font-size: 9.5px; line-height: 15px;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 34%, transparent); flex: 0 0 auto; cursor: help;
+}
 .muted { font-size: 11.5px; color: var(--text-3); }
 
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }

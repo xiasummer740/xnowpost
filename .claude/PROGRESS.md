@@ -1,5 +1,861 @@
 # 接力开发 — 新对话从这里开始
 
+## 最新：2Z（2026-10-29 01:00，v1.8.4 之后）「过一会就闪一下」= 老 SSH 隧道计划任务
+
+用户：「怎么过一会就闪一下，是这个软件的问题吗」→「像 powershell 或者 cmd 窗口」
+
+**不是本软件的问题。** 元凶是计划任务 **`XNOW tunnel 守护`**（每 **5 分钟**一次）：
+它跑 `powershell -WindowStyle Hidden -File C:\Users\Administrator\.ssh\start-tunnel.ps1`，
+维护 `127.0.0.1:1070 → 192.168.100.1 软路由 xray socks` 的 SSH 隧道（relay 时代的东西），
+脚本里还会各起一个 `ssh.exe` 和 `curl.exe`。`-WindowStyle Hidden` 是**窗口建好之后**才生效，
+所以黑窗先闪一下；一次触发能闪两三下。内置 xray 内核走 1080–1109 直连之后，1070 完全没人用。
+
+**处置（本机）**：`Disable-ScheduledTask` + `Stop-ScheduledTask XNOW tunnel 守护`，
+杀掉残留 `ssh.exe`（PID 67388）。验收：
+- 连续 **7 分钟**零 `powershell/cmd/conhost/ssh` 新进程（本该在 00:56、01:01 各触发一次，都没再出现）；
+- 1070 监听数 0、ssh 进程 0；
+- `curl -x socks5h://127.0.0.1:1080 api.ipify.org` → `69.63.205.35`，**代理照常**。
+
+**顺带审计**：XNOWPost 所有子进程都带 `windowsHide: true`
+（`main.js` L842 守护 / L4701 手动启服务 / L4866 标题看护 / L3936 打 zip / `execFileP`），
+应用自身不会弹控制台。以后看到黑窗先查计划任务和第三方软件。
+
+⚠️ 给新机器部署时也要检查这两个任务：`XNOW relay 守护`、`XNOW tunnel 守护` 都必须是 **Disabled**。
+
+## 最新：2Y（2026-10-29 00:50，v1.8.4）点「启动」看不到浏览器窗口 = 浏览器被无头启动
+
+用户：「我没看到你打开浏览器窗口啊，是不是 FoxProfile 指纹浏览器.lnk 没用复刻完啊，现在功能还不全吗」
+
+**根因**：为了让"点 × 不会关掉后端"，FoxProfile 跑成 `FOXPROFILE_HEADLESS=1`；
+但那个变量在 FoxProfile 里**同时**决定浏览器是否无窗口 → camoufox 带 `-headless` 启动。
+进程在跑、FoxProfile 的 `/page/screenshot` 还能出图，所以前面几轮"验证通过"全是假象 ——
+**用户桌面上一片安静**。连带症状：TikTok 首页视频一直报
+`We're having trouble playing this video`（MediaError 4），**不是网络问题**（同节点下公开 mp4 能播）。
+
+**修了三处**：
+1. FoxProfile `src/core/config.py`：拆成 `FOXPROFILE_HEADLESS`（只管 Flet 界面）+
+   `FOXPROFILE_BROWSER_HEADLESS`（管浏览器窗口），不显式指定时沿用老语义（server.py 不受影响）；
+   `scripts/foxprofile-guard.ps1` 启动时显式传 `FOXPROFILE_BROWSER_HEADLESS=0`。
+2. 应用自愈 `ensureFoxProfileHeaded()`：读 `/api/v1/info` 的 `headless`，为 true 且没有环境在跑时
+   自动重启服务纠正（启动后 6 秒 + 每次 `envs:start` 前）；有环境在跑就不动。
+   实测：故意把服务起成无头 → 应用启动 → **12 秒内**日志出现
+   `🔧 FoxProfile 处于"浏览器无窗口"模式…正在纠正` → `/info headless=false`。
+3. `envs:start` 不再"接口说成功就报成功"：回读 `/browser` 的 `running`，不在列表里就报失败。
+
+**验收证据（2026-10-29 00:49）**：环境页点「启动」→ `running:["TK01"]`、
+`mainWindowHandle ≠ 0`、标题 `TK01 · TikTok - Make Your Day — Camoufox`、
+窗口里 For You 视频正在播（`readyState 4`、`currentTime` 在走）、左上角登录态正常。
+抓图命令：`scripts\win-shot.ps1 -ProcName camoufox -Out output\tk01-final.png`。
+
+**教训（重要）**：以后验收"能不能打开浏览器"，必须同时满足 ①有窗口 ②没 `-headless`
+③视频能播 ④**抓窗口图**。只看 FoxProfile 的 `/page/screenshot` 会把无头当成正常。
+
+## 最新：2X（2026-10-29 00:30，v1.7.0–1.8.3）两个软件合成一个 + 内置代理内核，用户只粘一条节点
+
+用户口径三连：
+1. 「现在这个项目是两个软件结合使用的，用起来也比较麻烦，能整合成一个软件吗」→ 选了「只做 B：环境管理页」
+2. 「最终这个软件要给到其它用户使用，用户都是小白……出口 IP 和端口怎么弄，用户只有一个 vless:// 节点」
+3. 「我已经创建了一个节点，有地方可以配置测试给到软件吗……以后我要换网络的话，直接像这样换个节点就 OK 了，行吗」
+
+**结论：行，而且已经落地并实测通过。**
+
+### 做了什么
+- **FoxProfile 退成后台服务（headless）**：`E:\software\FoxProfile\src\main.py` 加
+  `FOXPROFILE_HEADLESS=1` 分支 —— 只跑 FastAPI，不起 Flet 窗口。
+  为什么：Flet 点 × = 后端整个退出（今天 23:41/23:55 两次全线挂就是这个），用户关窗口就把 11 个环境弄死。
+  `scripts/foxprofile-guard.ps1` 已改成默认 headless 启动 + 真流量探活（不再是"端口在监听"就算活）。
+- **新增「环境」页**（`/envs`，`BrowserEnvs.vue`）：11 个环境一行一个 ——
+  环境 / 账号 / 代理端口 / 时区·语言 / 登录态（读 cookies.sqlite，毫秒级）/ 状态 /
+  启动·停止·测出口·删除；右上「新建环境」（自动分配 1090 起的端口 + 自动统一窗口 1292×994）；
+  删除要手打环境名确认。后台服务或内核没跑时，页面顶部红条 +「启动」按钮（不再只报 502）。
+- **内置代理内核 xray**（`src/proxy/`，安装包自带 34MB `xray.exe`）：
+  - `node.js` 解析 vless/vmess/trojan/ss/socks5/http 分享链接 → `xray-config.js` 生成
+    30 条 socks 入口（1080–1109）+ 节点 outbound → `engine.js` 起停/探活/出口探测。
+  - `配置 → 网络节点`：粘链接 →「保存并测试」→ 绿色「出口 IP」。测出口 / 重启内核 / 清除节点。
+  - 启动时自动拉起内核；节点存在 `data/proxy-node.json`；日志 `logs/xray.log`（>5MB 轮转）。
+  - 单测 22 条：`proxy-node` / `proxy-xray-config` / `proxy-engine`。
+- **旧链路退役**：本机计划任务 `XNOW relay 守护` 已 Disabled、relay 进程已杀；
+  `proxy_relay.py + SSH + 软路由` 不再是必需（留档在 CLAUDE.md 历史段）。
+  `tk-login-batch.mjs` 的 `allocateProxy()` 改成只做端口体检，不再补 relay 配置。
+
+### 实测证据（2026-10-29）
+- 内核独立验证：`node scripts/_probe-engine.mjs "<链接>"` → 3 个端口全部 `出口 69.63.205.35`；
+  对照没开的 21089 → 如实报 `ECONNREFUSED`（不许把不通说成通）。
+- 界面切换节点：21666 号入站 → 38185 号入站（用户新建的「XNOWPost-专用」）
+  → `🔌 节点已生效：…38185 → 出口 69.63.205.35`，30 条端口全在监听，1080/1109 出口一致。
+- 环境页：11 个环境全部「已登录」、端口无「未监听」；TK01「启动」→ `✅ TK01 已启动`、
+  camoufox 进程起来、FoxProfile `/browser` 确认 running，随后「停止」→ running 清空。
+- 部署：`npm run verify` 634 通过 / 0 失败；1.8.3 打包 → robocopy → 重启后自动拉起内核。
+
+### 踩的坑
+1. **`startProxyEngine()` 写在 `setupIPC()` 内部**（v1.8.0）：`app.whenReady` 里调用直接
+   `ReferenceError`，被 Promise 链吞掉 → 内核没起来、界面和日志一个字都不报
+   （用户看到的是"浏览器全打不开"）。现在定义在模块级，异常写 `🔌 代理内核自动启动异常：…`。
+2. **`ensureRelayPort()` 会重启 relay 抢端口**：内核模式下必须彻底不调用，否则 1080–1109 被顶掉。
+3. **端口释放顺序**：先 `Disable-ScheduledTask` + `Stop-ScheduledTask` 再杀进程，
+   否则守护任务 60 秒后又把 relay 拉起来（实测杀完 2 秒就重生）。
+4. 节点描述别在 main.js 里拼第二份 —— 用 `src/proxy/node.js` 的 `describeNode`。
+
+### 还没做的（下一步优先级）
+1. **首次启动引导**：现在新用户要自己找到「配置 → 网络节点」。建议首页/环境页给一个
+   一次性的「粘节点」向导（3 步：粘 → 测 → 完成）。
+2. **一个号一个 IP**：现在一条节点全体共用出口。要拆就是「多条链接按环境顺序分配」，
+   `xray-config.js` 支持多 outbound + 分流规则，工作量中等。
+3. 小白版的界面瘦身：端口号、引擎型号（camoufox）、时区串这些对最终用户是噪音，
+   建议只在"高级"折叠区显示。
+4. 分发前要确认：安装包许可页放 `README-xray.txt`（MPL-2.0）。
+
+## 2D（2026-10-22 21:00）自动养号上线（v1.6.58–1.6.60）
+
+用户口径：「这么多账号，每天只发视频也不行，能不能自动养号：自动开浏览器、进首页刷视频、
+观看时长随机、可以点赞/关注/收藏/评论，到时间自动关、换下一个号」。确认过的参数：
+**评论先不开**、强度中等（每号 10 分钟）、**必须一个号一个号串行（只有 1 个出口 IP）**、
+**时间窗自己设**（所以做成了定时页里的「养号」模式）。
+
+- 新增 `src/warmup.js`（纯规则，15 条单测 `tests/unit/warmup.test.js`）：
+  `watchSec 8~25s`、`likes 2~4`、`favorites 0~2`、`follows 0~1`、`comments 0` 是**每号每次的硬上限**；
+  `shouldAct()` 概率 = 剩余额度 / 剩余视频数（让额度慢慢花掉，不在开头连点）；
+  `judgeWarmupRun()` 判「有没有真播」「翻页有没有生效」「动作有没有超预算」。
+- 新增 `scripts/tk-warmup.mjs`：开环境 → `/foryou` → 真实鼠标点开视频 → 校验
+  `video.currentTime` 在走 → 随机看 8~25 秒 → 少量点赞/收藏/关注（**点完读回 `aria-pressed`**）
+  → 点右侧「下一个」箭头翻页 → 到时关环境 → 歇 45~120 秒 → 下一个号。
+  证据写 `<数据目录>/data/warmup/<日期>-<HHMM>.json` + `data/warmup-log.jsonl`。
+- 调度器：`runJob()` 加 `job.mode === 'warmup'` 分支（`retryOnFail:false` —— 重跑等于重复点赞），
+  `TIMEOUTS.warmup = 45 分钟`；界面 `MODE_OPTIONS` 加「养号」，行内出现「10 分钟/号」下拉。
+- **实测**（TK01 真机）：3 分钟演练 = 9 条 9 种不同视频、122 秒真播；带动作 = 点赞 3 次全部
+  读回 `aria-pressed=true`；调度器自检闹钟 20:47 自动触发 → 5 分钟 → 16 条 210 秒 → `✅ 完成`。
+
+### 这一轮踩的三个坑（都写进代码注释了）
+1. **`window.scrollBy` 根本不换视频**（用户一眼看出来「我没看到你滑动刷视频」）：
+   For You 是固定播放器，翻页必须点 `[data-e2e="feed-navigation-next"]`（右侧向下箭头，40x40）。
+   翻页后还要比对「当前这条视频的指纹（作者+文案）」确认真的换了，否则同一条会被重复计数；
+   `judgeWarmupRun()` 里补了「看了 9 条只出现 1 种内容 → 翻页没生效」的判据。
+2. **`{...默认, ...opts}` 被 `undefined` 吃掉预算**：命令行没给 `--likes` 时传的是
+   `{likes: undefined}`，把默认 `[2,4]` 覆盖成 undefined → `pickInt` 退回 0 →
+   实跑日志「预算：赞≤0 藏≤0 关注≤0」，养号退化成纯看视频。现在 undefined/null 一律当没传。
+3. **首页 `<video>` 默认 `paused:true`**（Firefox 自动播放策略）：必须真实鼠标点一次卡片才会播；
+   `ensurePlaying()` 每 1.5 秒回读 `paused/currentTime`，暂停就点一下，最多 3 次。
+- 顺带把「Browser is still starting」的等待逻辑抽成 `launchAndWait()`（foxprofile.js），
+  发布/采集/抓资料三条路径共用一份 —— 之前只修在 `openFoxProfile` 上，
+  而 `tk-profile-sync` 走的是 `foxpw.openFoxPage`，那条路径其实没护栏。
+- 诚实口径：养号只能让账号"看起来像活人"，**不能保证解决 0 播放**；瓶颈更可能在
+  共用美国 IP / 设备指纹 / 推荐冷启动。别对用户承诺涨播放。
+
+
+### 2D 补充（v1.6.61–1.6.62）：改成「勾选账号 + 随机时长」
+用户第二轮口径：「一个账号一个账号设置比较麻烦，我选要养的账号，选随机养号时长，你按顺序一个个养」。
+- 定时页养号行的账号栏改成**多选勾选浮层**（`已选 N 个号` → 全选/清空 + 10 个勾选框），
+  存 `job.warmupAccounts`（逗号串），`job.account` 清空 —— 养号没有「发到哪个号」这回事。
+- 时长改成**区间随机**：`job.warmupMinutesMin/Max`（默认 8~15），脚本用
+  `planAccountMinutes()` **每个号各自抽一次**；调度器计算超时按
+  `账号数 × (最长时长 + 1.5 分) + 号间休息`，固定 45 分钟会把 10 个号的后半程直接掐掉。
+- 实测（21:04）：TK01 抽到 4 分钟 → 歇 94 秒 → TK02 抽到 3 分钟，2/2 成功、19 条、5 次动作。
+- 分组标题：整组都是养号时显示「养号队列（不发布）」，不再混进「未指定账号（仅生成，不发布）」。
+### 2D 再补（v1.6.63–1.6.64）：模式按钮一律 4 个，切换必须可逆
+用户口径（2026-10-22 22:25）：「添加闹钟应该都是一样的，选择的功能不一样，就变换不一样，对吧」。
+- v1.6.63 我一度把「养号」从有账号的行上藏掉（怕误伤发布），**这是不一致的**：同一行应该永远是
+  视频+图文 / 仅视频 / 仅图文 / 养号 四个按钮，选完再变下面的控件。v1.6.64 已还原。
+- 改成**可逆切换**（`setMode()`）：
+  - 切到养号：把这一行原来的账号带进 `warmupAccounts`（如 01 → 「已选 1 个号」），
+    没有账号就默认全选；同时把账号存进 `_prevAccount`（`_` 开头不写盘）。
+  - 切回发布：`account` 还回去（跨重启也能还：名单里只有 1 个号就用它）。
+    实测 08:30/01 → 养号（已选 1 个号）→ 仅视频，账号 01 完整回到「账号 01」分组。
+- 用户自己的实跑（22:17 那个 `01,02 / 3~5 分钟` 闹钟）：`👥 养号排队 2 个号` →
+  `🎲 TK01 3 分钟` + `🎲 TK02 3 分钟` → **2/2 成功**、17 条、234 秒、4 次动作、`✅ 养号 完成`。
+## 2V（2026-10-24 16:14，v1.6.90–1.6.91）「开始采集」点了没反应 = 响应式代理送不进 IPC
+
+### 用户报的现象
+定时页 → 采集面板 → 点「开始采集」，**一点动静都没有**（按钮不进入"采集中…"、日志里连请求都没有）。
+我自己按坐标点也一样，于是先加"看得见的失败"，一次就抓到原因。
+
+### 根因
+`Schedule.vue` 把 `collectSelection.value`（Vue 的**响应式代理数组**）直接丢给
+`ipcRenderer.invoke('collect:run', ...)` → Electron 结构克隆拒绝 Proxy：
+`An object could not be cloned.` → 被 `catch` 吞掉只写了 `console.error` → 界面 0 反馈。
+修法：`const accounts = [...collectSelection.value].map(String)` 之后才传。
+同类坑以前在「保存全部」踩过一次（`_dropStyle` 响应式对象），当时的注释只写在保存那一段，
+**采集这一段没跟着改** —— 以后凡是往 IPC 传数组/对象，一律先转纯数据。
+
+### 顺手补的反馈（这是用户真正缺的东西）
+- 采集面板底部新增一行状态：`正在采集 N 个账号…（逐个开环境，约 2–6 分钟，别关应用）` /
+  `✅ 采集完成，去「日报」看数据` / `❌ 采集失败：<原因>` / `❌ 采集没能启动：<原因>`。
+- 接口缺失（preload 里没有 `runCollect`）时明确报「当前版本没有接上采集接口」，
+  不再静默；未勾选账号时提示「先勾选账号或点全选」。
+- 有运行中任务时按钮禁用（防连点）。
+
+### 验收
+v1.6.91 部署后实点：按钮变「采集中…」+ 出现「取消采集」，日志 `📋 将采集 10 个账号: 01…10`、
+`📊 采集账号: 01 (tiktok)`，采集子进程（node collector）已起来。
+
+## 2U（2026-10-24 15:55，v1.6.86–1.6.89）凭据能直接改 + 凭据加密备份一键更新
+
+### 用户口径
+「你还需要我自己去改文件吗，不能有按钮添加密码，然后一键更新备份账号密码信息吗」→
+不许再让人手写 txt，也不许再让人自己去拷文件。
+
+### 界面里直接改凭据（不用再造文件）
+- 密码格：有密码时多一个 ✎（改），没密码时是一个粉色 `+ 添加` 按钮 —— 都在密码列里点。
+- 弹窗（右侧面板，复用 `.mask/.panel`）字段：密码（带显示/隐藏）、邮箱、邮箱密码、2FA 密钥、地区。
+  IPC `accounts:saveCredentials` 写 `data/env-accounts.json`，**语义是编辑器**：留空的格子会被清空。
+- **脱敏邮箱绝不能预填**：TK11 这种没本地邮箱的号，列表里的 email 来自 TikTok 接口的 `k***e@outlook.com`，
+  一预填、一保存就会把脱敏串当成真邮箱存下来。现在把脱敏串放进 placeholder 提示，输入框留空。
+- `accounts:list` 以前**不返回 `totpSecret`**，弹窗一保存就会把 2FA 密钥清空 —— 已补上（只有写没有读的坑）。
+
+### 一键备份凭据（加密，不落明文）
+项目里本来就有 `src/secrets-backup.js` + `autoBackupSecrets()`（DPAPI 加密，`backups/secrets/<日期>/secrets.enc`，
+留 14 天，**启动时发现凭据文件丢了/坏了会自动恢复**），但只有两个触发点：启动 / 备份 cookie。
+现在：**导入账号文件**、**界面改凭据**都会立刻重写当天加密包；再加一个「备份凭据」按钮手动触发。
+实测：改保存后 `secrets.enc` 在同一秒被重写，抽屉报「加密备份已更新：5 个文件」。
+
+### 顺手修的
+- 账号文件解析以前 `.filter(s => s !== '')`，**空列会被吃掉** → `tk.ins｜密码｜｜｜｜gb` 里的 `gb`
+  会跑到「邮箱」那格。现在按位置保留空列。
+- 工具栏加到 7 个按钮后换行，把「账号列表」「自动同步」挤成竖排；三个备份按钮收进 `.head-tools` 成组换行。
+
+### 我踩的坑（第二次同类错误）
+验证按钮又是**照着上一版截图量坐标**点，结果点在「抓全部资料」上（11 个环境全开），
+还有一次点在搜索框上。**加过按钮/改过布局，必须重新截图量坐标再点。**
+端到端测试用的假密码 `Zz9test123`（SendKeys 还把它打成 `Z在test23`）已还原成空。
+
+## 2T（2026-10-24 15:20，v1.6.82–1.6.84）账号文件收件箱挪到安装目录 + 一键备份
+
+### 用户口径
+「位置放在安装目录下面」（不要 `%APPDATA%`）→「（备份按钮）可以」。
+
+### 收件箱：`E:\software\XNOWPost\import\accounts`
+- `electron/main.js` 新增 `inboxDir()`：先试 `<安装目录>\import\accounts`，用**写探针**确认可写，
+  写不进才退回数据目录（装在 Program Files 的情况），结果缓存。
+- 「导入账号文件」的 `showOpenDialog` 终于带 `defaultPath` 了（以前没有 → 每次停在莫名其妙的地方）：
+  默认收件箱，选过别处就记住（`data/last-import.json`），导入成功后抽屉里打印完整文件路径。
+- ⚠️ **部署命令必须带 `/XD`**，否则 `/MIR` 会把用户放进来的账号 txt 删掉：
+  `robocopy release\win-unpacked E:\software\XNOWPost /MIR /XD "E:\software\XNOWPost\import"`
+
+### 「备份账号文件」按钮（v1.6.84）
+`accounts:backupFiles`：收件箱里所有 `.txt/.csv`（含 `done/` 子目录）→
+`%APPDATA%\xnowpost\backups\account-files\<日期_时间>\`，再用系统 `Compress-Archive`
+打一个同名 zip（不引新依赖）。实测：1 个文件 → 目录 + 1.1 KB zip，`Expand-Archive` 解开正常、10 行。
+**不含密码/邮箱**（那些在 `data\env-accounts.json`），抽屉里那句话是故意写的。
+
+### 顺手修掉的
+- 导入两列文件（只有用户名+密码）以前会把已存的**完整邮箱清空**（TK01–TK10 全中招），
+  现在 `email/emailPassword` 也按「文件里没给就保留原值」处理（和 `region/totpSecret` 一致）。
+
+### 我这一轮自己踩的坑
+用 `win-shot.ps1 -ClickX` 验证按钮时**按旧截图的坐标点**，正好落在「抓全部资料」上 ——
+又一次把 11 个环境全开了（用户上一轮刚质问过这事）。已立刻杀进程 + `POST /browser/TK01/stop` 收尾。
+**教训：加了新按钮，工具栏整体右移，验证前必须重新截图量坐标；点之前先确认那个位置现在是什么。**
+
+## 2S（2026-10-24 14:50，v1.6.80）扫码加号实测成功；顺手拆掉「自动抓全部资料」
+
+### 用户扫码结果（第一次真机验证通过）
+`--qr` 在 14:41 建出 TK11 → 14:42:58 报告 `✅ 成功 1/1`、用时 101 秒、`自动新建环境：TK11`：
+- `env-accounts.json` 写入 `TK11: { username: 'tk.ins' }`，`config/user.json` 变成 **11 条**
+  （`{name:'11', bitEnvId:'TK11', username:'tk.ins'}`），账号页显示 `TK11 / tk.ins / 已登录 / 127.0.0.1:1090`。
+- 登录态真实：`TK11/cookies.sqlite` 里 `sessionid / sessionid_ss / sid_tt / sid_guard` 四条都在。
+- 密码显示「未导入」是正常的（扫码号本来就没有密码，靠 cookie）。
+
+### 这一轮我犯的错（用户当面质问：「为什么又拉取全部账号呀，我有下指令吗」）
+v1.6.76 我在 `Accounts.vue` 里写了两处
+`if (list.value.some(r => !r.profileAt)) syncProfiles()`（扫码后 / 密码登录后），
+本意是"新号没资料顺手补一下"。实际后果：新号必然没有 `profileAt` →
+**程序自己把 10 个环境全开了一遍**（每个约 30 秒，窗口一个个闪，5~6 分钟），
+用户完全没下过这个指令。已全部删除，改成抽屉里一句提示：
+`提示：新号还缺头像/粉丝等资料，需要就点行尾「抓资料」（只抓那一个环境）`。
+**口径：只做用户点的那个动作。补资料是一次要开 10 个浏览器的重活，永远由用户自己点。**
+
+### 顺带修掉的两个真问题
+1. **cookie 备份没落盘**：扫码成功那次 `foxExportCookies` 失败，只在抽屉里留一句警告
+   （日志不落盘 → 事后查不到），`backups/cookies/2026-10-24/TK11.json` 根本没生成。
+   现在改成**重试 3 次、间隔 3 秒**，成功打印条数，全失败才报 `❌ …（登录成功但要手动补备份）`。
+   已手工补上这次的备份（`%APPDATA%\xnowpost\backups\cookies\2026-10-24\TK11.json`，27 条 / 10.1 KB）。
+2. **创建后的第一次启动，Camoufox 会改写指纹**：创建时写进去的 `1292x994` 被 Camoufox 自己的
+   "coherence" 覆盖成 `avail 1280x976 / screen 1280x1024`（窗口 1296x1000，跟老号差几像素）。
+   现在 `loginEnvQr` 的 `finally` 里 **关窗后再 `unifyScreen(env)` 一次**，下次开就是标准尺寸；
+   本次已把 TK11 改回 `1292x994 / 1292x1024`（备份 `_screen-backup-2026-10-24064600`）。
+
+## 2R（2026-10-24 14:40，v1.6.79）新环境一条一个代理端口，1090 起顺序递增
+
+用户口径（2026-10-24 14:33）：「肯定不能共用一个端口呀，按顺序递增嘛」
+
+### 原来错在哪
+`tk-login-batch.mjs` 新建环境时 `proxy: template.proxy` —— 照抄模板环境（TK01）的
+`socks5://127.0.0.1:1080`，于是 **TK11 和 TK01 共用同一条本地中继**。功能上能通（都出同一个 IP），
+但两条隧道挤一个端口，一条挂了另一条跟着挂，而且端口和"一条环境一条通道"的语义不符。
+
+### 现在
+- `src/collector/proxy-ports.js`（新，8 条单测 `tests/unit/proxy-ports.test.js`）：
+  `nextRelayPort(profiles)` = `max(已用端口 ∪ {1089}) + 1`（不低于 1090，空号不回收）；
+  `ensureRelayPort(port)` 缺端口就补进 `relay_config.10ports.json` 并重启 relay；
+  `localRelayPort()` 只认 `socks5://127.0.0.1:PORT`（带认证的上游地址不会被误判）。
+- `scripts/tk-login-batch.mjs`：两处新建环境（扫码模式 + 密码模式）都改成
+  `const proxy = await allocateProxy()`，日志会打 `➕ 已新建环境 TK12（代理 socks5://127.0.0.1:1091…）`。
+- relay 配置已从 1080–1089 扩到 **1080–1109（30 条）**，够再加 20 个号；以后真超了
+  `allocateProxy()` 会自己补配置并重启 relay（会短暂断所有隧道，那一刻本来没有浏览器在跑）。
+- `relay-keepalive.ps1` 改成**从配置读端口清单**（原来写死 1080..1089 且要求"10 个全通"），
+  日志变成 `端口 30/30 正常`；已重启计划任务 `XNOW relay 守护` 生效。
+- TK11 已 PATCH 到自己的端口：`socks5://127.0.0.1:1090`。现在 11 个环境 11 个端口，无重复。
+  实测 `curl --socks5-hostname 127.0.0.1:1090 api.ipify.org` = `64.186.242.99`（与上游同 IP）。
+
+### 踩到的坑（务必记住）
+**别按「监听端口数 = 0」去杀 proxy_relay**：venv 的 `pythonw.exe` 是**父进程**（不监听任何端口），
+真正的 30 个监听在它 spawn 的系统 python 子进程里。我按"0 个端口"判空跑，把父子两个一起杀了，
+1080–1109 瞬间全断（靠 keepalive 和自己手动重启救回来）。
+要判断 relay 死活，**查端口**（`Get-NetTCPConnection -LocalPort 1080 -State Listen`），不要查进程。
+- 另一个教训：这一轮我用 PowerShell 做文件字符串替换时把 `[System.IO.File]` 打成了 `[String.IO.File]`，
+  `$t` 变成 null 后 `WriteAllText` 把 `proxy-ports.js` 清空了（0 行）。**改文件用编辑工具，不要用 PS 串联。**
+## 2Q（2026-10-24 14:30，v1.6.77–1.6.78）新环境窗口比老号大一圈：指纹屏幕没统一
+
+用户口径（2026-10-24 14:23）：「扫码加号 浏览器窗口跟其它的不一样吗，怎么这么大」
+
+### 原因
+Camoufox 的**窗口原生尺寸 = 指纹里的 `screen.availWidth/availHeight`**（10-18 就实测过）。
+老 10 个环境 10-18 用 `scripts/set-uniform-screen-size.mjs` 统一成 avail `1292x994` / screen `1292x1024`，
+而**新建环境**（TK11）拿到的是 FoxProfile 默认指纹 `1920x1080` → 窗口 1920x1032，视觉上大一圈。
+（实测对比：TK01/TK10 指纹 `screen=1292x1024`，TK11 是 `1920x1080`。）
+
+### 改法（一份实现）
+- 新增 `src/collector/uniform-screen.js`：`applyUniformScreen(env)` / `applyUniformScreenToAll()`，
+  写 `<camoufox_data>/<env>/fingerprint.json` 的 screen/matchMedia/window + `window.json`。
+- `scripts/set-uniform-screen-size.mjs` 改成它的 CLI（新增 `--only TK11`，只改新环境时用）。
+- `scripts/tk-login-batch.mjs`：**两个新建环境的地方**建完立刻 `unifyScreen(env)`
+  （扫码模式 + 密码模式），日志 `🖥️ TK11 窗口尺寸已统一：avail 1920x1032 / screen 1920x1080 → avail 1292x994 / screen 1292x1024`。
+  **必须紧跟在建完之后、开浏览器之前**：指纹是启动时读的，晚一步白改。
+- 已把现有的 TK11 原地改好（备份 `_screen-backup-2026-10-24062405`），老 10 个没动。
+
+### 顺带修掉的两个坑
+1. **空环境会一直被跳过**：`--qr` 原来只按「状态文件里没登记的空号」算，
+   上次扫码中途关窗留下的 TK11（建出来了但没登记）不算空号 → 再点一次会新建 TK12，TK11 永远没人用。
+   现在**先捡「已建出来但没登记账号」的环境**（按编号从小到大），不够才分配新号。
+   演练确认：现在点「扫码加号」会直接用 TK11。
+2. 记录待办：新环境照抄 TK01 的代理 `socks5://127.0.0.1:1080`，而本地中继只监听 1080–1089
+   （每个老环境一个端口，同一个 pythonw 进程）。所以新号和 TK01 **共用同一个中继端口/出口**。
+   功能上没问题（本来就只有 1 个出口 IP），但 TK01 的中继挂了新号会一起挂。
+   要给新号独立端口，得改 FoxProfile 的中继配置（用户还没要，先记着）。
+## 2P（2026-10-24 14:20，v1.6.76）没有密码的号：`--qr` 扫码登录
+
+用户口径（2026-10-24 14:12）：「如果我没有账号密码，我需要扫码登录的话，这种怎么添加呢」
+
+原来只有「用户名+密码+2FA」一条路，扫码号只能手搓：自己开环境 → 自己开登录页 → 扫完
+还得自己把用户名填进 `env-accounts.json`，不然账号页/发布/采集全都不认它。
+
+### 现在
+```powershell
+node scripts/tk-login-batch.mjs --qr                  # 下一个空号环境（TK11…），弹出二维码等你扫
+node scripts/tk-login-batch.mjs --qr --qr-count 3     # 连加 3 个（每个扫一次，间隔 60 秒）
+node scripts/tk-login-batch.mjs --qr --only TK12      # 指定环境
+node scripts/tk-login-batch.mjs --qr --dry-run        # 只看会动哪些环境
+```
+界面等价入口：**账号页 →「扫码加号」**（v1.6.76 已部署，浏览器窗口自动顶到最前）。
+
+一轮做的事：选空号环境（复用 `src/account-env.js`）→ 缺的建出来（照 TK01 的代理/时区）
+→ 开环境 → `/login` → 点「Use QR code」→ 等二维码出来 → 把窗口顶到最前
+→ 你手机扫 + 手机上点确认 → 页面离开 `/login` 即成功 → 读 @用户名 → 备份 cookie
+→ 写 `env-accounts.json` + `config/user.json` → 关窗口 → 出报告。
+默认最多等 600 秒（`--qr-timeout`），中途关掉浏览器窗口算「窗口被关掉了」，不会留下半登录环境。
+
+### 实测到的两个坑（都是这次探针挖出来的）
+1. **二维码是 `<canvas>`，不是 `<img>`**：登录页 `/login` 上的入口是 `div`（345x46，文字
+   `Use QR code`），点了跳 `/login/qrcode`，二维码在 170x170 的 canvas 里。
+   判定"二维码出来了"要按 canvas/img 的 `getBoundingClientRect() >= 120px`。
+2. **`/passport/web/account/info/` 的 `screen_name` 不是 @用户名**：拿 TK01 实测返回
+   `user4837577922302`，而真名是 `xnow.matrix`（`unique_id` 恒为 null）。第一版用它，
+   会把一堆内部 id 写进 `env-accounts.json`（账号页会显示成 `@user48…`，抓资料/发布全错号）。
+   **唯一可靠来源：`https://www.tiktok.com/tiktokstudio` 里那条 `a[href^="/@"]`**
+   —— 实测该页只有一个 `/@xnow.matrix`。（`/foryou` 里的 `a[href^="/@"]` 是推荐流的作者，
+   完全不能用来认自己。）
+
+### 验收
+- `--qr --dry-run`：10 个已有环境 → 计划 `TK11`；`--qr-count 3` → `TK11, TK12, TK13`（不碰已有环境）。
+- 真跑一轮（临时环境 TK99，45 秒超时，全程录到）：打开环境 → 点「Use QR code」→
+  `📷 已切到扫码页` → `📱 二维码已显示，浏览器窗口已顶到最前` → 轮询 → 超时收尾
+  `❌ TK99 等二维码超时: 45 秒内没有扫码确认` → 出报告 → 关窗口（camoufox 进程归零）。
+  TK99 验完已 `DELETE /profiles/TK99` 删掉，环境数回到 10。
+- **真扫码这一段需要你的手机**（我这边没有能扫的号），所以「扫完 → 读用户名 → 写状态」
+  这段是逻辑验证（读用户名用 TK01 单独验过：Studio 链接 = `@xnow.matrix` ✅）。
+- `npm run verify` 601 全绿；界面按钮已用截图确认（账号页右上「扫码加号」）。
+## 2O（2026-10-24 14:10，v1.6.75）加账号从「必须整份重导」变成「只给新号就行」
+
+用户口径（2026-10-24 13:5x）：「10 个号，我怎么方便添加账号和环境？我可能加 1 个或 10 个、20 个」
+
+### 原来的坑（会毁数据，所以必须改）
+账号 → 环境的老规则是「**文件第 N 行 = TK0N**」（`accounts:import` / `tk-login-batch` 各写了一份）。
+所以要加第 11 个号，文件里必须把前 10 个号也写进去；**只给新增的号**，新号会被按行号落到 TK01
+并**覆盖掉 TK01 的凭据**（密码/2FA 全没了，且界面会显示 "TK01 → @新号"）。
+
+### 现在的规则（`src/account-env.js`，界面导入和命令行共用这一份）
+1. 用户名**已在 `env-accounts.json` 登记** → 永远留在原环境（大小写不敏感），绝不搬家；
+2. **新用户名** → 拿**最小的空号**（TK11、TK12…），同时避开 FoxProfile 里已存在但状态没登记的环境；
+3. 同一份文件里重复的号只分配一次，后出现的标 `duplicate` 跳过；
+4. 空用户名行跳过。
+
+配套改动：`electron/main.js#accounts:import` 和 `scripts/tk-login-batch.mjs` 都改成调它；
+账号页导入后的抽屉会多一行 `🆕 N 个新账号将用新环境：TK11, TK12…（点「批量登录」时自动创建）`。
+
+### 怎么加（用户操作，最省事的路径）
+1. 建一个 UTF-8 txt，每行一个号：`用户名｜密码｜邮箱｜邮箱密码｜2FA密钥｜地区`（**只要新号，老号不用写**）
+2. 账号页 →「导入账号文件」→ 抽屉里确认 `TK11 → @新号` 对得上
+3. 点「批量登录」→ 自动建环境（照抄 TK01 的代理/时区/locale/引擎）→ 登录（2FA 本地现算）
+   → 备份 cookie → 写回 `config/user.json` 的 accounts。60 秒/号，10 个约 10~15 分钟。
+
+### 验收记录
+- 单测 `tests/unit/account-env.test.js`（8 例：空状态、已有 10 个加 2 个新号 → TK11/TK12、
+  老号留在原环境、大小写、重复行、已知环境避让、中间空号复用、空用户名跳过）。
+- 真跑演练：`--file` 只给 2 个新号 → 计划输出 `TK11 新建环境 / TK12 新建环境`（不再占用 TK01）。
+- `npm run verify` 601 全绿；部署 v1.6.75（14:08 重启，调度器 PID 82168，22 条闹钟）。
+
+### ⚠️ 新号不会自动有闹钟（要单独加）
+现有 22 条闹钟全是账号 01–10 的（00:30–01:15、08:30–09:15 各 10 条 + 02:00 养号 + 10:00 采集）。
+`collect` / `warmup` 会自动覆盖新号（它们读账号列表），**但"发布"不会** —— 新号在建闹钟之前只会攒内容不发布。
+
+### 踩坑记录（打包）
+`electron/main.js` 里 import 共享模块时写成了 `'./src/account-env.js'`，
+打包后变成 `app.asar\electron\src\...` → **启动就弹 "A JavaScript error occurred in the main process"**
+（`ERR_MODULE_NOT_FOUND`）。`main.js` 在 `electron/` 下，必须是 `'../src/account-env.js'`。
+教训：`node --check` 不解析 import 路径，**改 import 必须在打包版里真启动一次才算验过**。
+## 2N（2026-10-24 13:55）简介里的网址能不能变成「可点链接」？—— 个人号不行，结论已落档
+
+用户问：能不能把简介里的网址文字删掉，改成放进「链接/网址」字段，让人点一下就跳转。
+**不能，实测结论如下（别再重复查）**：
+
+- 编辑资料弹窗（TK01 实测，逐项列出可见输入框）只有：`Profile photo` / `Username` / `Name` /
+  `Bio` / `Cancel` / `Save` —— **没有 Website 字段**。这些是**个人号**。
+- 主页上**没有任何可点外链**：`自助涨粉网址👇 xnow.taikon.top` 是纯文字，点不动、也复制不了。
+- 只有**商家号（Business）** 才有 Website 字段（填了才有可点链接）。但：
+  - 网页版设置里**没有**「切换为商家号」入口（只有 `Business verification` 商家认证）；
+  - 转商家号只能在**手机 App** 里做，自动化不了；
+  - 代价：热门音乐库受限（只能商用音乐库）、账号画像会变，对纯涨粉号不一定划算。
+- 顺带实测到的现状：简介上限 **80** 字符，TK01 当前 **75/80**（几乎占满）。
+- 用户决定（2026-10-24 13:55）：**先不动**。以后要动就按「🌐 xnow.taikon.top」精简那行，
+  省 8 个字符；要真链接必须先转商家号（先拿 1 个号试）。
+- 排查脚本留着：`scripts/_probe-website.mjs`（主页外链 + 弹窗字段）、
+  `scripts/_probe-website-fields.mjs`（只打弹窗内部字段/文本）、
+  `scripts/_probe-business.mjs`（网页版设置里有没有商家号入口）。
+## 2M（2026-10-24 10:12）FoxProfile 半夜挂掉 → 全线任务失败；已加「自动拉起 + 周期巡检」（v1.6.74）
+
+### 事故（真实损失，不是告警噪音）
+- FoxProfile 在 **10-23 21:22 之后**自己没了：`foxprofile_20261023.log` 最后一条 21:22:25
+  （`Browser TK01 terminated gracefully`），**没有** `API server shutdown requested` = 不是正常退出；
+  `flet.exe`（21:21 起的）却还活着 = 典型**孤儿 UI**，`pythonw` 后端已死。
+- 后果（今天）：
+  - 02:00 养号 **0/10**（`data/warmup/2026-10-24-0200.json`，全部「FoxProfile 未运行」）；
+  - 00:30–01:15 + 08:30–09:15 **20 轮全部 FAILED**：视频都生成完了（每轮 3 分钟、有 API 花费），
+    卡在「打不开环境」这一步 → **20 条成片 0 条发布**；
+  - 10:00 采集 10/10 失败（01:02 的重试在我 10:00:34 手动拉起后才成功，10:06:26 ✅ 完成）。
+- 为什么之前的守护没管住：`startFoxProfileGuard()` 只在**应用启动那一刻**跑一次
+  （昨晚 21:19 跑过），进程半夜死了它不知道。
+
+### 修复（三层，都在 v1.6.74）
+1. **每个"要开环境"的入口自己兜底**：`src/collector/foxprofile.js` 新增 `ensureFoxProfile(base)`，
+   API 探不通就 spawn `scripts/foxprofile-guard.ps1`（60 秒内只拉一次），最多等 90 秒。
+   接入点：`openFoxProfile()`（采集/资料）与 `openFoxPage()`（养号/发布）。
+   实测：杀掉 flet+pythonw → `ensureFoxProfile()` **6 秒**恢复、环境数 10。
+2. **周期巡检**：`electron/main.js#startFoxProfileWatchdog()` 每 3 分钟 GET `/browser`，
+   **连续 2 次**不通才拉起（避免一次抖动就重启），日志 `⚠️ FoxProfile 没响应（连续 2 次巡检），正在自动拉起…`。
+3. 界面继续自动收进任务栏（2L 的 `minimize-foxprofile.ps1`）。
+
+### 顺带
+- 清掉那个孤儿 `flet` 窗口（21:21 起的，后端已死）；现在 flet 只有 1 个、`pythonw` 2+2（src.main / proxy_relay）。
+- 教训：**"检查一次"不等于"守护"**。以后凡是"外部依赖进程"都要么周期巡检，要么在真正用它的那一刻兜底。
+
+### 补发结果（10:17–10:44）
+- 用户口径：只补 08:30 那批 10 条，凌晨那批不补；昨夜养号不补。
+- 补发怎么做的（关键技巧）：发布器候选是**新→旧**排序、`--max 1` 取最前一条，它**不看账号配对**。
+  所以从最晚的会话开始倒着跑（`--env TK10` 拿 am_0915、`TK09` 拿 am_0910 … `TK01` 拿 am_0830），
+  每发完一条写 `.published`，下一条自然轮到次新的 —— 配对就和原轮次一致。脚本 `out/republish-0830-batch.ps1`。
+- 结果：**10/10 全部 `confirmed:true`**。其中 TK05（am_0850）第一次是 `post-clicked-unconfirmed`
+  （发布时正好 FoxProfile 又挂了一次），到内容管理页核对：**页面上确实没有这条、也不在审核中** →
+  把 `.published` 改名为 `.published.unconfirmed-1027`（留证）后重发，这次 `✅ 视频已公开`（约 54 秒）。
+- 教训：`confirmed:false` 不能直接"当作已发"也不能盲目重发 —— **先去内容页看有没有**，没有才重发。
+- 时区对齐（以后别再被绕）：TikTok 内容页时间显示的是**账号时区（美西）**，
+  北京时间 10-23 08:30 发的那条显示成 `Oct 22, 5:52 PM`。核对"今天发没发"要换算，别按字面判断。
+
+### FoxProfile 不稳定（真问题，暂时靠自动找回兜住）
+- 今天 10:27 又挂了一次（这次发生在 TK05 发布到一半）：日志同样**没有** shutdown 行，
+  Windows 事件日志里**没有** pythonw 崩溃记录 → 硬退出/crash，看不出原因。
+- 10:29:54 新的 `ensureFoxProfile` 把它拉回来了（API 10:29:58 就绪），
+  后续 TK04/TK03/TK02/TK01 四轮照常发成功 —— **自动找回这条路是有效的**，但会损失当轮那一条的确认。
+- 顺手修了一个"看着像开了两份"的坑：`foxprofile-guard.ps1` 启动前先清掉**孤儿 flet 窗口**
+  （后端已死、窗口还挂着），实测输出 `killed-orphan-flet 1` → 只剩 1 个窗口。
+  已重新打包部署到 `E:\software\XNOWPost`（v1.6.74，10:45 重启，调度器 PID 10236）。
+### TK07 资料（10:00 提醒的待办，已完成）
+- 平台上次把它清成「昵称=用户名、简介空」；今天 10:08 重推成功：
+  昵称 `XNOW·跨境选品 | 小店 带货 TikTokShop`，简介 4 行
+  （`📦跨境选品 先看复购` / `🛒小店 带货 TikTokShop` / `💬微信/WeChat youto7789` / `自助涨粉网址👇 xnow.taikon.top`）。
+- 演练先确认**昵称框在**（没有触发 7 天冷却），再真跑保存；随后 `tk-profile-sync.mjs --only TK07`
+  从线上主页读回：`✅ TK07 XNOW·跨境选品 | 小店 带货 TikTokShop`，`account-profiles.json` 已更新
+  （bio 四行齐全），头像 sha 未变（`aeed307b01b4`）。
+## 2L（2026-10-23 21:20）FoxProfile 守护：启动自动拉起 + 界面收进任务栏（v1.6.73）
+用户口径：「能不能托盘，执行任务的时候，自动打开浏览器窗口就行呀，可以吗」
+
+### 关键事实（实测，不是推断）
+- **最小化 FoxProfile 不影响任何功能**：窗口最小化后 `GET /profiles` 正常、`POST /browser/TK02/launch`
+  用 **8.7 秒**正常弹出浏览器窗口。所以"藏起来 + 任务时自动开浏览器"= 最小化就能做到，不需要托盘。
+- 托盘图标不是系统自带能力，必须程序自己写（Windows `Shell_NotifyIcon` / Electron `Tray`）。
+  FoxProfile 是 Flet(Python) 桌面程序，作者没做托盘、也没拦关窗（`grep prevent_close` 无命中），
+  所以它的 × 就是退出 —— 这是它缺功能，不是用户操作问题。改它要动第三方源码（升级会被覆盖），
+  不如在 XNOWPost 这边兜住。
+
+### 实现（两个新脚本 + 启动钩子）
+- `scripts/minimize-foxprofile.ps1`：按 `flet.exe` 的 MainWindowHandle 做
+  `ShowWindow(SW_MINIMIZE=6)`，`-Restore` 走 `SW_RESTORE=9` + 置前。
+- `scripts/foxprofile-guard.ps1`：先探 `GET /browser`；不通就用
+  `E:\software\FoxProfile\启动 FoxProfile.bat` 拉起并等 API（≤90s）；然后调用最小化。
+  打印 `starting` / `api-ok profiles=N` / `minimized N window(s)` 供主进程判定。
+- `electron/main.js#startFoxProfileGuard()`：`app.whenReady` 里 spawn（`windowsHide: true`，
+  不 await 不拖慢启动），按输出把结果写进应用日志：
+  `🧩 FoxProfile 原本没在运行，已自动拉起（…）` / `🗕 已把 FoxProfile 界面收进任务栏`。
+- `electron-builder.yml` 的 `files:` 白名单补两个 ps1（**又踩一次白名单坑**：不加就静默不生效）。
+
+### 端到端实测
+杀掉 `flet` + 全部 `pythonw`（等价用户点 ×）→ 启动 XNOWPost → **30 秒内**：
+API 恢复、10 个环境、`flet` 窗口 `IsIconic=True`、调度器 21:19:42 起来、日志两行齐全。
+
+### 注意
+- 养号/发布打开的环境窗口**不能**最小化（最小化后鼠标点击失效，见 2H），所以任务执行时
+  屏幕上仍会短暂出现浏览器窗口 —— 这是必须的，不是没藏好。
+- FoxProfile 界面自己要改环境时：点任务栏里那个最小化窗口恢复即可（或 `-Restore`）。
+## 2K（2026-10-23 21:14）用户真把 FoxProfile 点 × 关掉了 → 服务全停，已重启恢复
+用户口径：「这个呢，我点右上角X 就关掉了吗，浏览器还能正常打开吗」（FoxProfile 快捷方式）。
+
+### 实测结论（不是推测，是当场抓到的状态）
+- 检查时 FoxProfile **已经死了**：8000 端口无人监听、`Invoke-RestMethod` 直接「目标计算机积极拒绝」、
+  `flet` 界面进程和 `pythonw -m src.main` 全没了（只剩两个 `proxy_relay.py` 中继进程 19216/66456）。
+- 代码层面原因：`FoxProfile/src/main.py` = `api_server.start()` → `try: gui.run() finally: api_server.stop()`。
+  **界面一关，finally 就把 8000 端口的 API 停掉**，没有任何 `prevent_close` / 托盘拦截（grep 过整份 src）。
+- 后果：所有要开环境的活儿全废 —— XNOWPost 的养号/发布/采集/资料刷新都会「环境启动失败」，
+  今晚 02:00 那轮养号必然失败。
+- 恢复：`scripts\restart-foxprofile.ps1 -Force`（**别直接杀 pythonw**，会留孤儿 Flet 窗口）。
+  实测：API 0 秒恢复、flet 窗口数 1、环境 10 个、`pythonw` 2 个（父 59080 + 监听 8000 的子 78924）。
+  再真开一次 TK10 验证：窗口标题 `TK10 · TikTok - Make Your Day — Camoufox` ✅，随后关掉。
+
+### 给用户的口径
+- FoxProfile 窗口按 × = 关服务（不是最小化），服务停 → 浏览器开不了；
+  最小化 `—` 完全不影响（API 在后台线程）。
+- 开电脑后必须先确认 FoxProfile 在运行，XNOWPost 才有环境可开。
+## 2J（2026-10-23 21:10）托盘图标改回「程序原图标」+ 从 ^ 里挪到任务栏常显（v1.6.72）
+用户口径：「那右下角 这个图标也没有了呀，粉色X 图标换成原图标吧」（附桌面快捷方式截图）。
+
+### ① 图标根本不在右下角，是 Win11 把它塞进了 ^（隐藏图标区）
+- 注册表里已经有一条：`HKCU\Control Panel\NotifyIconSettings\14177860137609133008`
+  （`ExecutablePath = E:\software\XNOWPost\XNOWPost.exe`），**`IsPromoted` 为空 = 不常显**。
+- 设 `IsPromoted = 1` 后重启应用 → 图标直接排在 `^` 右边、时间左边常显（截图为证）。
+- 这是**系统偏好**，不是应用能自己设的（Win11 去掉了 Shell_NotifyIcon 的 promote 接口，
+  只能改这条注册表或让用户在「设置→个性化→任务栏→其他系统托盘图标」里打开）。
+- 想改回去：`IsPromoted` 设 0，或在那个设置页关掉 XNOWPost。
+
+### ② 图标 = 程序自己的图标（不是画的）
+- `createTray()` 改成 `await app.getFileIcon(process.execPath, { size: 'small' })`，
+  拿到的就是资源管理器/桌面快捷方式里那个（深色圆形 orbit 图）。exe 换图标它自动跟着变。
+- 取不到才退回上次生成过的 PNG，最后才现场画绿点。`createTray` 因此变成 async，
+  `app.whenReady().then(async …)` 里 `await createTray()`。
+- 上一版那个粉色 X（`assets/tray-icon.png` + `scripts/make-tray-icon.ps1`）已连同脚本一起删掉，
+  用户明确不要它，留着是死代码（`electron-builder.yml` 里 `assets/**/*` 仍在，无副作用）。
+
+### ③ 当前状态
+v1.6.72 已部署，593 单测通过；调度器 21:09:28 起；`IsPromoted=1` 生效。
+窗口 × = 缩托盘（定时照跑）；找回窗口：点托盘图标 / 右键「显示主窗口」/ 再双击桌面图标。
+## 2I（2026-10-23 21:00）关了窗口找不回来：托盘图标认不出 + 双击图标没反应（v1.6.71）
+用户口径：「我关了，但是图标里没看到浏览器控制台呀」（附托盘隐藏图标截图）。
+
+### ① 真相：那排图标里第 3 个绿色圆点就是 XNOWPost
+- 主进程 + 调度器都活着（`app-2026-10-23.log`: `📌 已最小化到系统托盘`），定时照跑；
+  只是托盘图标是 `generateTrayIconPNG()` 画的**纯绿圆点（#22CC55）**，和系统里一堆绿点分不清。
+- Windows 11 默认把新托盘图标塞进 `^`（隐藏图标）里 → 用户根本找不到。
+
+### ② 三个修复（都在 v1.6.71）
+- **图标换成能认出来的**：`assets/tray-icon.png`（品牌粉 #FF2E5B 圆角方块 + 白 X，
+  由 `scripts/make-tray-icon.ps1` 用 System.Drawing 画，不依赖图标资源文件）。
+  `createTray()` 优先读它，读不到才退回绿点。实测：托盘 `^` 里已经变成粉色 X。
+- **再启动一次能把窗口叫回来**：以前只有 `requestSingleInstanceLock()`，
+  第二个进程 `app.quit()` 直接退，**没有** `second-instance` 处理器 → 双击桌面图标毫无反应。
+  现在 `second-instance` → `restore()+show()+focus()`，并弹一句提示。实测：关窗→再启动→窗口出现，仍只有一组进程。
+- **关窗时气泡提示一次**（`tray.displayBalloon`）：告诉用户缩到哪去了、怎么恢复。
+
+### ③ 给用户的恢复路径（三种）
+单击托盘图标 / 右键→显示主窗口 / 双击桌面图标；想不用每次点 `^`：Win11 设置→个性化→任务栏→
+其他系统托盘图标→打开 XNOWPost（或从 `^` 里拖到任务栏）。
+## 2H（2026-10-23 20:50）关掉「资料自动刷新」+ 只读任务窗口自动最小化（v1.6.70）
+用户口径：「我只是打开软件，没点任何任务，它又自己打开浏览器跑起来了；浏览器能关吗？
+会自动最小化吗？我关闭/最小化影响定时任务吗」
+
+### ① 真相：不是定时任务，是「资料自动刷新」
+- 证据：`data/account-profiles.json` 的 `fetchedAt` = 20:34:14(TK01) → 20:37:41(TK10)，
+  每号约 22 秒，跑完自己关；`app-2026-10-23.log` **一行都没写**（这条路径没有 addLog）。
+- 触发条件（`Accounts.vue` 的 `maybeAutoSyncProfiles`）：打开账号页 + 资料最旧 > 6 小时 +
+  没有环境在跑 + 没有定时任务在跑。它只读主页（昵称/粉丝/头像），不发布不点赞。
+- **用户选择：改成只有手动点「抓全部资料」才跑** → 已删掉 `maybeAutoSyncProfiles` 整段
+  （含 `autoSyncNote` 说明条、`staleAuto` 分支、`stale:6` 参数）。只保留
+  「刚登录完且这个号完全没资料时补一次」，那是"没数据"而不是"自动刷新"。
+
+### ② 「程序自动开的窗口自动最小化」——只能用在只读任务
+- 真机 A/B（TK01，`scripts\_probe-minimize-ab.mjs`）：
+  - 最小化后视频**照样播**（currentTime 一路前进，`document.hidden=false`）；
+  - 但**鼠标点击失效**：同样点 `[data-e2e="feed-navigation-next"]`，可见时换片 ✅、
+    最小化后不换 ❌（FoxProfile 的点击是真机鼠标事件，窗口不可见就点不动）。
+- 所以：`资料刷新`、`采集`（全程 goto+evaluate，无鼠标事件）→ 传 `{ minimize: true }`；
+  `养号` 点赞/翻页、`发布` 上传点击 → **绝对不能最小化**，否则点不动（养号会 0 秒、发布卡在按钮前）。
+- 实现：`scripts/minimize-env.ps1`（ShowWindow SW_MINIMIZE，按命令行里的 `camoufox_data\<env>` 找窗口）
+  + `src/collector/fox-window.js#minimizeEnvWindow()` + `openFoxPage(env, base, { minimize })`
+  / `openFoxProfile(env, base, { minimize })`。缩不了只吞异常，绝不影响任务。
+- **打包坑（又踩一次）**：`electron-builder.yml` 的 `files:` 是白名单，`minimize-env.ps1` 不加进去
+  就不会出现在 `app.asar.unpacked/scripts/`，运行时会静默不缩（第一次打包就是这样，已补）。
+  实测部署版脚本：`iconic=False → minimized 1 window(s) → iconic=True` ✅。
+
+### ③ 关闭 / 最小化 对定时任务的影响（回答用户）
+- 最小化窗口：不影响（调度器是独立 node 进程）。
+- 点 × ：`mainWindow.on('close')` 有托盘时 **隐藏到系统托盘**，调度器照跑。
+- 托盘右键「退出」/ 任务管理器结束 / 关机 / 睡眠：应用真退出 → 调度器一起被杀 →
+  **定时不执行，而且没有补跑机制**（node-cron 只认当时那一分钟）。
+- 今晚 02:00 养号要保持程序在托盘里；笔记本别合盖睡眠。
+## 2G（2026-10-23 16:20）盯完一轮真机养号：10/10 成功 + 修掉「收藏/关注验证判据」隐患（v1.6.69）
+用户口径：「我定时了养号，你监测 用眼睛看，看看养号是否成功 正常 有没有问题」。
+
+### ① 用户自己加的 15:23 闹钟（#24，10 个号 · 每号随机 3~5 分钟）
+- 结果：**result=ok，10/10**，耗时 3012 秒（15:23:00 → 16:13:12）。
+  108 条视频 / 1443 秒 / 25 个赞。抽签分钟数 3,4,4,3,3,4,5,3,3,5。
+- 每号：TK01 9条119s赞2 · TK02 13/162/2 · TK03 12/160/4 · TK04 9/116/2 · TK05 9/114/3 ·
+  TK06 10/154/3 · TK07 14/193/2 · TK08 10/111/3 · TK09 8/126/2 · TK10 14/188/2。
+- **TK04/TK05 昨天「一条都没播、0 秒」，今天完全正常** → 昨晚那次是临时故障（白屏/被拦），不是号被永久限。
+- TK10 开头 2 条没能播放、第 3 条起正常：2E 加的「连续 6 条才放弃」没触发，容错按预期工作。
+
+### ② 「用眼睛看」的三件套（新工具，以后都能用）
+- `scripts\warmup-eye.ps1`：每 20 秒采样「哪个环境在跑 + 养号进程还在不在」，每 60 秒用
+  PrintWindow **不抢焦点**拍一张 camoufox 窗口 → `output\warmup-watch\`。
+  **结束条件必须是「tk-warmup 进程退出」**：账号之间本来就有 45~120 秒随机空档 + 启动时间
+  （实测 TK02→TK03 空了约 2 分钟），第一版按「N 次没有环境」判会误收工。
+  另外养号子进程是 **node.exe**（不是 XNOWPost.exe），查进程别写错 Name。
+- `scripts\warmup-probe.mjs`：用 `attachFoxPage` 接管已开环境（**绝不启动/关闭**），连续采样
+  `video.currentTime` → 「在播（前进 N 次 / 换片 M 次）」。本轮 36 次采样 28 次在播；
+  8 次「没动」都是换片瞬间或页面刚开（paused=true 是新卡片默认暂停，脚本随后会点回播放）。
+- `scripts\warmup-verdict.mjs`：把 `data/warmup/*.json` + `data/runs/*.json` + 两份日志汇总成判决书
+  （每号 分钟/条数/不重样/秒数/赞藏关注/问题 + 并发检查 + 播放探测统计）。
+
+### ③ 真问题：收藏 / 关注「点了也算失败」（v1.6.69 修）
+- 真机实测（TK01，`scripts\_probe-fav-click.mjs`）：收藏按钮 `[data-e2e="favorite-icon"]`
+  **没有 aria-pressed**，但点下去计数会变（7689 → 7690，再点回 7689）；关注按钮
+  `[data-e2e="feed-follow"]` 的 **aria-label 是空串**，但 class 会变（`css-co7ut0` ↔ `css-d2rrar`）。
+- 旧 `clickAndVerify` 一律用 `aria-pressed === 'true'` 判收藏、用「按钮消失 / 文字变 Following」判关注
+  → **永远判失败**；而收藏/关注的额度是「成功才 -1」→ 额度不减 → **下一条视频接着点同一个动作**。
+  预算给 2 就可能对 14 个视频连点收藏，等于自己把号做成 spam。
+- 现在：判据抽成纯函数 `src/warmup.js#actionRegistered(kind, before, after)`
+  （点赞 aria-pressed / 收藏 计数+aria-label / 关注 class+消失），单测 3 条守着；
+  `scripts/tk-warmup.mjs` 里**先扣额度再点**，失败也写 `⚠️ 收藏点了但没确认到变化（…），按已尝试计，不重复点`。
+- 验收：`npm run verify` 593 通过；v1.6.69 已部署（16:19:50 调度器重启）。
+
+### ④ 还没定的一件事
+- 这轮收藏 0 次、关注 0 次 —— **不是坏了**：抽签给的额度太小（收藏合计 3、关注合计 3，
+  概率约 3~10%/条），一次没抽中。想让行为更像真人（不只点赞）就把
+  `WARMUP_DEFAULTS.favorites / follows` 抬一点，等用户点头。
+## 2F（2026-10-23 13:35）首页加「任务表」（v1.6.66–1.6.68）
+用户口径：「任务表（22 个） 首页能不能加个任务表，这样我看的比较清楚 待执行的任务」。
+
+### 结论先记：这**故意**违反了「首页不是仪表盘」那条老规则
+v1.6.23–1.6.31 把 6 张摘要卡从首页删掉了（首页只留可执行动作）。这次是用户点名要的，
+而且它不是"别的页面的摘要"——**首页是唯一能看到"接下来会发生什么"的地方**，
+所以留着。以后别再以「摘要卡堆首页」为理由删掉它。
+
+### 实现
+- IPC `schedule:plan`（`electron/main.js`，紧跟 `schedule:progress` 之前）→ 两段：
+  - `upcoming`：每条任务的**下一次**（今天还没到 = 今天；今天跑过了/错过了 = 明天），
+    `minsFromNow` 升序，`status` 只有 `pending` / `running`；
+  - `done`：今天真跑过的，带 `ok/partial/failed/insufficient/unconfirmed/timeout/skipped`、
+    `finishedAt`、`tookSec`。
+  - 数据只认落盘证据：`data/runs/<今天>-<HHMM>-<jobId>.json` + 调度器日志最后一条未收尾的 `🚀`。
+- `preload.js` 暴露 `getSchedulePlan()`；首页 `refreshPlan()` 挂载时刷一次 + 每 30 秒轮询，
+  卸载时清定时器。
+- 界面上：一张表（时间 / 任务 / 账号 / 状态），默认给「接下来 5 条」+「今天已跑完 N 条」两个开关，
+  养号那行额外说「每号随机 8~15 分钟」，账号列写「10 个号：01,02,…」。
+
+### 踩的三个坑（都跟"表是空的"有关）
+1. **13:22 当天 22 条全跑完 → 默认窗口为空**，卡片只剩一句「还有 22 条没显示」。
+   第一版只把"时间还没到"的算进 upcoming，跑过的不算 → 全跑完就永远空着。
+   现在跑过的任务下一次算**明天同一时刻**（`24*60 - nowMin + at`），当天 22 条 → 明天 22 条。
+2. **`s = s.replace(...) && log.push(...)`** 这种写法赋值拿到的是 `log.push` 的返回值（数字），
+   下一行 `s.replace is not a function` 直接崩 —— 补丁脚本必须分开写 `swap()`。
+3. **22 条全铺开会把首页顶下去**：默认截 5 条 + 「接下来全部 22 条」展开，
+   底部提示「还有 N 条没显示」。
+
+### 验收（截图 output/v68-*.png）
+- 头部：`任务表 · 接下来 22 条 · 下一条 明天 00:30（还有 10 小时 58 分）`，三个按钮
+  「接下来全部 22 条 / 今天已跑完 22 条 / 去调整」。
+- 展开「今天已跑完」：`10:00 数据采集 + 日报 已完成 · 3 分 54 秒 10:03 结束`、
+  `09:15 仅视频 账号 10 已完成 · 3 分 9 秒`… 一直到 `00:30 仅视频 账号 01`。
+- **`02:00 养号 · 每号随机 8~15 分钟 / 10 个号：01…10 / 失败 04:06 结束`** —— 这条正是 2E 里
+  那个「8/10 成功却被记成整轮失败」的旧记录，表里如实显示，没粉饰。
+  下一轮（v1.6.65 起）同样的结果会显示成「部分完成」。
+## 2E（2026-10-23 12:10）凌晨养号的真实结果 + 三处「看起来在乱跑」的修正（v1.6.65）
+用户口径：「现在还有任务吗，怎么还在自动执行，看一下问题在哪」。
+
+### ① 12:00 那些自己开的浏览器是「账号资料自动刷新」，不是养号/发布
+- `Accounts.vue#maybeAutoSyncProfiles()`：进账号页且最旧的资料 > 6 小时、当前没有环境在跑
+  → 静默 spawn `scripts/tk-profile-sync.mjs --stale 6`，逐号开环境读头像/昵称/粉丝，约 5~6 分钟。
+- 实测 12:00:50 起、12:05:52 结束（TK01→TK10 逐个开），日志里一个字都没有（它不是调度任务）。
+- **真 bug 是"静默"**：`staleAuto` 不弹抽屉也不提示，用户只看到浏览器一个接一个自己开。
+  现在页头挂一条说明条「资料已超过 6 小时，正在后台逐个刷新…跑完自己关」(`autoSyncNote`)。
+
+### ② 02:00 那个养号闹钟（10 个号 / 8~15 分钟）真跑了 2 小时 06 分
+- 结果：**8/10 成功**，共看 377 条 / 4039 秒 / 20 次动作；TK01 13 分、TK02 15、TK03 9、TK06 13、
+  TK07 12、TK08 12、TK09 14、TK10 13。
+- **TK04 / TK05 整轮 40 条「没能播放」、观看 0 秒** → 这两个号的 For You 现在不给播（要验证/被拦/白屏），
+  判据 `judgeWarmupRun` 报的正是「没有一条视频真的在播放」。证据 `data/warmup/2026-10-23-0200.json`。
+
+### ③ 三个诚实性 bug（都已修，v1.6.65）
+1. **假的「已重试 2 次均失败」**：`runWithRetry` 结尾的消息**无条件**拼「已重试 N 次」，
+   而养号是 `retryOnFail:false`（只跑一次）。日志里只有「第1次失败」，记录却写"重试 2 次"。
+   → 改成 `const retried = maxAttempts > 1`，没重试就只写真实原因。
+2. **8/10 成功被记成整轮 failed**：脚本 `okCount < sessions.length` 就 `exit 1`。
+   → 现在 `0 = 全成 / 4 = 部分成功 / 1 = 全败`；调度器 `r.code === 4` 返回 `{ok:true, partial:true}`，
+   `resultFromRunWithRetry` → `'partial'`，`describeScheduledRun` 新增 `case 'partial'`
+   → 「⚠️ 定时轮次部分完成：有账号没养成，其余已正常养完（不重试，避免重复点赞）」。
+   `RUN_RESULTS` 同步加 `'partial'`（那条「结果码与文案分支对齐」的单测会守住）。
+3. **播放不了的号白耗**：连续 6 条都放不起来就 `break`（不 throw，保留记录），
+   02:00 那轮 TK04/TK05 各空转 12/8 分钟 = 白等 20 分钟。单测 590 条通过。
+
+### ④ 还没解决的
+- TK04/TK05 首页为什么不播：可能是要过验证码 / 号被限流。需要单独跑一次带截图的检查
+  （`scripts/tk-warmup.mjs --accounts 04 --minutes-min 3 --minutes-max 3`，看首屏长什么样）。
+- 02:00 的养号闹钟现在是「10 个号 × 8~15 分钟 ≈ 2~3 小时」，每天凌晨跑到 4 点多；
+  是否改成只养能播的 8 个号、或换时间，等用户决定。
+## 2C（2026-10-21 13:58）TK07 资料搁置（用户决定：先放着，过几天再改）
+
+- 现状：TK07 `@kiransfkunu` 昵称被平台退回成用户名、简介为空，头像还是我们那张品牌 X。
+  抓资料脚本现在会标 ⚠️（不再假报 ✅），**这是预期状态，不是 bug**。
+- 用户口径（2026-10-21 13:58）：**先放着，过几天再改**。
+- 已设提醒：2026-10-24 10:00 重推一次昵称+简介并读回校验（会话内 reminder，标题
+  「重推 TK07 昵称与简介并读回校验」）。若那次又被平台清空 → 判定该号受限，
+  改成「先发 1~2 条内容、过几天再改资料」，别连续重试（越试越容易被盯）。
+- 顺带记：脚本对"资料不完整"的判定在 `src/profile-quality.js#judgeProfileCompleteness`
+  （昵称空 / 昵称=用户名 / 简介空 / 头像没拿到），单测 7 条；不要为了消掉 TK07 的 ⚠️ 去放宽判定。
+## 2B（2026-10-21 13:50）资料拉取再修：TikTok 跳回干净地址被当成"打不开"
+
+> 版本 **1.6.57**（已打包 / 已部署 / 已重启）；`npm run verify` **571 pass / 0 fail**
+> 用户第二次手动拉资料，这次失败的是 TK07：
+> `❌ Page.goto: Navigation to "…/@kiransfkunu?lang=en&_r=…" is interrupted by another navigation to "…/@kiransfkunu"`
+
+- **根因**：为躲边缘缓存，抓资料时会给地址加 `?_r=<时间戳>`（2026-10-20 定的），
+  但 TikTok 自己会把带参数的地址**跳回干净地址**。Playwright 把这个"页面自己跳转"抛成异常，
+  脚本当成失败 → 那个号整轮没有数据。**页面其实已经打开了**，纯属误判。
+- **修法**（`scripts/tk-profile-sync.mjs` + `src/profile-quality.js#isNavigationInterrupted`）：
+  1. `goto` 的异常先过 `isNavigationInterrupted()`；命中就打
+     `↪️ 页面自己跳回了不带参数的地址（TikTok 会去掉 ?_r=），继续等资料卡` 并继续；
+     其它导航错误（超时/DNS/打不开）照旧抛出 —— 不能一刀切全容忍。
+  2. 读到空资料卡时**换一种参数**（`?_t=<时间戳>`）再要一次，避免参数被剥掉后直接吃缓存。
+- **这是竞态，不是某个号坏了**：13:47 用部署版全量跑，10/10 成功，
+  而且**这次是 TK09 撞上同一个跳转**（日志里能看到那行 ↪️ 后紧跟 ✅），说明修的是通用路径。
+- 单测新增 2 条（`tests/unit/profile-quality.test.js`）：跳转可容忍、其它导航错误不可容忍。
+- 现状：10 个号资料全部为 13:4x 的新数据；只有 TK07 仍是 ⚠️（平台把昵称退回用户名、简介清空，等用户定夺）。
+## 2A（2026-10-20 23:46）账号资料拉取的两个真问题（用户手动抓资料时暴露）
+
+> 版本 **1.6.56**（已打包 / 已部署 / 已重启）；`npm run verify` **569 pass / 0 fail**
+> 用户手动跑了 10 个号的资料拉取，问「有问题吗」→ 有，1 个代码缺陷 + 1 个"报喜不报忧"。
+
+1. **`Browser is still starting` 被当成失败，那个号整轮没数据**（代码缺陷）
+   - 现象：23:31 那轮 TK02 报 `❌ 失败：Browser is still starting`，其余 9 个成功；
+     `account-profiles.json` 里 TK02 的 `fetchedAt` 停在 **18:44**（别人都是 23:3x）。
+   - 根因：`foxLaunch` 已经带 `wait=true`，但上一步 `foxStopOthers` 刚关掉别的环境、
+     Camoufox 进程还在收尾，launch 仍可能立刻返回 `{"success":false,"message":"Browser is still starting"}`；
+     `openFoxProfile` 见到 `success===false` **直接 throw**。
+   - 修法（`src/collector/foxprofile.js#openFoxProfile`）：把这类响应当"还没好"，轮询
+     `foxRunning()` 等它就绪（最多 90 秒），中途第 10/25 次再补一次 launch。
+     已经 throw 出去的那层判定保留（真的起不来还是要报错）。
+   - 验证：`--only TK02` 重抓成功，`fetchedAt` 更新到 23:42:54。
+
+2. **资料抓到了 ≠ 资料是好的**（报喜不报忧）
+   - 现象：TK07 昵称被平台退回成用户名 `kiransfkunu`、简介为空，脚本照样打
+     `✅ TK07 kiransfkunu · 粉丝 0 / 关注 0 / 赞 0`。看日志的人会以为 10 个号都正常。
+   - 修法：判定抽成 `src/profile-quality.js#judgeProfileCompleteness`（纯函数 + 5 条单测），
+     脚本输出改成 `⚠️` 并多打一行原因：
+     `↳ 昵称退回了用户名、简介为空（资料抓取成功，但账号资料不完整，多半是平台侧改的）`。
+   - 验证：`--only TK07` 现在输出 ⚠️ 两行原因。
+
+**另外两点说明（不是 bug）**：
+- 10 个号 `粉丝 0 / 关注 0 / 赞 0` 是**真 0**：三个字段都在（值是字符串 "0"），
+  头像 23:31–23:37 全部重新下载成功（每张 5KB，TikTok 已裁 200x200），
+  与之前采集器存的 `analytics.db` 一致（这些号本来就没播放）。
+- 地区 `GB` 不是抓来的，来自 `data/env-accounts.json` 第 6 列（TikTok 网页不给地区，`country_code` 恒为 0）。
+
+**下一轮**：TK07 的昵称/简介要不要再推一次由用户定（上次推完被平台清空，推了也可能再被清）。
+## 1Z（2026-10-20 23:10）素材库自动生长（回答「以后还要我手动补吗」→ 不用了）
+
+> 版本 **1.6.55**（已打包 / 已部署 / 已重启）；`npm run verify` **564 pass / 0 fail**
+> 用户原话：「素材库你会自动更新自动补吗，这样我以后就不用手动补了」
+
+**之前是静态的**：14 段人挑片段 + `scripts/build-broll-library.mjs` 手工重建，没人补就永远 14 段。
+现在三层都自动化了：
+
+1. **每天自动补**（主进程 `scheduleBrollGrow()`）：应用启动后 90 秒检查、
+   今天没补过就跑 `node scripts/grow-broll-library.mjs --max 6 --per-tag 3`，
+   实测 22:57:29 开始 / 22:59:04 结束（93.9s，退出码 0），戳写 `data/broll-auto-stamp.json`。
+   素材已够（每类 ≥5 段）时它只探测不下载 —— 22:57 那轮 12 个候选全被淘汰、0 入库，没白花流量。
+2. **按需补**：引擎每个镜头没找到素材就 `recordMiss(keywords)` 写一行
+   `data/broll-misses.jsonl`，下次补库**优先补这些真实搜不到的关键词**（不是拍脑袋选题材）。
+3. **入库要过 5 道闸**（`src/broll-auto.js#judgeCandidate`）：时长≥3.5s / 亮度 32~235 /
+   Laplacian 清晰度≥75 / 感知哈希去重（汉明距离<6 视为同一条）/ 分辨率体积下限。
+   实测一轮 54 个候选淘汰 38 个（重复×22、过暗×14、虚焦×4）—— 闸门是真在拦，不是摆设。
+   每个检索词评估前 3 条里**最清晰**的那条入库（只取 Pexels 第 1 条会收到又糊又偏的片子）。
+
+**库现状**：45 段 / 358MB（人挑 14 + 自动 31），标签覆盖 phone×9 editing×7 clock×6 desk×6
+data×5 server×5 chat×5 growth×5 people×5…；上限 900MB，超了优先淘汰「自动+用得少+入库早」。
+
+**本轮踩到并修的 4 个真 bug**（都是"看起来能用、实际会坏"的）：
+- **补库卡死 13 分钟**：axios 的 `timeout` 只管响应头，不管响应体慢慢流 →
+  进程 hold 着一条 established 的 443 连接、CPU 6 秒、零字节推进。
+  现在 `downloadMaterial` 套 `AbortController` 总时长上限（默认 120s，
+  可用 `XNOWPOST_DOWNLOAD_BUDGET_MS` 调），ffmpeg 的 `spawnSync` 也补了 20s 超时。
+- **孤儿文件**：进程被杀时文件已落地、index 没写 → 白占 217MB。
+  现在每入库一段立刻 `saveClips`，并且 `adoptOrphans()` 会把磁盘上
+  `*__auto-*.mp4` 但 index 里没有的片段重新过闸门收养（不合格直接删）。实测收养 18 段。
+- **数据目录分叉（老坑新踩）**：主进程只给**子进程**传 `XNOWPOST_DATA_DIR`，自己没有设，
+  `src/paths.js` 就退回 `path.resolve('.')`。从仓库目录启动安装版时，
+  「今天已补过」的戳写进了仓库 `data\` → 每天会重复补库。现在
+  `app.whenReady` 里 `process.env.XNOWPOST_DATA_DIR = DATA_DIR`，单测钉住。
+- **`electron-builder.yml` 漏列脚本**：`grow-broll-library.mjs` 没进 `files`，
+  打包版自动补库会静默不跑（日志写"找不到脚本"）。已加，并确认
+  `release\win-unpacked\resources\app.asar.unpacked\scripts\grow-broll-library.mjs` 存在。
+
+**顺带把"文案硬指标"也变成自动重问**（`src/engine/text.js`）：
+模型约 1/4 概率在第 1 镜漏掉数字（22:59 实测），提示词压不住 →
+`type==='video'` 时首镜无数字重问一次；某镜中文 >16 字（23:03 实测 18 字）也重问一次。
+单测 22 条守着这两条规则不被删。终验片：字数 12/13/11/11/10/11/12、首句数字 ✅、CTA ✅、**各项指标达标**。
+
+**还差什么（诚实说明）**：自动素材的**相关性没人看过**，只有画质关卡得住。
+所以同分时人挑的优先（`pickFromLibrary` 三级排序：命中分 → 人挑优先 → 用得少的），
+长期没人用的自动素材会被裁掉。想提高相关性，最有效的仍是往 `AUTO_PLAN` 里加**更准的检索词**。
+## 1Y（2026-10-20 22:05）视频质量整改落地（用户「可以，就这样吧」→ 已实现并验收）
+
+> 版本 **1.6.51**（已打包 / 已部署 E:\software\XNOWPost / 已重启）
+> `npm run verify` **549 pass / 0 fail**；真片验收 `output/2026-10-20/pm_2200`：
+> **24.16s / 1080x1920 / 25fps / -13.9 LUFS / 中英各 7 行 60px / 染色 7 行 / 首句带数字 / 结尾有 CTA / 自检卡“各项指标达标”**
+
+用户先看样片确认（`output/exp-2026-10-20/demo-v5-20s.mp4`，7 镜 20.6s），再说「可以，就这样吧」。
+本轮把样片里的 6 个改动全部做进引擎：
+
+1. **节奏**：`video.scenes 4→7`、`minDuration 2.4`、`maxDuration 3.6`、`totalDuration 22`、`transitionSec 0.4`。
+   ⚠️ 连带坑：`src/engine/text.js#validateVideoContent` 原来**写死** `duration ∈ [3,20]`，
+   配置改小后模型的 2.8/2.9s 被判非法 → 整条失败白花钱（21:42 实测踩到）。
+   现在校验区间读 `getEngineConfig().video`，并有单测钉住（`video-quality.test.js`）。
+2. **响度**：新增 `video.loudness{target:-14,truePeak:-1.5,lra:11}` → ffmpeg 链末尾
+   `loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.95`。旧片实测 **-26.2 LUFS**（又闷又轻的根因），
+   现在成片 **-13.9 ~ -14.2**。
+3. **字幕**：60px 中文 / **英文同字号**（不再缩成 0.85 当注解）；`{\an2\pos(x,y)}` 按**行数动态定位**
+   —— 英文折两行时块向上长会盖住中文（看起来像“中英顺序反了”，21:44 实测）；
+   关键词染品牌红（`{\1c&H5B2EFF&}`）；中文折行有**孤字兜底**（“…不用密|码”并成一行）。
+   模型漏 `keyword_zh` 时用 `deriveKeyword()` 从数字/卖点词兜底（否则染色 0 行）。
+4. **素材库**（新）：`assets/broll-library/` 14 段人挑过的实拍片段 + 标签索引，
+   `scripts/build-broll-library.mjs` 生成；`material.js` 先查库（标签+同义词双向展开、
+   **用过的片段不复用**、库里没有才走 Pexels），Pexels 侧加**亮度过滤**（`meanLuma` 45~235，
+   太黑的素材在手机上就是黑屏）。实测 7/7 镜命中、无重复，跳过生图省 ¥0.14/条。
+5. **成片自检卡**（新 `src/quality.js`）：出片即打印 规格/时长/响度/字幕行数字号/每镜字数/首句数字/结尾CTA，
+   没测出来一律写“未测出”，绝不编数字；不达标只提示不阻断。
+6. **封面**：底图 prompt 加 `no text, no letters…`（Kolors 按 "movie poster style" 会生成**乱码英文海报字**）；
+   软CTA/底部行改**白字+半透明黑底条**（原来 0.7 alpha 细白字在霓虹上看不见）；
+   去掉 canvas 画不出来的 emoji（💎⚡🔥👇 全成方框），卖点卡片高度/软CTA 位置按行数自适应。
+
+**待办（下一轮）**：① 素材库只有 14 段，跨题材覆盖不足 → 按选题补到 40~60 段；
+② 模型仍会写出 17~18 字的镜头文本（提示词要求 8~13），自检卡会报“字数超限”，
+   可在 `text.js` 做超长自动重写；③ TK07 昵称+简介被平台清空，仍等平台放开再补。
+
+
 > 更新：2026-10-19 23:45 ｜ 版本 **1.6.41**（已打包 / 已部署 E:\software\XNOWPost / 已重启）
 > 状态：`npm run verify` **529 pass / 0 fail**；git HEAD `22f1b89`，工作区干净；
 > 应用已在跑，调度器 ready **21 个任务**；今天已发 **16 条**（TK01×3、TK05×3，其余各 1~2）。
@@ -31,11 +887,23 @@ node src\publisher\index.js --env TK05 --max 1
 ```
 看两处日志：`⏳ 检查未完成（等了 Ns 就放行）` + `弹窗「检查未完成确认框」→ 点了「post now」`。
 
-**P1 — 今晚 00:30–01:15 那 10 轮 = 1.6.41 的真机验收（不用动手，看结果就行）**
-那 10 个闹钟每轮都会往 `data/runs/` 写一条记录并在跑完后自己说进 AI 助手对话。
-明早核对：对话里应有 10 条「✅ 定时轮次完成（00:30 · 仅视频 · 账号 01）：已发布 → TK01《…》」，
-`data/runs/` 里对应 10 个 `<日期>-<HHMM>-<jobId>.json`，每条都带 `reportedAt`。
-**没有的话说明 `fs.watch` 在真机上丢了事件**（30 秒轮询是兜底，理论上最多晚 30 秒）。
+**P1 — 1.6.41 的真机验收还差一次「真轮次」（✅ 2026-10-20 08:30 那轮已通过，见 §1T 末条）**
+`config\schedule.json` 在 00:27:05 被改成「21 个任务只剩 10:00 采集启用」，20 个视频任务全关闭 →
+今晚 00:30–01:15 十轮**一轮都没触发**（`logs/scheduler-2026-10-20.log` 全文 2 行、没有 `🚀`，
+`data/runs/` 空目录）。所以「闹钟轮次跑完自己说话」到现在**只有 23:23 那一次人工测试的证据**。
+要验的还是那四样：`data/runs/<日期>-<HHMM>-<jobId>.json` 有没有出现 / `reportedAt` 有没有写回 /
+对话里有没有对应一条 / 文案里的发布条数与账本是否 1:1。
+最省的办法（不发布、不花生图钱）：照 23:23 那次的做法，临时加一个 `仅图文 + 账号 01` 的闹钟
+（走"图文通道未实现"跳过分支），看完把闹钟和记录一起删掉；
+要验「已发布 → TKxx《标题》」这句就得真跑一轮视频（约 ¥0.03 / 7 分钟，**需要用户点头**）。
+
+**P1 — 打包 1.6.42：带上今晚修的五个「改资料」真 bug（✅ 2026-10-20 08:15 已部署）**
+① 昵称进入 7 天冷却后，TikTok 把 `input[placeholder="Name"]` **整个不渲染** → 脚本/界面
+（同一个 `scripts/tk-profile-edit.mjs`）误判「编辑资料弹窗没出现」，导致**刚改过昵称的号 7 天内
+连简介都改不了**（今晚 10 个号全中）。现在弹窗判定改用简介 textarea，缺昵称框就跳过昵称并提示
+「10-26 之后可再改」。② 二次确认框被连环点两下 → 第二下把刚改好的昵称再提交一次，TikTok 回
+`You can't change your nickname because you just changed it in the last 7 days`，日志上像"被平台拒绝"，
+其实第一次已经成功。两处都只在仓库工作区，**打包+部署后才修到真机**。
 
 **P2 — `.published` 补 `confirmedAt`**
 现在账本/标记里的时间是"点 Post 的时刻"，公开确认往往晚 20~60 秒（10-19 22:59:12 点、22:59:45 确认）。
@@ -90,6 +958,120 @@ Set-Clipboard -Value "今天发了几个？"; # 点输入框(窗口 660,800 / �
 - 任何 `spawn` 都要 `windowsHide: true`；发布器 `finally` 里必须 `closeFoxProfile`。
 - 永远别 `git checkout -- .` / `git stash`（HEAD 停在 1.2.18，工作区已到 1.6.41）。
 
+## 1X（2026-10-20 20:21）头像复查：3 张重传的都没被换回，TK07 仍被按住
+
+20:30 发布前按提醒复查（`scripts\_probe-avatar-truth.mjs TK01,TK07,TK10`，线上 CDN 带 cache-buster 重抓 + 与本地 `data/avatars/*.jpg` 比 sha1）：
+
+| 环境 | 线上字节 | 线上 sha1 | 本地 | 结论 |
+|---|---|---|---|---|
+| TK01 | 5219 | 3344ec2d3264 | 一致 | ✅ 还是新版（`@xnow.matrix`） |
+| TK07 | 4986 | aeed307b01b4 | 一致 | ✅ 头像还在；但昵称仍 = `kiransfkunu`、简介仍是平台占位 `No bio yet.` |
+| TK10 | 5275 | c6416fdf116c | 一致 | ✅ 还是新版 |
+
+- 19:06 之后**没有再被换回**（18:44 那次是平台侧回滚，不是本地缓存问题，已在 §1V 记证据）。
+- TK07 的昵称/简介自 19:03 那次恢复未生效后**一直是空的** → 平台仍在按住它，
+  按提醒不再硬改（每次改都是新的风控信号）。要在简介里保留微信/外链的话，得先定写法（用户未定）。
+- 另外 7 个这次**没有重开环境复查**（20:30 那批发布要用浏览器，避免抢资源）；
+  它们的哈希在 18:44 那次同步时写入 `account-profiles.json`，下一次自动抓资料（>6h）会刷新。
+
+## 1W（v1.6.44–1.6.45，2026-10-20 19:25）「资料抓的不准、不及时」—— 抓取口径重做
+
+用户口径（2026-10-20 19:15）：「现在你这个资料抓的不准，不及时」。查下来是**两个独立问题**，
+都在 `scripts/tk-profile-sync.mjs` + 账号页这一层，跟改资料脚本无关。
+
+- **不准（错得像真的，比报错更坑）**
+  1. `page.goto('https://www.tiktok.com/@user')` **没带 cache-buster**：Camoufox/TikTok 边缘缓存
+     会把**上一次**的昵称/简介/头像地址返回回来，字段齐全、头像也能下载 → 看着像"抓到了"，
+     其实是旧值。现在统一 `?lang=en&_r=<时间戳>`。
+  2. **只读一次**就采信：页面半渲染时（实测出现过标题 `TikTok - Make Your Day` 的空白态）
+     字段可能只有一半。现在等 `img[class*="ImgAvatar"]` 的 `naturalWidth>=40`（头像真的加载出来），
+     再隔 2.5 秒读第二遍，两遍不一致就 `ℹ️ 两次读数不一致（…）→ 用后一次`。
+  3. **头像只比 URL**：TikTok 每跳都换签名参数，URL 变了图没变、URL 没变图变了都会骗人。
+     现在下载后算 **sha1 内容哈希**存进 `avatarSha`，变化时打 `🖼️ 头像内容变了：abcd1234 → efgh5678`；
+     若和上次一样还会复查一次页面 src（怕拿到缓存的旧地址）再重下。
+  4. **把平台的空简介占位当数据**：`No bio yet.` 是 TikTok 的默认文案，以前原样存进 `bio`，
+     界面/日报看着像"他自己写的"。现在存空串。
+  5. 界面头像缓存键从「时间戳」改成「内容哈希」：`avatarAt` 以前等于抓取时间，
+     **文件换了但时间戳没换的场景**（改资料后立刻抓、或被平台换回）会一直显示旧图。
+- **不及时（以前只有点「抓全部资料」才更新）**
+  - 账号页现在会**自己补抓**：最旧一份资料超过 **6 小时**、且「没有环境在跑」「没有定时任务在跑」
+    （`schedule:progress.active`，堵住 20:30–21:15 那种轮次之间的空档）→ 静默后台抓一次，每个会话一次。
+  - 每行多一个新鲜度小字：`5 分钟前 / 39 分钟前 / 2 天前`，超过 12 小时变黄色（`--warn`），
+    鼠标悬停显示完整抓取时间；昵称过长也有 tooltip 了（顺手修了"截断没提示"）。
+- **「平台把头像换回了」现在能认出来**
+  - 改资料脚本上传成功后写 `avatarIntendedSha`（我们换的那张的哈希）+ `avatarIntendedAt`；
+    profile-sync 每次抓完比对，线上哈希 ≠ 上传哈希 → `avatarReverted:true` + `avatarRevertedAt`，
+    日志 `⚠️ TKxx 头像已经不是我们上传的那张了（线上 aeed307b ≠ 上传 3344ec2d）→ 疑似被平台换回`，
+    账号页行内出现琥珀色小标「头像被换回」（悬停显示发现时间）。
+  - 顺带修了改资料脚本的**假成功文案**：哈希相同（实际没换成）时不再打 `✅ 头像已更新`，
+    改成 `⚠️ … 头像⚠️ 可能没换成功（内容没变）`，合计里单列「头像疑似没换成 N 个」。
+- 实测：`--only TK01` → `avatarSha=3344ec2d…`（= 我 18:57 换上去那张，线上一致）；
+  `--only TK07` → `nickname=kiransfkunu / bio=''`（准确反映被平台清空后的状态，不再骗人）。
+
+## 1V（v1.6.43，2026-10-20 10:35）上午 11 轮实测抓到的两个真 bug
+
+今早 08:30–09:15 十轮视频**全绿**（`runs/` 十条 `result:"ok"`，每轮 132~169 秒，账本十条 1:1），
+10:00 那轮采集却把两个一直藏着的问题露出来了：
+
+- **① 改名后 `config/user.json` 里的用户名没跟着改**（`scripts/tk-profile-edit.mjs` 的漏改）
+  - 现象：10:00 那轮采集写 `⚠️ 主页没读出粉丝/关注/获赞（ryloclyjdcf）`——TK01 已经改成
+    `@xnow.matrix` 了，采集器仍按旧 handle 打开主页 → 404 → 三个数拿不到（分析页那 4 个数字还在，
+    所以证据文件是 `ok`，很容易被忽略）。
+  - 根因：改资料成功时只同步了 `data/env-accounts.json`，**没同步 `config/user.json` 的
+    `accounts[].username`**；而 `resolveUsername()` 的兜底链里还认这份配置。
+  - 修：改资料成功后一并更新 `config/user.json`（按 `bitEnvId` 匹配，找不到就按 `name`）。
+    已手工把 TK01 修成 `xnow.matrix`，重采一次 `✅ 01: … (@xnow.matrix)` + `👥 主页资料: 粉丝 0 / 关注 0 / 获赞 0`。
+- **② 采集器采完 10/10 之后，进程退出时崩了**（`src/collector/index.js`）
+  - 现象：10:00 那轮日志先是 `✅ 数据采集完成（10/10 个账号有数据）`，紧接着
+    `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94`
+    → `❌ 数据采集 + 日报 第1/2/3 次失败: 退出码 3221226505`（= 0xC0000409 fail-fast）
+    → 调度器重试 3 次，**白跑 25 分钟**，`runs/2026-10-20-1000-11.json` 记成 `failed`（838s）。
+  - 根因：`collectAll().then(() => process.exit(0))` —— 一 resolve 就强制退出，
+    此时还有 handle 在关闭中，libuv 直接 abort。数据其实早就入库了（`collect-10xx.json` 是 `ok:true, 10/10`）。
+  - 修：先 `process.exitCode = 0`，`await` 1.5 秒让事件循环把手柄关干净再 `process.exit(0)`；
+    失败分支同理延迟 800ms。单账号重采实测退出码 **0**。
+  - 提醒：以后再遇到「日志说完成了、退出码却是 3221226505」，先看是不是又有人加了 `process.exit()` 收尾。
+- 实测证据：`output/2026-10-20/collect-1028.json` / `collect-1029.json`（两次单号重采），
+  `runs/` 里 10 条 ok + 1 条 failed（就是被重试三次的那轮）。
+
+## 1U（v1.6.42，2026-10-20 08:15 部署）「改资料」五连修 + 10 个号换头像/换用户名
+
+用户口径：① 把 1.6.42 打包发上去；② 头像 / TK01 用户名 / 恢复 20 个任务，一起做掉。
+
+- **`scripts/tk-profile-edit.mjs` 修了 5 个真 bug**（都是这一夜在真号上撞出来的，界面和 CLI 同一份代码）：
+  1. **昵称 7 天冷却时，TikTok 把 Name 输入框整个不渲染**（弹窗里只剩 Username + Bio，
+     加一行 `Your nickname can only be changed every 7 days. You can change it again after Oct 26, 2026.`）。
+     旧代码靠 `input[placeholder="Name"]` 判断"弹窗开没开" → 10 个刚改过昵称的号**全报
+     「编辑资料弹窗没出现」**，等于 7 天内连简介都改不了。现在弹窗判定改用 Bio 的 textarea，
+     缺昵称框就 `⚠️ 昵称框不在（7 天冷却，X 之后可再改）→ 跳过昵称`，不再当失败。
+  2. **二次确认框被连环点两下** → 第二下把刚改好的昵称再提交一次，TikTok 回
+     `You can't change your nickname because you just changed it in the last 7 days`，
+     日志看起来像"被平台拒绝"，其实第一次早就成功了。现在只点一次 Confirm 并等弹窗消失。
+  3. **Save 是灰的 ≠ 失败**：可能①值已经等于服务端（幂等重跑）→ 直接去主页核实并更新缓存；
+     ②改用户名时 TikTok 有**异步可用性校验**（实测 ~3~5 秒），校验没回来按钮就是灰的。
+     以前一律判失败 → 缓存不更新，界面一直显示旧资料。现在 `waitSaveEnabled()` 最多等 10 秒。
+  4. **头像"已生效"是假阳性**：原来只比头像 URL，而 TikTok 每跳都换签名参数 → 报 ✅ 但图没变
+     （实测 TK03/TK06/TK10 就是这样，下载回来的还是旧黄图）。现在**比文件内容哈希**：
+     换完下载回来的图若和换之前一模一样，明确提示「实际没换成，需要重试」。
+  5. **`NS_BINDING_ABORTED` / `NS_ERROR_CONNECTION_REFUSED`**：换完头像紧接着 goto 回主页，
+     上一跳还没落地就报错，5 个号因此被判失败（其实头像已经换好了）。新增 `gotoSafe()` 重试 3 次。
+  6. **`CONFIRM_SIG` 少了一个 `your`**：真实文案是 `Set your username? You can change your username
+     once every 30 days.`，正则写的是 `Set username\?` → 永远匹配不上，保存后卡在那层确认框上
+     （读回永远是空）。现在签名里 `Set (?:your )?username?` / `change your username once every 30 days` 都认。
+- **10 个头像全部换掉**（`import/avatars/TK01..TK10.png`，2000x2000，深色底 + 品牌红 X + 各自词标
+  MATRIX/NET/LIVE/ENV/STREAM/MATRIX10/ECOM/START/CASE/TAIKON + `XNOW PRO`）：
+  没有价格、没有联系方式、十个各不相同 —— 换掉了原来那张「涨粉 千粉/万粉 价格低」的同一张广告图。
+  线上核实方式：`data/avatars/TKxx.jpg` 就是主页 `img[class*="ImgAvatar"]` 下载下来的那张，逐张看过。
+- **TK01 用户名 `ryloclyjdcf` → `xnow.matrix`**（30 天冷却已用掉）。实测：
+  - `xnow.matrix` 本身可用；`xnowmatrix` 被平台判 invalid（同类词可能被占/风控）。
+  - 保存后弹 `Set your username? …once every 30 days`，点 Confirm 才真正生效（就是上面第 6 条）。
+  - 生效后 `env-accounts.json` 的 username 已同步，`/@xnow.matrix` 主页读回昵称正常。
+- **部署**：08:15:45 关应用 → robocopy → 08:15:52 启动，v1.6.42，调度器 `ready (21 tasks)`。
+  20 个视频任务此刻是**全部启用**状态（用户已自己打开），所以 08:30 起这一轮会真正跑起来 ——
+  这正是 §1T 里欠的那次「真轮次」验收。
+- 顺带把 `import/profiles-jobs.json` 那个残留旧文案的队列清空了（01:25 那个自动执行器用它把
+  TK02–TK07 的简介覆盖回旧版，已逐个重修并留下截图证据 `output/profile-check-2026-10-20-final.png`）。
+
 ## 1T（v1.6.40–1.6.41）闹钟轮次跑完自己说话（「调度器跑的轮次回报不进来」收口）
 用户口径：「跑完的生成/发布自动返回结果状态，不然我还要一直看着时间守着」。
 1.6.35–1.6.39 已经让**界面按钮 / 助手叫的**轮次自动回报，但 00:30 / 08:30 那些闹钟跑在
@@ -129,6 +1111,33 @@ Set-Clipboard -Value "今天发了几个？"; # 点输入框(窗口 660,800 / �
   - 23:23:20 把临时闹钟删掉、`schedule.json` 恢复原样（21 个任务），调度器日志确认热重载。
   - 那条测试记录已删除（jobId 999 已不存在，留着只会让 `data/runs/` 多一个假轮次）。
 - **剩下的真机验收**：今晚 00:30–01:15 那 10 轮会各写一条并自己说进对话（见「下一步」P1 第二条）。
+- **真机验收（2026-10-20 凌晨）实际结果：没跑成，原因不在代码**
+  - 00:27:05 `config\schedule.json` 被改成「21 个任务只剩 10:00 采集启用」，20 个视频任务全关闭 →
+    00:30–01:15 十轮**一条都没触发**。证据：`logs/scheduler-2026-10-20.log` 全文只有 2 行
+    （`🔄 检测到配置变化` + `⏰ 10:00 → 数据采集 + 日报`），没有一条 `🚀`；
+    `data/runs/` 是空目录（唯一写过的 23:23 测试记录是我自己删的，见上一条）；
+    app 日志里的 `🤖 AI 助手自动回报` 仍停在 22:35 / 22:38 / 22:59 / 23:23 四条。
+  - **能确认的两件事**：① 回报通道本身是通的（四条都进了对话；前三条走引擎 `reportEngineRun()`，
+    第四条是 23:23 的调度器跳过）；② 22:59 那条「✅ 发布完成（3 分钟）：pm_2257 →
+    TK05《矩阵打法：一个账号不如五个账号》」与 `data/publish-ledger.jsonl` 的
+    `14:59:12.422Z / TK05 / 矩阵打法…` **1:1 对得上** —— `mergePublishedEvidence()` 的去重
+    在真实数据上成立（没有把 1 条说成 2 条）。
+  - **仍未验证**：`writeRunRecord()` 在**真轮次**上落盘、`reportedAt` 写回、
+    6 小时不灌进对话 / 7 天清理这三条口径。今晚没有轮次，一次都没被真跑过。
+- **真轮次验收（2026-10-20 08:30，部署 1.6.42 后第一次）：三条全过 ✅**
+  - `data/runs/2026-10-20-0830-1.json`：`result:"ok"`、`durationMs:161036`（2 分 41 秒）、
+    `session:"am_0830"`，且 **`reportedAt:2026-10-20T00:32:42.632Z`**（本地 08:32:42，跑完 1 秒内写回）；
+  - app 日志同一秒出现 `🤖 AI 助手自动回报：✅ 定时轮次完成（08:30 · 仅视频 · 账号 01）：
+    已发布 → TK01《3个技巧让你不再卡在500播放》（用时 2 分 41 秒…）` —— 用户不守着也能看到；
+  - 条数与账本 **1:1**：账本只有 `TK01 / 00:32:05.711Z / am_0830 / 3个技巧让你不再卡在500播放`
+    一条，没有把 1 条说成 2 条（`mergePublishedEvidence()` 的去重在真数据上第二次确认）；
+  - 即 `writeRunRecord()` → `fs.watch` → 推对话 → `markRunReported()` 这条链在
+    **打包版 + 独立调度器进程**下真的通了，不是只在单测里成立。
+  - **连跑 3 轮都稳**（08:30 / 08:35 / 08:40，账号 01/02/03）：
+    `…-0830-1.json` / `-0835-2.json` / `-0840-3.json` 全部 `result:"ok"`，
+    结束→`reportedAt` 的延迟分别 **0.9 / 0.9 / 0.8 秒**；对话里 3 条回报，
+    账本今天正好 3 行、标题逐条对得上（1:1）；`未知浮层 0 / 失败 0 / 未确认 0`
+    （日志里的"未确认"只是每轮开头那句 `⏱️ 发布预算 12 分钟` 的说明文字）。
 
 ## 1S（v1.6.35–1.6.37）第二轮实测 + 「跑完自动回报」
 用户口径：「修 A B，另外截图的，能不需要我重复问吗，发布完成后 自动返回结果状态，

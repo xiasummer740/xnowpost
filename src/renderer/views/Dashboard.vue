@@ -26,6 +26,72 @@
       </span>
     </div>
 
+    <!-- ===== 任务表（用户 2026-10-23：「首页能不能加个任务表，这样看得比较清楚」） ===== -->
+    <div v-if="plan.upcoming.length || plan.done.length" class="x-card plan-card">
+      <div class="x-card-head">
+        <span class="x-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3.5 2" />
+          </svg>
+        </span>
+        <h2>任务表</h2>
+        <span class="x-hint">{{ planSummary }}</span>
+        <div class="x-spacer"></div>
+        <button v-if="planUpcomingRows.length > 5" class="x-mini" @click="showAllPlan = !showAllPlan">
+          {{ showAllPlan ? '只看接下来 5 条' : '接下来全部 ' + planUpcomingRows.length + ' 条' }}
+        </button>
+        <button v-if="plan.done.length" class="x-mini" @click="showDonePlan = !showDonePlan">
+          {{ showDonePlan ? '收起今天已跑完' : '今天已跑完 ' + plan.done.length + ' 条' }}
+        </button>
+        <router-link to="/schedule" class="x-mini">去调整</router-link>
+      </div>
+
+      <table class="plan">
+        <thead>
+          <tr>
+            <th class="c-time">时间</th>
+            <th class="c-task">任务</th>
+            <th class="c-acc">账号</th>
+            <th class="c-state">状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in planUpcomingShown" :key="'u' + r.id + '-' + r.time" :class="['st-' + r.status, { next: r === planUpcomingShown[0] && r.day === '今天' }]">
+            <td class="c-time">
+              <span v-if="r.day === '明天'" class="day">明天</span><b>{{ r.time }}</b>
+            </td>
+            <td class="c-task">
+              {{ r.label }}<span v-if="r.durationText" class="dim"> · {{ r.durationText }}</span>
+            </td>
+            <td class="c-acc" :title="r.accounts.join(',')">{{ r.accountsText }}</td>
+            <td class="c-state"><span class="x-tag" :class="planTagClass(r)">{{ planTagText(r) }}</span></td>
+          </tr>
+
+          <template v-if="showDonePlan">
+            <tr class="sep">
+              <td colspan="4">今天已经跑完的 {{ plan.done.length }} 条</td>
+            </tr>
+            <tr v-for="r in plan.done" :key="'d' + r.id + '-' + r.time" :class="['st-' + r.status, 'done-row']">
+              <td class="c-time"><b>{{ r.time }}</b></td>
+              <td class="c-task">
+                {{ r.label }}<span v-if="r.durationText" class="dim"> · {{ r.durationText }}</span>
+              </td>
+              <td class="c-acc" :title="r.accounts.join(',')">{{ r.accountsText }}</td>
+              <td class="c-state">
+                <span class="x-tag" :class="planTagClass(r)">{{ planTagText(r) }}</span>
+                <span v-if="r.finishedAt" class="fin">{{ r.finishedAt }} 结束</span>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <div v-if="planHiddenUp > 0" class="plan-more">
+        接下来还有 {{ planHiddenUp }} 条没显示（点右上「接下来全部」）
+      </div>
+      <div v-else-if="!plan.done.length" class="plan-more">今天还没有跑过的记录。</div>
+    </div>
+
     <!-- 未配置引导 -->
     <div v-if="!store.status.configured" class="x-card">
       <div class="x-card-head">
@@ -797,7 +863,88 @@ async function loadLatestPreview() {
   } catch (_) {}
 }
 
+/* ───────── 首页任务表（IPC schedule:plan：upcoming + done） ───────── */
+const plan = ref({ today: '', now: '', upcoming: [], done: [] });
+const showDonePlan = ref(false);
+const showAllPlan = ref(false);
+let planTimer = null;
+const planUpcomingRows = computed(() => plan.value.upcoming || []);
+// 明天一整天排着 10 条发布 + 采集 + 养号，全铺开会把首页顶下去，默认只给 5 条
+const planUpcomingShown = computed(() =>
+  showAllPlan.value ? planUpcomingRows.value : planUpcomingRows.value.slice(0, 5),
+);
+const planHiddenUp = computed(() => Math.max(0, planUpcomingRows.value.length - planUpcomingShown.value.length));
+
+function fmtIn(mins) {
+  const m = Math.max(0, Math.round(mins));
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return h ? h + ' 小时 ' + mm + ' 分' : mm + ' 分钟';
+}
+function fmtTook(sec) {
+  const n = Math.max(0, Math.round(sec));
+  if (!n) return '';
+  if (n < 60) return n + ' 秒';
+  const m = Math.floor(n / 60);
+  const r = n % 60;
+  return r ? m + ' 分 ' + r + ' 秒' : m + ' 分钟';
+}
+function planTagText(r) {
+  switch (r.status) {
+    case 'running': return '执行中';
+    case 'ok': return r.tookSec ? '已完成 · ' + fmtTook(r.tookSec) : '已完成';
+    case 'partial': return '部分完成';
+    case 'failed': return '失败';
+    case 'insufficient': return '数据不足';
+    case 'unconfirmed': return '未确认';
+    case 'timeout': return '超时';
+    case 'skipped': return '已跳过';
+    default:
+      if (r.day === '明天') return '明天 ' + fmtIn(r.minsFromNow);
+      return '还有 ' + fmtIn(r.minsFromNow);
+  }
+}
+function planTagClass(r) {
+  switch (r.status) {
+    case 'running': return 'brand';
+    case 'ok': return 'ok';
+    case 'partial': return 'warn';
+    case 'failed':
+    case 'timeout':
+    case 'unconfirmed': return 'danger';
+    case 'insufficient':
+    case 'skipped': return 'mute';
+    default: return 'brand';
+  }
+}
+const planSummary = computed(() => {
+  const up = plan.value.upcoming || [];
+  const done = plan.value.done || [];
+  const running = up.find((r) => r.status === 'running');
+  if (running) return '现在在执行 ' + running.time + ' 那条';
+  if (up.length) {
+    const nx = up[0];
+    const when = nx.day === '明天' ? '明天 ' : '今天 ';
+    return '接下来 ' + up.length + ' 条 · 下一条 ' + when + nx.time + '（还有 ' + fmtIn(nx.minsFromNow) + '）';
+  }
+  if (done.length) return '今天 ' + done.length + ' 条都跑完了，没有待执行的';
+  return '定时页还没有启用的闹钟';
+});
+
+async function refreshPlan() {
+  const api = window.xnowpost;
+  if (!api || typeof api.getSchedulePlan !== 'function') return;
+  try {
+    const r = await api.getSchedulePlan();
+    if (r && Array.isArray(r.upcoming)) plan.value = r;
+  } catch (_) {
+    /* 读不到就保持上一张表，不打扰用户 */
+  }
+}
+
 onMounted(async () => {
+  refreshPlan();
+  planTimer = setInterval(refreshPlan, 30000);
   // ⚠️ 初始化必须整体隔离异常：一旦这里抛出，后面的定时器与订阅就全都不会注册，
   // Dashboard 的实时更新会被永久禁用（P2-3）
   try {
@@ -861,6 +1008,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (planTimer) { clearInterval(planTimer); planTimer = null; }
   if (cleanupProgress) { cleanupProgress(); cleanupProgress = null; }
   if (cleanupStatusPush) { cleanupStatusPush(); cleanupStatusPush = null; }
   window.removeEventListener('paste', onPaste);
@@ -1315,4 +1463,32 @@ tbody tr.pc-picked { background: color-mix(in srgb, var(--brand) 9%, transparent
   text-overflow: ellipsis;
 }
 .sp-line:last-child { color: var(--text-2); }
+/* ── 首页任务表（2026-10-23 用户要求：首页能看清「待执行的任务」） ── */
+table.plan { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.plan th {
+  text-align: left; font-weight: 600; font-size: 11px; color: var(--text-3);
+  padding: 0 8px 6px; border-bottom: 1px solid var(--stroke);
+}
+table.plan td {
+  padding: 7px 8px; border-bottom: 1px solid var(--stroke);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+table.plan tr:last-child td { border-bottom: none; }
+table.plan tr.next td { background: color-mix(in srgb, var(--brand) 6%, transparent); }
+table.plan tr.done-row td { color: var(--text-3); }
+table.plan tr.sep td {
+  padding: 12px 8px 4px; font-size: 11px; color: var(--text-3);
+  border-bottom: 1px solid var(--stroke); background: none;
+}
+.c-time { width: 96px; }
+.c-time b { font-variant-numeric: tabular-nums; }
+.c-time .day {
+  font-size: 10px; padding: 0 4px; margin-right: 4px; border-radius: 3px;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+.c-acc { width: 30%; color: var(--text-2); }
+.c-state { width: 190px; text-align: right; }
+.c-state .fin { margin-left: 6px; font-size: 10.5px; color: var(--text-3); }
+table.plan .dim { color: var(--text-3); }
+.plan-more { padding: 8px 10px 0; font-size: 11.5px; color: var(--text-3); }
 </style>

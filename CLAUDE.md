@@ -77,8 +77,20 @@
   `ELECTRON_RUN_AS_NODE=1` + `process.execPath` 才能在打包后跑（Electron 自带 node）。
 - 打包相关：`electron-builder.yml` 的 `files` 必须含 `scripts/tk-login-batch.mjs`，
   且 `asarUnpack` 必须含 `scripts/**`（asar 里的文件不能直接 spawn）。
-- 收件箱/截图/备份/报告在打包版走数据目录（`XNOWPOST_INBOX` 等环境变量覆盖），
+- 收件箱（账号 txt）在**安装目录**下：`E:\software\XNOWPost\import\accounts`
+  （用户 2026-10-24：「位置放在安装目录下面」—— 放 `%APPDATA%` 里他找不到）。
+  实现：`electron/main.js` 的 `inboxDir()` 先试安装目录、探针写不进就退回数据目录；
+  「导入账号文件」的对话框 `defaultPath` 默认就是这个目录，选过别处会记住（`data/last-import.json`）。
+  ⚠️ **部署时 robocopy 必须排除它**，否则 `/MIR` 会把用户的账号文件删掉：
+  ```powershell
+  robocopy release\win-unpacked E:\software\XNOWPost /MIR /XD "E:\software\XNOWPost\import"
+  ```
+  （实测 exit=3 也正常：1=有复制、2=有额外文件被跳过、3=两者都有。）
+- 截图/备份/报告仍在数据目录（`XNOWPOST_INBOX` 等环境变量覆盖），
   不写到安装目录 —— 装在 Program Files 里会因无权限失败。
+- 「备份账号文件」按钮（`accounts:backupFiles`）：收件箱里的 txt/csv → 
+  `%APPDATA%\xnowpost\backups\account-files\<日期_时间>\` + 一个同名 zip（系统 `Compress-Archive`）。
+  存在理由：收件箱在安装目录，卸载/重装会跟着删。备份里**不含密码/邮箱**（那些在 `data\env-accounts.json`）。
 - 登录态判定：主进程直接读 `<环境目录>/cookies.sqlite`（`node:sqlite`，毫秒级）。
   **别用 `GET /profiles/{env}/cookies` 查状态**——那个接口每调一次约 4 秒（FoxProfile 要拉进程导出），
   10 个环境就是 40 秒，界面等不起；它只用于「备份 cookie」。
@@ -142,6 +154,14 @@
   file:// 权限），并且把文件名回显出来 —— 只把路径塞进变量不给任何视觉反馈，用户会以为「没反应」。
 
 ### 账号凭据（用户名 / 密码 / 邮箱）
+- **界面里直接改**（v1.6.86 起）：密码列有密码时是 ✎、没密码时是 `+ 添加`，弹窗里能填
+  密码/邮箱/邮箱密码/2FA/地区 → IPC `accounts:saveCredentials`。语义是编辑器：**留空 = 清空**。
+  - **脱敏邮箱不许预填**：列表里的 `k***e@outlook.com` 来自 TikTok 接口，预填进输入框一保存就变成"真邮箱"。
+    现在只当 placeholder。
+  - `accounts:list` 必须返回 `totpSecret`，否则弹窗保存一次就把 2FA 密钥清了（只有写没有读的坑）。
+- **改完自动更新加密备份**：`autoBackupSecrets()` 现在挂在「导入账号文件」「saveCredentials」上；
+  「备份凭据」按钮（IPC `accounts:backupSecrets`）手动触发。包在
+  `backups/secrets/<日期>/secrets.enc`（DPAPI），留 14 天，启动时凭据文件丢了/坏了会自动恢复。
 - 界面要「完整邮箱 + 密码小眼睛 + 点击复制」，所以凭据必须落到
   `%APPDATA%\xnowpost\data\env-accounts.json`（**明文**，故意为之；该目录不在仓库里）。
   不想留明文就删掉 `password`/`emailPassword` 字段，界面会自动显示「未导入」。
@@ -549,8 +569,14 @@
   - 启动后按坐标 `SetWindowPos` 反复纠正 → Firefox 反制，出现 482x211、高度 65535 的乱数据；
   - PowerShell 里用 `EnumWindows` + 委托枚举窗口 → native 回调看不到函数局部变量，
     静默返回空（同一时刻另一个脚本却正常）。要用窗口就 `Get-Process` 的 `MainWindowHandle`。
-- 给新环境（TK11…）统一尺寸：跑一次 `node scripts/set-uniform-screen-size.mjs`。
+- 新环境**自动**统一尺寸：`scripts/tk-login-batch.mjs` 建完环境立刻调 `src/collector/uniform-screen.js`
+  的 `applyUniformScreen(env)`（2026-10-24 起，扫码模式和密码模式都调）。手动补：
+  `node scripts/set-uniform-screen-size.mjs --only TK11`。**不改的话新窗口是 1920x1032**，
+  比老号大一圈（用户 2026-10-24 反馈过）。必须**在开浏览器之前**改，指纹是启动时读的。
   改完指纹**不需要重启 FoxProfile**（每次启动时读），但要先关掉该环境。
+  - **创建后的第一次启动，Camoufox 会重写 fingerprint.json**（自己的 coherence 校正）：
+    实测新 TK11 创建时写的 `1292x994` 被改成 `avail 1280x976 / screen 1280x1024`。
+    所以扫码流程在 `finally`（关窗之后）**再统一一次**；只改一次不够。
 - **重启 FoxProfile 必须用 `scripts/restart-foxprofile.ps1`**：直接杀 `pythonw` 会留下
   **孤儿的 Flet UI 进程**，任务栏多出一个永远转圈的空窗口（用户实际看到「怎么有两个窗口」）。
   正确顺序：关环境 → 杀 Flet UI → 杀 pythonw → 杀残留 camoufox → 启动 → 等 API → 核对只有一个窗口。
@@ -558,6 +584,117 @@
   别把第二个 pythonw 当重复实例杀。
 - 顺带说明：改屏幕尺寸会让 `window.screen`、`device-aspect-ratio` 等信号跟着统一，
   比原来每个号一个随机分辨率（1280x720 / 1600x900 / 2560x1440…）更自洽。
+
+## 点「启动」必须真看见浏览器窗口（2026-10-28 v1.8.4 事故 + 自愈）
+
+用户原话：「我没看到你打开浏览器窗口啊，是不是 FoxProfile 指纹浏览器.lnk 没用复刻完啊，现在功能还不全吗」
+—— 不是功能不全，是**浏览器被无头启动了**。
+
+- **根因：两个开关共用一个变量**。为了"点 × 不会关掉后端"，我们把 FoxProfile 跑成
+  `FOXPROFILE_HEADLESS=1`；但 FoxProfile 里 `_env("HEADLESS")` 同时决定**浏览器是否无窗口**
+  （`src/core/config.py` 的 `HEADLESS` → `runner.py` 的 `launch_config["headless"]`）
+  → camoufox 带 `-headless` 启动：进程在跑、`/page/screenshot` 能出图、**桌面上什么都没有**。
+- **连带症状**：无头模式下 TikTok 首页一直报
+  `We're having trouble playing this video. Please refresh and try again.`，
+  `<video>` 是 `readyState:0 / networkState:3 / MediaError.code 4`。
+  **这不是网络问题**（同一时刻 curl 走 1080 出口正常、公开 mp4 在同一个浏览器里能播），
+  改成有窗口后同一台机器同一节点立刻正常播放（`readyState:4`、`currentTime` 递增）。
+  排查时别一头扎进代理/CDN，先看浏览器是不是无头的。
+- **修法（FoxProfile 侧本地补丁）**：`src/core/config.py` 拆成两个变量 ——
+  `FOXPROFILE_HEADLESS` 只管 Flet 管理界面，`FOXPROFILE_BROWSER_HEADLESS` 才管浏览器窗口；
+  没显式指定时沿用老语义（跟着 `HEADLESS` 走），所以 `src/server.py` 的行为不变。
+  `scripts/foxprofile-guard.ps1` 启动时显式传 `FOXPROFILE_BROWSER_HEADLESS=0`。
+  ⚠️ 这是和 `control.py`/`window_focus.py` 同类的**本地补丁**，升级 FoxProfile 会丢，升级后要补回。
+- **应用侧自愈**（`electron/main.js#ensureFoxProfileHeaded`）：
+  读 `GET /api/v1/info` 的 `headless` 字段；为 true 且**没有环境在跑**时，
+  杀服务 + 残留 camoufox → 重新跑守护脚本 → 轮询到 `headless:false`，
+  日志 `🔧 FoxProfile 处于"浏览器无窗口"模式…正在纠正` → `✅ 已切回"浏览器有窗口"模式`。
+  挂在两处：启动后 6 秒自检、每次 `envs:start` 之前。有环境在跑时**不动手**（重启会把这些环境关掉）。
+- **`envs:start` 不许"接口说成功就报成功"**：现在启动后回读 `GET /browser` 的 `running`，
+  环境不在里面就返回失败（文案「接口回了成功，但 TKxx 不在运行列表里」）。
+  以前会出现「提示已启动、桌面上什么都没有」。
+- 验收这条链路的标准动作（缺一不可）：
+  1. `Get-Process camoufox | ? MainWindowHandle -ne 0` **必须有窗口**，标题形如 `TK01 · … — Camoufox`；
+  2. 命令行**不能有** `-headless`；
+  3. 窗口里 TikTok 首页视频能播（`readyState>=2`）；
+  4. 用 `scripts\win-shot.ps1 -ProcName camoufox -Out output\x.png` 抓窗口图 **给人看**
+     —— FoxProfile 的 `/page/screenshot` 在无头时同样能出图，**它不能证明用户看得见**。
+
+## 网络节点：内置 xray 内核，用户只粘一条链接（2026-10-29 v1.7.0–1.8.x 定案）
+用户口径：「这个软件要给到其它用户使用，用户都是小白……用户只有一个 vless:// 节点，该怎么使用呢」
+「以后我要换网络的话，直接像这样换个节点就 OK 了，行吗」→ **行，这就是现在的唯一用法。**
+
+- **小白只做一件事**：`配置 → 网络节点` → 把服务商给的整条链接粘进文本框 → 「保存并测试」→
+  绿色「出口 IP：x.x.x.x」就算配好了。端口、内核、重启全自动。
+- **安装包自带内核**：`resources/bin/xray.exe`（xray-core 26.3.27，34MB）
+  → 打包进 `resources/app.asar.unpacked/bin/`（`electron-builder.yml` 的 extraResources）。
+  许可声明 `resources/bin/README-xray.txt`（MPL-2.0，未改源码，独立进程调用）。
+- **端口**：内核一启动就把 **1080–1109 共 30 条 socks 入口一次开满**（`src/proxy/xray-config.js`），
+  一个环境一条，**永不共用**（沿用 2026-10-24 用户口径）。新建环境只是"挑一条没人用的"，
+  **不需要改配置、更不需要重启内核**。TK01–TK10 = 1080–1089，新号从 1090 起（`nextRelayPort`）。
+- **模块分工**（纯函数都有单测）：
+  - `src/proxy/node.js` — 分享链接 → xray outbound。支持 vless / vmess / trojan / ss / socks5 / http。
+    REALITY 缺 `pbk` 直接报错（宁可不生成，也不要一份"看着能用其实是死的"配置）；
+    指向 `127.0.0.1` 的 socks 节点挡掉（自己转发自己）。单测 `tests/unit/proxy-node.test.js`。
+  - `src/proxy/xray-config.js` — outbound + 端口清单 → 完整配置。内网 CIDR 显式列直连，
+    **不用 `geoip:`**（不带 geoip.dat 的安装包会起不来）。单测 `tests/unit/proxy-xray-config.test.js`。
+  - `src/proxy/engine.js` — 找 xray、起停、健康检查、出口探测（自己实现 SOCKS5+TLS 探 `api.ipify.org`）、
+    节点落盘 `data/proxy-node.json`、日志 `logs/xray.log`（>5MB 轮转）。单测 `tests/unit/proxy-engine.test.js`。
+- **IPC**：`proxy:status / importNode / test / restart / clear`（preload 里 `proxyStatus` 等 5 个）。
+  界面在 `src/renderer/views/Config.vue` 的「网络节点」卡片：粘链接、当前状态、出口 IP、
+  测出口 / 重启内核 / 清除节点。
+- **启动即自启**：`app.whenReady` 里 `startProxyEngine()`。⚠️ 这个函数必须定义在**模块级**：
+  第一版写在 `setupIPC()` 里面，`whenReady` 里调用直接 `ReferenceError`，
+  被 Promise 链吞掉 → 内核没起来、界面和日志**一个字都不报**（v1.8.0 实测，用户看到的是"浏览器全打不开"）。
+  现在失败会写 `🔌 代理内核自动启动异常：…`。
+- **换节点**：粘新的 →「保存并测试」→ 内核重启（1~2 秒），30 条端口立刻切到新出口，
+  环境不用改、cookie 不受影响。实测 2026-10-29 00:29 从 21666 号入站换成 38185 号入站，
+  日志 `🔌 节点已生效：…38185 → 出口 69.63.205.35`，随后 TK01 正常启动。
+- **旧链路已退役**：`proxy_relay.py` + SSH 隧道 + 软路由（passwall）对小白不存在，也不再是必需。
+  本机（开发机）已把计划任务 `XNOW relay 守护` 设为 **Disabled** 并杀掉 relay 进程，
+  否则它会 60 秒后又抢 1080–1109 把内核顶掉。`src/collector/proxy-ports.js` 的
+  `ensureRelayPort()` 现在**没有任何运行时调用**（保留给命令行兜底/单测），
+  `tk-login-batch.mjs` 的 `allocateProxy()` 只做端口体检。
+- **还要关掉 `XNOW tunnel 守护`（2026-10-29 用户报「过一会就闪一下」）**：它是同一条退役链路的
+  另一半 —— 计划任务每 **5 分钟**跑一次
+  `powershell -WindowStyle Hidden -File C:\Users\Administrator\.ssh\start-tunnel.ps1`，
+  维护 `127.0.0.1:1070 → 软路由 xray socks` 的 SSH 隧道，脚本里还会 `ssh` + `curl` 各起一个进程。
+  `-WindowStyle Hidden` 是**窗口建出来之后**才生效的，加上任务本身 `Hidden=False`，
+  于是屏幕上每隔 5 分钟闪一下 PowerShell/CMD 黑窗（用户原话：「像 powershell 或者 cmd 窗口」）。
+  内核对 1080–1109 直连之后 1070 完全没人用，所以：`Disable-ScheduledTask` + `Stop-ScheduledTask`
+  + 杀掉残留 `ssh.exe`。验收：连续 7 分钟无任何 `powershell/cmd/conhost/ssh` 新进程
+  （2026-10-29 01:00 实测通过），且 `curl -x socks5h://127.0.0.1:1080 api.ipify.org` 仍是
+  出口 `69.63.205.35` —— 关它不影响代理。
+- **应用自己不会闪黑窗**：所有 `spawn`/`execFileSync` 都带 `windowsHide: true`
+  （2026-10-29 逐条审计过：`main.js` 的 L842 守护、L4701 手动启动服务、L4866 标题看护、
+  L3936 打 zip，以及 `execFileP` 封装）。以后再看到黑窗，先查计划任务和第三方软件，不要怀疑这一段。
+- **判断通不通只看出口 IP，不看进程**：`curl.exe -s --max-time 20 -x socks5h://127.0.0.1:1080 https://api.ipify.org`。
+  诊断脚本：`node scripts/_probe-engine.mjs "<链接>"`（用 21080–21082 临时端口，不碰真机 1080–1109）。
+- **改文件别用 PowerShell 串字符串**：曾把 `proxy-ports.js` 清成 0 行。用编辑工具改。
+
+## 代理端口（历史记录：2026-10-24 ~ 2026-10-28 的 relay 链路，已退役，留档备查）
+- 结构：Firefox 不支持带认证 SOCKS5，所以本机 `proxy_relay.py` 起一堆「无认证本地 SOCKS5」，
+  各自转给带认证的上游。配置 `E:\software\FoxProfile\relay_config.10ports.json`
+  （文件名沿用旧名，实际现在是 **1080–1109 共 30 条**）。
+- 环境代理填 `socks5://127.0.0.1:<端口>`：TK01–TK10 = 1080–1089，**新环境从 1090 起顺序递增**
+  （TK11=1090、TK12=1091…）。新建环境**严禁**照抄模板环境的代理 —— 那会让两个号挤同一条中继，
+  一条挂了另一条跟着挂（用户 2026-10-24：「肯定不能共用一个端口呀，按顺序递增嘛」）。
+- 分配逻辑只有一份：`src/collector/proxy-ports.js`（`nextRelayPort` = max(已用 ∪ {1089})+1；
+  `ensureRelayPort` 缺端口时补配置并重启 relay，`localRelayPort` 只认本地 `127.0.0.1:PORT`）。
+  `tk-login-batch.mjs` 两处新建环境都走它（`allocateProxy()`）。单测 `tests/unit/proxy-ports.test.js`。
+- `relay-keepalive.ps1`（计划任务 `XNOW relay 守护`，60 秒一轮）**从配置读端口清单**，
+  日志写 `端口 30/30 正常`。别再把端口范围写死在脚本里。
+- **判断 relay 死活只看端口，不看进程**：venv 的 `pythonw.exe` 是父进程（0 个监听），
+  30 个监听在它 spawn 的系统 python 子进程里。按「0 个端口」去杀会把父子一起杀掉、30 条隧道瞬断
+  （2026-10-24 真踩过）。
+  ```powershell
+  (Get-NetTCPConnection -State Listen | ? { $_.LocalPort -ge 1080 -and $_.LocalPort -le 1109 } | Select -Unique LocalPort).Count   # 应 30
+  curl.exe -s --max-time 25 --socks5-hostname 127.0.0.1:1090 https://api.ipify.org                                                     # 出口 IP
+  ```
+- 上游目前只有 `node.example.com:26219` 一个入站，所以 30 条隧道出口 IP 相同；
+  以后一号一 IP 时按 `relay_config.10ip.example.json` 换各自 `upstream` 即可（不用改代码）。
+- **改文件别用 PowerShell 串字符串**：本轮 `[System.IO.File]` 误写成 `[String.IO.File]`
+  导致 `$t` 为 null，随后 `WriteAllText` 把 `proxy-ports.js` 清成 0 行。用编辑工具改。
 
 ## 发布时的弹窗怎么处理（AI 标注 → Turn on）
 - 统一入口：`src/publisher/dialogs.js` 的 `handleDialogs(page, { sessionPath, tag })`，
@@ -655,7 +792,10 @@
 node scripts/tk-login-batch.mjs --auto --dry-run   # 先看计划：谁登录、谁跳过、要不要建环境
 node scripts/tk-login-batch.mjs --auto             # 真跑
 ```
-- 账号 N → 环境 `TK0N`；环境不够会调 `POST /profiles` 自动建 `TK11`…（代理/时区照抄模板环境）。
+- 账号 → 环境：**按用户名对齐**（`src/account-env.js`，界面导入和命令行共用）。已登记的号留在原环境；
+  新用户名自动拿**最小空号** `TK11`、`TK12`…（环境不够会调 `POST /profiles` 自动建，代理/时区照抄模板环境）。
+  所以「加 1 个/10 个新号」只要给**新号那几行**，不用把老号一起写进文件（老规则「文件第 N 行 = TK0N」
+  会把新号错配到 TK01 并覆盖 TK01 的凭据，2026-10-24 已废）。
 - 默认**跳过已登录的环境**（`GET /profiles/{env}/cookies?format=json` 里有没有 `sessionid`），
   `--force` 才强制重登（会先去 `/logout`）。其它开关：`--from/--to/--only`、`--gap 60`、
   `--no-create`、`--no-config`。
@@ -666,6 +806,23 @@ node scripts/tk-login-batch.mjs --auto             # 真跑
   应用配置 `%APPDATA%\xnowpost\config\user.json` 自动补 `bitEnvId` 与 `username`。
 - 处理完的账号文件自动归档到 `import\accounts\done\`。
 
+### 扫码登录（没有账号密码的号）
+```powershell
+node scripts/tk-login-batch.mjs --qr                # 下一个空号环境（TK11…）
+node scripts/tk-login-batch.mjs --qr --qr-count 3   # 连加 3 个
+node scripts/tk-login-batch.mjs --qr --only TK12    # 指定环境
+```
+- 界面入口：账号页「扫码加号」（IPC `accounts:run` 带 `qr:true`，主进程翻成 `--qr`）。
+- 流程：选空号（`src/account-env.js`）→ 缺的建环境（照 TK01 代理/时区）→ `/login` →
+  点「Use QR code」→ 等 canvas → 窗口顶到最前 → 你手机扫 → 离开 `/login` 即成功补：
+  读 @用户名 → 备份 cookie → 写 `env-accounts.json` / `config/user.json` → 关窗口 → 报告。
+- **二维码是 `<canvas>`（170x170），不是 `<img>`**；入口是 `div` 文字 `Use QR code`（345x46）。
+- **别用 `/passport/web/account/info/` 的 `screen_name` 当用户名**：它是内部 id
+  （实测 TK01 返回 `user4837577922302`，真名 `xnow.matrix`，`unique_id` 恒 null）。
+  唯一可靠来源是 `https://www.tiktok.com/tiktokstudio` 里那条 `a[href^="/@"]`；
+  `/foryou` 里的 `@链接` 是推荐流作者，认不出自己。
+- 扫完的号没有密码（账号页显示「未导入」是正常的），登录态全靠 cookie；
+  cookie 已备份到 `backups/cookies/<日期>/<环境>.json`，环境坏了导入即可，不用再扫。
 ### 人机验证（captcha）怎么处理
 - 滑块/拼图这类**不做自动破解**：成功率低，失败还会加重风控。
 - 做法是**人工接管**：检测到验证（文字 + `iframe[src*=captcha]` / `[id*=captcha]` 双保险）后，

@@ -15,8 +15,10 @@
  */
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { openFoxPage, closeFoxPage } from '../src/collector/foxpw.js';
+import { judgeProfileCompleteness, isNavigationInterrupted } from '../src/profile-quality.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -74,6 +76,11 @@ const EXTRACT = () => {
     nickname: txt('[data-e2e="user-title"]'),
     handle: txt('[data-e2e="user-subtitle"]'),
     avatar,
+    // 头像是不是真的加载出来了（页面上没加载完时 src 可能还在、尺寸还是 0）
+    avatarLoaded: (() => {
+      const el = document.querySelector('img[class*="ImgAvatar"]') || document.querySelector('img.user-avatar');
+      return !!(el && el.naturalWidth >= 40);
+    })(),
     following: txt('[data-e2e="following-count"]'),
     followers: txt('[data-e2e="followers-count"]'),
     likes: txt('[data-e2e="likes-count"]'),
@@ -164,19 +171,57 @@ async function main() {
     console.log(`  ── ${env} @${username} ──`);
     let closed = false;
     try {
-      const { page } = await openFoxPage(env, API);
-      await page.goto(`https://www.tiktok.com/@${encodeURIComponent(username)}`, { waitUntil: 'commit' });
-      // 等资料卡出现（最多 25 秒）
+      const { page } = await openFoxPage(env, API, { minimize: true });   // 只读：不用看窗口，缩到任务栏
+      // ⚠️ 必须带 cache-buster：2026-10-20 实测，不带参数的 /@user 会被 Camoufox/TikTok 边缘缓存住，
+      // 读回来的是**上一次**的昵称/简介/头像地址（用户口径「资料抓的不准」就是它），
+      // 而错得"很像真的"（字段齐全、头像也能下载），比报错更难发现。
+      const profileUrl = `https://www.tiktok.com/@${encodeURIComponent(username)}?lang=en&_r=${Date.now()}`;
+      // 2026-10-21 13:41 实测：TikTok 自己会把带参数的地址**跳回干净地址**
+      // （`Navigation ... is interrupted by another navigation to https://www.tiktok.com/@user`），
+      // Playwright 把这个跳转当成异常抛出来 → 整轮判失败，而页面其实已经打开了。
+      // 这种"页面自己跳转"对我们无害（目标还是同一个主页），容忍它，继续等资料卡。
+      try {
+        await page.goto(profileUrl, { waitUntil: 'commit' });
+      } catch (e) {
+        const msg = String(e?.message || '');
+        if (!/interrupted by another navigation|NS_BINDING_ABORTED|navigation aborted/i.test(msg)) throw e;
+        console.log('     ↪️ 页面自己跳回了不带参数的地址（TikTok 会去掉 ?_r=），继续等资料卡');
+      }
+      // 等资料卡出现（最多 25 秒）；头像 <img> 真的加载出来（naturalWidth>=40）才算数
       let data = null;
       for (let i = 0; i < 25; i++) {
         await page.waitForTimeout(1000);
         data = await page.evaluate(EXTRACT).catch(() => null);
-        if (data && (data.nickname || data.followers)) break;
+        if (data && (data.nickname || data.followers) && data.avatarLoaded) break;
+      }
+      // 被打断/读到空 → 再试一次（TikTok 去掉参数后可能直接吃缓存；换一种参数再要一次）
+      if (!data || (!data.nickname && !data.followers)) {
+        console.log('     🔁 第一次没读到资料卡，换参数再要一次...');
+        try {
+          await page.goto(`https://www.tiktok.com/@${encodeURIComponent(username)}?lang=en&_t=${Date.now()}`, {
+            waitUntil: 'commit',
+          });
+        } catch (e) {
+          if (!isNavigationInterrupted(e)) throw e;
+        }
+        for (let i = 0; i < 25; i++) {
+          await page.waitForTimeout(1000);
+          data = await page.evaluate(EXTRACT).catch(() => null);
+          if (data && (data.nickname || data.followers) && data.avatarLoaded) break;
+        }
       }
       if (!data || (!data.nickname && !data.followers)) {
         throw new Error('页面没加载出资料卡（可能被验证/未登录）');
       }
       if (data.blocked && !data.followers) throw new Error('页面要求登录或人机验证');
+      // 再读一遍：两次一致才采信（防止拿到半渲染的中间态）
+      await page.waitForTimeout(2500);
+      const data2 = await page.evaluate(EXTRACT).catch(() => null);
+      if (data2 && (data2.nickname || data2.followers)) {
+        const diff = ['nickname', 'bio', 'followers', 'following', 'likes'].filter((k) => data2[k] !== data[k]);
+        if (diff.length) console.log(`     ℹ️ 两次读数不一致（${diff.join('/')}）→ 用后一次`);
+        data = data2;
+      }
 
       let info = { createTime: '', email: '', screenName: '', region: '' };
       try {
@@ -188,33 +233,77 @@ async function main() {
       let region = info.region || regionFromAccountFile(env, cfg, state);
 
       // 头像落盘（CDN 图不需要登录态）
+      // 除了存图，还要存**内容哈希**：只比 URL 会被签名参数骗过去，
+      // 只有哈希才能回答「线上这张到底换没换」（2026-10-20 被平台换回头像就是这样发现的）。
+      const prev = profiles[env] || {};
       let avatarFile = '';
+      const downloadAvatar = async (url) => {
+        const sep = url.includes('?') ? '&' : '?';
+        const res = await fetch(`${url}${sep}_cb=${Date.now()}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Cache-Control': 'no-cache' },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 500) throw new Error(`图片太小（${buf.length} 字节）`);
+        return buf;
+      };
       if (data.avatar && /^https?:/.test(data.avatar)) {
         try {
-          const res = await fetch(data.avatar, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-          if (res.ok) {
-            const buf = Buffer.from(await res.arrayBuffer());
-            if (buf.length > 500) {
-              const f = path.join(AVATAR_DIR, `${env}.jpg`);
-              fs.writeFileSync(f, buf);
-              avatarFile = f;
+          let buf = await downloadAvatar(data.avatar);
+          let sha = crypto.createHash('sha1').update(buf).digest('hex');
+          // 和上次一模一样时再确认一次：可能页面上还是缓存的旧 src
+          if (prev.avatarSha && sha === prev.avatarSha) {
+            await page.waitForTimeout(3000);
+            const again = await page.evaluate(EXTRACT).catch(() => null);
+            if (again && again.avatar && again.avatar !== data.avatar) {
+              console.log('     ℹ️ 头像地址变了（刚才是缓存的旧地址）→ 重新下载');
+              data.avatar = again.avatar;
+              buf = await downloadAvatar(data.avatar);
+              sha = crypto.createHash('sha1').update(buf).digest('hex');
             }
           }
-        } catch (_) {
-          /* 头像下载失败不影响其它字段 */
+          const f = path.join(AVATAR_DIR, `${env}.jpg`);
+          fs.writeFileSync(f, buf);
+          avatarFile = f;
+          data.avatarSha = sha;
+          if (prev.avatarSha && prev.avatarSha !== sha) {
+            console.log(`     🖼️ 头像内容变了：${prev.avatarSha.slice(0, 8)} → ${sha.slice(0, 8)}`);
+          }
+        } catch (e) {
+          console.log(`     ⚠️ 头像下载失败：${e.message}`);
+          // 下载失败就保留上一次的结论，别把已有信息抹掉
+          data.avatarSha = prev.avatarSha || '';
         }
       }
 
       const handle = String(data.handle || '').replace(/^@/, '').trim() || username;
+      // 「No bio yet.」是 TikTok 的空简介占位文案，不是用户写的简介 —— 存成空串，
+      // 否则界面/日报会把平台的默认提示当成"他自己写的"，这也是"资料不准"的一种。
+      const bioRaw = String(data.bio || '').trim();
+      const bio = /^no bio yet\.?$/i.test(bioRaw) ? '' : bioRaw;
+      const sha = data.avatarSha || prev.avatarSha || '';
+      // 「平台把头像换回了」：我们上传时记下过 intended 哈希，现在线上不是那张
+      const intended = prev.avatarIntendedSha || '';
+      const reverted = !!(intended && sha && sha !== intended);
       profiles[env] = {
         username: handle,
         nickname: data.nickname || '',
         avatarFile,
         avatarUrl: data.avatar || '',
+        avatarSha: sha,
+        avatarChangedAt:
+          prev.avatarSha && sha && prev.avatarSha !== sha
+            ? new Date().toISOString()
+            : prev.avatarChangedAt || prev.fetchedAt || '',
+        // 改资料脚本上传成功后写进来，用来判断"线上这张还是不是我们传的那张"
+        avatarIntendedSha: intended,
+        avatarIntendedAt: prev.avatarIntendedAt || '',
+        avatarReverted: reverted,
+        avatarRevertedAt: reverted ? prev.avatarRevertedAt || new Date().toISOString() : '',
         followers: data.followers || '',
         following: data.following || '',
         likes: data.likes || '',
-        bio: data.bio || '',
+        bio,
         verified: !!data.verified,
         region,
         createTime: info.createTime || '',
@@ -222,14 +311,30 @@ async function main() {
         fetchedAt: new Date().toISOString(),
       };
       writeJson(PROFILES_FILE, profiles);
+      if (reverted) {
+        console.log(
+          `  ⚠️ ${env} 头像已经不是我们上传的那张了（线上 ${sha.slice(0, 8)} ≠ 上传 ${intended.slice(0, 8)}）→ 疑似被平台换回`,
+        );
+      }
 
       // 顺手把真实用户名补进状态文件
       state[env] = { ...(state[env] || {}), username: handle };
       writeJson(STATE_FILE, state);
 
+      // ⚠️ 抓到了 ≠ 资料是好的：2026-10-20 23:36 实测 TK07 昵称被平台退回成用户名、简介为空，
+      // 旧代码照样打 ✅，看日志的人会以为一切正常。现在把这种情况单独标出来。
+      const nickStr = String(data.nickname || '').trim();
+      // 判定口径与单测共用一份（tests/unit/profile-quality.test.js）
+      const { problems } = judgeProfileCompleteness({
+        username: handle, nickname: nickStr, bio, avatarUrl: data.avatar, avatarSha: sha,
+      });
+      const mark = problems.length ? '⚠️' : '✅';
       console.log(
-        `  ✅ ${env} ${data.nickname || handle} · 粉丝 ${data.followers || '?'} / 关注 ${data.following || '?'} / 赞 ${data.likes || '?'} · 地区 ${region || '?'}`,
+        `  ${mark} ${env} ${nickStr || handle} · 粉丝 ${data.followers || '?'} / 关注 ${data.following || '?'} / 赞 ${data.likes || '?'} · 地区 ${region || '?'}`,
       );
+      if (problems.length) {
+        console.log(`     ↳ ${problems.join('、')}（资料抓取成功，但账号资料不完整，多半是平台侧改的）`);
+      }
       ok++;
     } catch (e) {
       console.log(`  ❌ ${env} 失败：${e.message}`);

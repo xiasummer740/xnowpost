@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-20T14:11:34.109Z",
+  "clips": [
+    {
+      "file": "clock__s4-1.mp4",
+      "tags": [
+        "clock",
+        "time",
+        "desk"
+      ],
+      "note": "桌面大数字时钟 05:31",
+      "bytes": 6017683,
+      "addedAt": "2026-10-20T13:22:03.070Z",
+      "luma": 57,
+      "sharp": 491,
+      "hash": "3f3cfcb7c2fbcf17",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "clock__s4-2.mp4",
+      "tags": [
+        "clock",
+        "time"
+      ],
+      "note": "复古闹钟组",
+      "bytes": 6144110,
+      "addedAt": "2026-10-20T13:22:03.074Z",
+      "luma": 126,
+      "sharp": 511,
+      "hash": "ff7f38a626175306",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "data__s3-4.mp4",
+      "tags": [
+        "data",
+        "numbers",
+        "screen",
+        "dashboard"
+      ],
+      "note": "数字滚动的数据屏",
+      "bytes": 7041626,
+      "addedAt": "2026-10-20T13:22:03.059Z",
+      "luma": 21,
+      "sharp": 485,
+      "hash": "4c4f4ecc8c8e8c9c",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "desk__s4-4.mp4",
+      "tags": [
+        "desk",
+        "phone",
+        "notes",
+        "planning"
+      ],
+      "note": "桌面待办 + 手机（不用盯着）",
+      "bytes": 1930570,
+      "addedAt": "2026-10-20T13:22:03.076Z",
+      "luma": 55,
+      "sharp": 407,
+      "hash": "a33d30c8f12780a6",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "desk__s4-5.mp4",
+      "tags": [
+        "desk",
+        "writing",
+        "notes",
+        "planning"
+      ],
+      "note": "手写笔记",
+      "bytes": 2387730,
+      "addedAt": "2026-10-20T13:22:03.079Z",
+      "luma": 87,
+      "sharp": 216,
+      "hash": "0fb9e0527b1d0f07",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "editing__s1-2.mp4",
+      "tags": [
+        "editing",
+        "timeline",
+        "screen"
+      ],
+      "note": "倾斜视角的剪辑时间线",
+      "bytes": 4859130,
+      "addedAt": "2026-10-20T13:22:03.022Z",
+      "luma": 37,
+      "sharp": 213,
+      "hash": "68300f1f1e9e4e66",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "editing__s1-3.mp4",
+      "tags": [
+        "editing",
+        "laptop",
+        "timeline",
+        "video"
+      ],
+      "note": "笔记本上跑剪辑软件，时间线清晰",
+      "bytes": 4331767,
+      "addedAt": "2026-10-20T13:22:03.018Z",
+      "luma": 92,
+      "sharp": 1189,
+      "hash": "310ee6fd63871727",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "editing__s1-4.mp4",
+      "tags": [
+        "editing",
+        "audio",
+        "waveform"
+      ],
+      "note": "音频波形（配音/声音相关）",
+      "bytes": 4216244,
+      "addedAt": "2026-10-20T13:22:03.026Z",
+      "luma": 64,
+      "sharp": 70,
+      "hash": "f8ffff5f5ffffffe",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "editing__s1-6.mp4",
+      "tags": [
+        "editing",
+        "workstation",
+        "monitor",
+        "desktop"
+      ],
+      "note": "双屏工作站 + 剪辑轨道",
+      "bytes": 6418005,
+      "addedAt": "2026-10-20T13:22:03.047Z",
+      "luma": 28,
+      "sharp": 244,
+      "hash": "efaf9f0f8f0e6766",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "network__s3-3.mp4",
+      "tags": [
+        "network",
+        "device",
+        "cable",
+        "server",
+        "blue"
+      ],
+      "note": "蓝光网络设备 + 手（科技感）",
+      "bytes": 16722220,
+      "addedAt": "2026-10-20T13:22:03.054Z",
+      "luma": 33,
+      "sharp": 206,
+      "hash": "014e1ce3070d1000",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "phone__s5-1.mp4",
+      "tags": [
+        "phone",
+        "chat",
+        "comment",
+        "typing"
+      ],
+      "note": "手机聊天/评论输入框 + 键盘",
+      "bytes": 11232733,
+      "addedAt": "2026-10-20T13:22:03.086Z",
+      "luma": 80,
+      "sharp": 255,
+      "hash": "cbcb4c4141c7c789",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "phone__s5-5.mp4",
+      "tags": [
+        "phone",
+        "tablet",
+        "hands"
+      ],
+      "note": "双手操作平板/手机",
+      "bytes": 21682909,
+      "addedAt": "2026-10-20T13:22:03.095Z",
+      "luma": 61,
+      "sharp": 305,
+      "hash": "070e0bcece4e43cf",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "phone__s5-6.mp4",
+      "tags": [
+        "phone",
+        "hand",
+        "smartphone"
+      ],
+      "note": "手持手机",
+      "bytes": 1036482,
+      "addedAt": "2026-10-20T13:22:03.098Z",
+      "luma": 128,
+      "sharp": 144,
+      "hash": "1acadaf2fc50d486",
+      "source": "curated",
+      "used": 0
+    },
+    {
+      "file": "server__s3-6.mp4",
+      "tags": [
+        "server",
+        "room",
+        "monitor",
+        "control",
+        "office"
+      ],
+      "note": "机房/控制室大屏",
+      "bytes": 5172551,
+      "addedAt": "2026-10-20T13:22:03.065Z",
+      "luma": 39,
+      "sharp": 303,
+      "hash": "c79f767446434a33",
+      "source": "curated",
+      "used": 0
+    }
+  ]
+}

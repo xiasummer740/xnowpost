@@ -32,6 +32,8 @@ const TIMEOUTS = {
   collect: envMs('XNOWPOST_TIMEOUT_COLLECT_MS', 15 * MIN),
   engine: envMs('XNOWPOST_TIMEOUT_ENGINE_MS', 30 * MIN),
   publish: envMs('XNOWPOST_TIMEOUT_PUBLISH_MS', 45 * MIN),
+  // 养号：每号默认 10 分钟 + 账号间隔，2~3 个号一轮约 25~40 分钟
+  warmup: envMs('XNOWPOST_TIMEOUT_WARMUP_MS', 45 * MIN),
 };
 
 // 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
@@ -149,8 +151,9 @@ function runOnce(args, { timeoutMs }) {
   return { ok: true, timeout: false, code: 0, message: '' };
 }
 
-async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true } = {}) {
-  const timeoutMs = TIMEOUTS[kind] || TIMEOUTS.engine;
+async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true, timeoutMs: timeoutOverride = 0 } = {}) {
+  // 养号这类「一批账号串行」的任务预算要按账号数算，所以允许调用方覆盖
+  const timeoutMs = Number(timeoutOverride) > 0 ? Number(timeoutOverride) : (TIMEOUTS[kind] || TIMEOUTS.engine);
   const maxAttempts = retryOnFail ? MAX_RETRIES + 1 : 1;
   let lastMessage = '';
   let sawTimeout = false;
@@ -182,6 +185,14 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true }
       return { ok: false, unconfirmed: true, reason: '已点击发布按钮但无法确认公开' };
     }
 
+    // 退出码 4 = 养号「部分成功」：有的号播放被拦/白屏（一条都没播），但别的号确实看了、点了。
+    // 既不能记整轮失败（用户会以为熬夜白跑，实际 8/10 真的养了），也不能重试
+    // （重试 = 再点一遍赞）。所以单独一个结果：部分完成，谁没养成写在日志里。
+    if (r.code === 4) {
+      log(`⚠️ ${label} 部分完成：有账号没养成（播放被拦或白屏，逐号明细见上），本轮不重试`);
+      return { ok: true, partial: true, reason: '有账号没养成（播放被拦或白屏）' };
+    }
+
     lastMessage = r.message;
     if (r.timeout) {
       sawTimeout = true;
@@ -199,7 +210,10 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true }
   }
 
   const head = sawTimeout ? '⏱️ 定时任务<b>未确认</b>（按失败处理）' : '⛔ 定时任务失败';
-  const msg = `${head} <b>${label}</b>\n${sawTimeout ? '原因: 执行超时，子进程已被强制结束，需要人工确认产物/发布状态，本轮未重试' : `已重试 ${MAX_RETRIES} 次均失败\n原因: ${lastMessage}`}\n时间: ${new Date().toLocaleString('zh-CN')}\n日志: ${getLogPath()}`;
+  // 只有真的重试过才写「已重试 N 次」：retryOnFail:false（养号就是）跑一次就失败时，
+  // 旧文案会告诉用户「已重试 2 次」，等于凭空多出两次不存在的尝试，复盘时最误导人。
+  const retried = maxAttempts > 1;
+  const msg = `${head} <b>${label}</b>\n${sawTimeout ? '原因: 执行超时，子进程已被强制结束，需要人工确认产物/发布状态，本轮未重试' : (retried ? `已重试 ${MAX_RETRIES} 次均失败\n原因: ${lastMessage}` : `原因: ${lastMessage || '退出码非 0'}`)}\n时间: ${new Date().toLocaleString('zh-CN')}\n日志: ${getLogPath()}`;
   log(msg);
   await sendAlert(msg);
   return {
@@ -207,7 +221,7 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true }
     timeout: sawTimeout,
     reason: sawTimeout
       ? `执行超时，子进程已被强制结束（重试 ${MAX_RETRIES} 次也无效前就停了）`
-      : `已重试 ${MAX_RETRIES} 次均失败：${lastMessage || '退出码非 0'}`,
+      : retried ? `已重试 ${MAX_RETRIES} 次均失败：${lastMessage || '退出码非 0'}` : (lastMessage || '退出码非 0'),
   };
 }
 
@@ -301,6 +315,51 @@ async function runJob(job) {
       log(`⚠️ 这些环境未登录，本轮发布会跳过/失败：${pre.out.map(r => r.env).join(', ')}`);
     }
     return outcomeOf(await runWithRetry(['src/publisher/index.js', '--all'], job.label, { kind: 'publish' }));
+  } else if (job.mode === 'warmup') {
+    // 养号：按勾选顺序一个号一个号养（同一时刻只开一个环境，共用 IP 不能并发）。
+    // 每号时长在区间里随机抽（界面「8 分 ~ 15 分 随机/号」）。
+    // 不重试（retryOnFail:false）：重跑等于再来一遍真实的点赞/关注，宁可少跑也不重复扣分。
+    const fixed = Number(job.warmupMinutes);
+    let lo = Number(job.warmupMinutesMin) > 0 ? Math.round(Number(job.warmupMinutesMin)) : 0;
+    let hi = Number(job.warmupMinutesMax) > 0 ? Math.round(Number(job.warmupMinutesMax)) : 0;
+    if (!lo && !hi && fixed > 0) { lo = hi = Math.round(fixed); }   // 兼容只有 warmupMinutes 的老配置
+    if (!lo && !hi) { lo = 8; hi = 15; }
+    if (!hi) hi = lo;
+    if (!lo) lo = hi;
+    if (hi < lo) [lo, hi] = [hi, lo];
+    lo = Math.max(1, Math.min(60, lo));
+    hi = Math.max(lo, Math.min(60, hi));
+
+    const accounts = safeAccountList(job.warmupAccounts || job.account);
+    if (!accounts.length) {
+      log(`⏭️ 跳过「${job.label || job.time}」：这个养号闹钟还没勾选账号。`);
+      log('   到「定时」页点「选择要养的账号」勾上要养的号（可多选，会按顺序一个一个养）。');
+      return { result: 'skipped', reason: '养号闹钟没勾选账号（不知道该养谁）' };
+    }
+    const envs = resolveEnvs(accounts.join(','), cfg);
+    const pre = await precheckLogin(envs);
+    if (envs.length && pre.out.length === envs.length) {
+      log(`⏭️ 跳过「${job.label || job.time}」：${envs.length} 个环境全都没登录，养号没有意义。`);
+      return { result: 'skipped', reason: `所有环境都没登录（${envs.join('、')}）` };
+    }
+    if (pre.out.length) log(`⚠️ 这些环境未登录，本轮养号会跳过/失败：${pre.out.map((r) => r.env).join(', ')}`);
+
+    // 超时按「账号数 × 最长时长 + 号间歇脚 + 开浏览器开销」算，别用固定 45 分钟：
+    // 10 个号每个最多 15 分钟就要 2.5 小时，固定预算会把后半程直接掐掉。
+    const perAccountMax = hi + 1.5;            // +1.5 分钟：开/关浏览器、首页加载
+    const gapMaxMin = (accounts.length - 1) * 2;  // 号与号之间最多歇 120 秒
+    const budgetMin = Math.ceil(accounts.length * perAccountMax + gapMaxMin + 5);
+    const timeoutMs = Math.max(TIMEOUTS.warmup, budgetMin * MIN);
+
+    log(`👥 养号排队 ${accounts.length} 个号：${accounts.join(' → ')}`);
+    log(`🎲 每号随机 ${lo}~${hi} 分钟（各自独立抽），最长预算约 ${budgetMin} 分钟`);
+    const args = [
+      'scripts/tk-warmup.mjs',
+      '--accounts', accounts.join(','),
+      '--minutes-min', String(lo),
+      '--minutes-max', String(hi),
+    ];
+    return outcomeOf(await runWithRetry(args, job.label, { kind: 'warmup', retryOnFail: false, timeoutMs }));
   } else {
     // 🔴 如果闹钟指定了账号，会加自动发布参数（作为独立 argv 元素传递，不拼字符串）
     const account = String(job.account || '').trim();

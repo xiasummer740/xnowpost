@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import { initUpdater, downloadUpdate, quitAndInstall, checkForUpdates } from './updater.js';
+import { allocateAccountEnvs } from '../src/account-env.js';
 // 发布账本 / 最后发布时间（扫描逻辑与命令行脚本共用同一份实现）
 import { latestPublishByEnv, readLedger } from '../src/publish-history.js';
 // 定时轮次的落盘记录（调度器写 / 这里读），纯函数 + 落盘helper，单测在 tests/unit/scheduled-run.test.js
@@ -73,6 +74,17 @@ import {
   PUBLISH_MAX_PER_TURN,
 } from './lib/assistant-tools.js';
 import { nextJobId } from '../src/job-ids.js';
+// 浏览器环境（FoxProfile）托管：端口分配 / 统一窗口尺寸 / 删除等
+// —— 「浏览器环境」页就是靠这几个模块，别再写第二份端口分配逻辑。
+// ⚠️ 2026-10-28 起代理不再走 proxy_relay + SSH + 软路由：
+//    端口由内置内核 xray 一次开满 1080–1109（见 src/proxy/engine.js），
+//    这里只用 nextRelayPort 算"新环境该拿哪一条"，以及 proxyUrl 拼代理串。
+import { nextRelayPort, proxyUrl, localRelayPort } from '../src/collector/proxy-ports.js';
+import { applyUniformScreen } from '../src/collector/uniform-screen.js';
+// 内置代理内核（xray）：小白只需要粘一条 vless:// 链接，端口/内核全托给这一层
+import * as proxyEngine from '../src/proxy/engine.js';
+// 节点描述（`vless · host:port · 备注`）来自解析层，别再拼第二份
+import { describeNode } from '../src/proxy/node.js';
 
 /** 日志页一次最多渲染多少行（再多 DOM 会卡；文件本身不截断，界面可以「显示更早」） */
 const LOG_LINE_LIMIT = 6000;
@@ -636,6 +648,16 @@ function createWindow() {
       event.preventDefault();
       mainWindow.hide();
       addLog('info', '📌 XNOWPost 已最小化到系统托盘，右键托盘图标选择"退出"可完全关闭');
+    // Windows 托盘气泡：告诉用户窗口缩到哪去了。每次会话只提示一次，别烦人。
+    if (!globalThis.__trayHintShown && tray) {
+      globalThis.__trayHintShown = true;
+      try {
+        tray.displayBalloon({
+          title: 'XNOWPost 还在后台运行',
+          content: '定时任务照常执行。单击托盘里的粉色 X 图标（或再双击桌面图标）可恢复窗口。',
+        });
+      } catch (_) { /* 有些系统不支持气泡，忽略 */ }
+    }
     }
     // isQuitting=true 时让默认关闭行为继续
   });
@@ -702,23 +724,212 @@ function generateTrayIconPNG() {
   return Buffer.concat(chunks);
 }
 
-function createTray() {
-  // 生成或加载托盘图标
+// === FoxProfile 地址 + 小工具（模块级：守护/自检也会用到，不能放在 setupIPC 里）===
+const foxBase = () =>
+  String(loadConfig().foxApiBase || 'http://127.0.0.1:8000/api/v1').replace(/\/+$/, '');
+
+/** 跑一条命令并收 stdout（Promise 版；失败返回 '' 不抛，调用方自己判） */
+function execFileP(cmd, args) {
+  return new Promise((resolve) => {
+    let out = '';
+    try {
+      const c = spawn(cmd, args, { windowsHide: true });
+      c.stdout?.on('data', (d) => { out += d.toString(); });
+      c.stderr?.on('data', () => {});
+      c.on('error', () => resolve(''));
+      c.on('close', () => resolve(out));
+    } catch (_) {
+      resolve('');
+    }
+  });
+}
+
+/**
+ * 自检：FoxProfile 是不是被设成了"浏览器也无窗口"。
+ *
+ * 2026-10-28 真实事故：为了不让用户点 × 关掉后端，我们把 FoxProfile 跑成 headless
+ * （FOXPROFILE_HEADLESS=1）。但那个开关在 FoxProfile 里同时管两件事，于是 camoufox
+ * 带着 `-headless` 启动 —— 进程在跑、`/page/screenshot` 也能出图，**桌面上却什么都看不到**，
+ * 用户点「启动」后一脸问号（本人原话：「我没看到你打开浏览器窗口啊，是不是功能还不全」）。
+ * 更糟的是无头模式下视频解码也失败，TikTok 首页一直报
+ * `We're having trouble playing this video`（MediaError 4）。
+ *
+ * 现在 FoxProfile 把两件事拆开了（FOXPROFILE_BROWSER_HEADLESS），守护脚本会显式传 0；
+ * 这里再兜一层：老服务（或别人手动起的）如果还是无头，就在没有环境运行时静默重启一次。
+ * @returns {Promise<boolean>} true = 现在是"浏览器有窗口"的正常形态
+ */
+async function ensureFoxProfileHeaded() {
+  let info = null;
+  try {
+    const r = await fetch(`${foxBase()}/info`, { signal: AbortSignal.timeout(4000) });
+    info = await r.json();
+  } catch (_) {
+    return false; // 服务都没起来，交给守护脚本处理
+  }
+  // /info 的 headless 字段 = 浏览器是否无窗口（FoxProfile 侧语义）
+  if (!info?.headless) return true;
+
+  // 有环境开着就别动：重启服务会把它们一起关掉
+  let running = [];
+  try {
+    const r = await fetch(`${foxBase()}/browser`, { signal: AbortSignal.timeout(4000) });
+    running = (await r.json())?.running || [];
+  } catch (_) {
+    /* 读不到就当没有 */
+  }
+  if (running.length) {
+    addLog('warning', `⚠️ FoxProfile 当前是"浏览器无窗口"模式，有 ${running.length} 个环境在跑，先不动它；关掉环境后会自动纠正`);
+    return false;
+  }
+
+  addLog('warning', '🔧 FoxProfile 处于"浏览器无窗口"模式（点启动看不到窗口、视频也放不出来），正在纠正…');
+  const isSvc = (c) => /src[\\/]main\.py|browser[\\/]runner\.py/i.test(c || '');
+  const procs = [];
+  for (const name of ['pythonw.exe', 'python.exe']) {
+    try {
+      const list = await execFileP('powershell', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Get-CimInstance Win32_Process -Filter "Name='${name}'" | Where-Object { $_.CommandLine -match 'src\\\\main\\.py|browser\\\\runner\\.py' } | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }`,
+      ]);
+      procs.push(...String(list).split(/\r?\n/).filter(Boolean).filter((l) => isSvc(l.split('|')[1])));
+    } catch (_) {
+      /* 没权限/没进程都跳过 */
+    }
+  }
+  for (const line of procs) {
+    const pid = Number(line.split('|')[0]);
+    if (pid) {
+      try { process.kill(pid); } catch (_) { /* 已退出 */ }
+    }
+  }
+  // 残留的浏览器进程一起清（无头的那些）
+  try {
+    await execFileP('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Process camoufox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue']);
+  } catch (_) { /* 没有就算了 */ }
+
+  await new Promise((r) => setTimeout(r, 2500));
+  startFoxProfileGuard();
+  for (let i = 0; i < 30; i += 1) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      const r = await fetch(`${foxBase()}/info`, { signal: AbortSignal.timeout(3000) });
+      const cur = await r.json();
+      if (!cur?.headless) {
+        addLog('success', '✅ FoxProfile 已切回"浏览器有窗口"模式（点启动就能看见浏览器）');
+        return true;
+      }
+    } catch (_) { /* 还在重启 */ }
+  }
+  addLog('error', '❌ FoxProfile 仍是无窗口模式，环境可能看不到浏览器窗口（请手动执行 scripts\\foxprofile-guard.ps1）');
+  return false;
+}
+
+/**
+ * FoxProfile 守护（2026-10-23）：
+ * FoxProfile 没有托盘，点 × 会把整个服务关掉（8000 端口的 API 一起停）→ 定时任务全废。
+ * 启动应用时调一次 scripts/foxprofile-guard.ps1：
+ *   ① 服务没跑就自动拉起（约 10 秒）；
+ *   ② 无论谁起的，都把它的界面窗口最小化 —— 窗口不碍眼，API 照常，
+ *      任务执行时浏览器照样自动打开（实测最小化后 launch 环境 8.7 秒正常）。
+ * 失败只记日志，绝不阻塞应用启动。
+ */
+function startFoxProfileGuard() {
+  try {
+    const script = app.isPackaged
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'foxprofile-guard.ps1')
+      : path.join(ROOT, 'scripts', 'foxprofile-guard.ps1');
+    if (!fs.existsSync(script)) return;
+    const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
+      windowsHide: true,
+    });
+    let out = '';
+    child.stdout?.on('data', (d) => { out += d.toString(); });
+    child.on('error', (e) => addLog('warning', `⚠️ FoxProfile 守护启动失败: ${e.message}`));
+    child.on('close', (code) => {
+      const txt = out.trim().replace(/\s+/g, ' ');
+      if (txt.includes('starting') && txt.includes('api-ok')) {
+        addLog('info', `🧩 FoxProfile 原本没在运行，已自动拉起（${txt}）`);
+      }
+      if (txt.includes('minimized')) {
+        addLog('info', '🗕 已把 FoxProfile 界面收进任务栏（服务照常，跑任务时会自动开浏览器）');
+      }
+      if (code !== 0) {
+        addLog('warning', `⚠️ FoxProfile 守护未成功（退出码 ${code}）：${txt || '无输出'}`);
+      }
+    });
+  } catch (e) {
+    addLog('warning', `⚠️ FoxProfile 守护异常: ${e.message}`);
+  }
+}
+
+/**
+ * FoxProfile 周期巡检（每 3 分钟）。
+ *
+ * 2026-10-24 真实事故：FoxProfile 在 10-23 21:22 之后自己没了（flet 窗口还在，python 后端已死），
+ * 于是 02:00 那轮养号 0/10、08:30–09:15 十轮发布「先花钱生成、再卡在打不开环境」、
+ * 10:00 采集全废。启动时守护一次是不够的，必须一直盯着。
+ */
+let foxProfileWatchTimer = null;
+let foxProfileDownStreak = 0;
+
+async function foxProfileAlive() {
+  try {
+    const r = await fetch('http://127.0.0.1:8000/api/v1/browser', { signal: AbortSignal.timeout(3000) });
+    return r.ok || r.status < 500;
+  } catch (_) {
+    return false;
+  }
+}
+
+function startFoxProfileWatchdog() {
+  if (foxProfileWatchTimer) return;
+  foxProfileWatchTimer = setInterval(async () => {
+    if (await foxProfileAlive()) {
+      if (foxProfileDownStreak > 0) addLog('info', '✅ FoxProfile 已恢复');
+      foxProfileDownStreak = 0;
+      return;
+    }
+    foxProfileDownStreak += 1;
+    // 连续 2 次（约 6 分钟）都不通才动手，避免一次抖动就重启
+    if (foxProfileDownStreak < 2) return;
+    foxProfileDownStreak = 0;
+    addLog('warning', '⚠️ FoxProfile 没响应（连续 2 次巡检），正在自动拉起…');
+    startFoxProfileGuard();
+  startFoxProfileWatchdog();
+  }, 3 * 60 * 1000);
+  foxProfileWatchTimer.unref?.();
+}
+
+async function createTray() {
+  // 托盘图标 = **程序自己的图标**（2026-10-23 用户口径：「粉色X 图标换成原图标吧」）。
+  // app.getFileIcon(当前 exe) 拿到的就是资源管理器/桌面快捷方式里那个图标，永远一致；
+  // 拿不到才退回上次生成过的 PNG，再不行才现场画一个绿点。
   const iconDir = path.join(DATA_DIR, 'config');
   const iconPath = path.join(iconDir, 'tray-icon.png');
-  let trayIcon;
+  let trayIcon = nativeImage.createEmpty();
   try {
-    if (fs.existsSync(iconPath)) {
-      trayIcon = nativeImage.createFromPath(iconPath);
-    } else {
-      fs.ensureDirSync(iconDir);
-      const pngBuf = generateTrayIconPNG();
-      fs.writeFileSync(iconPath, pngBuf);
-      trayIcon = nativeImage.createFromPath(iconPath);
-    }
+    trayIcon = await app.getFileIcon(process.execPath, { size: 'small' });
   } catch (_) {
-    // 极端 fallback：用 1×1 透明像素
     trayIcon = nativeImage.createEmpty();
+  }
+  if (!trayIcon || trayIcon.isEmpty()) {
+    try {
+      trayIcon = nativeImage.createFromPath(process.execPath);
+    } catch (_) { /* ignore */ }
+  }
+  if (!trayIcon || trayIcon.isEmpty()) {
+    try {
+      if (fs.existsSync(iconPath)) {
+        trayIcon = nativeImage.createFromPath(iconPath);
+      } else {
+        fs.ensureDirSync(iconDir);
+        fs.writeFileSync(iconPath, generateTrayIconPNG());
+        trayIcon = nativeImage.createFromPath(iconPath);
+      }
+    } catch (_) {
+      // 极端 fallback：用 1×1 透明像素
+      trayIcon = nativeImage.createEmpty();
+    }
   }
   // Windows 托盘图标需要 16×16 或 32×32
   trayIcon = trayIcon.resize({ width: 32, height: 32 });
@@ -786,6 +997,36 @@ function pushEngineStatus() {
   try {
     mainWindow.webContents.send('engine:status-push', getEngineStatus());
   } catch (_) { /* 窗口正在关闭 */ }
+}
+
+// === 内置代理内核（xray）===
+// 为什么放在模块级：app.whenReady 里要直接调 startProxyEngine()。
+// 曾经把它写在 setupIPC() 内部（v1.8.0），whenReady 里那句直接 ReferenceError，
+// 被 Promise 链吞掉 → 内核没起来、界面和日志都不报，用户看到的是"浏览器全打不开网站"。
+const xrayBin = () =>
+  proxyEngine.resolveXrayBin({ resourcesPath: process.resourcesPath, devRoot: ROOT });
+
+/**
+ * 起内核（幂等）。没配节点时只告警，不抛错 —— 首次打开软件时用户还没粘链接。
+ * @returns {Promise<{ok:boolean, message?:string, pid?:number, ports?:number[]}>}
+ */
+async function startProxyEngine() {
+  const saved = proxyEngine.readNode(DATA_DIR);
+  if (!saved) {
+    addLog('warning', '🔌 还没配置代理节点（配置 → 网络节点）：环境里的浏览器打不开外网');
+    return { ok: false, message: '未配置节点' };
+  }
+  const r = await proxyEngine.startEngine({
+    dataDir: DATA_DIR,
+    bin: xrayBin(),
+    ports: proxyEngine.ENGINE_PORTS,
+  });
+  if (r.ok) {
+    addLog('success', `🔌 代理内核已启动（${describeNode(saved.node)}，端口 1080–1109）`);
+  } else {
+    addLog('error', `🔌 代理内核启动失败：${r.message}`);
+  }
+  return r;
 }
 
 // === IPC 处理器 ===
@@ -1514,6 +1755,139 @@ function setupIPC() {
   const scheduleFile = () => path.join(DATA_DIR, 'config', 'schedule.json');
 
   // 自愈：历史配置里存在重复 id。dedupeJobIds 已抽到 ./lib/sanitize.js
+
+
+  /**
+   * 首页任务表（用户 2026-10-23：「首页能不能加个任务表，这样看得比较清楚」）。
+   *
+   * 分两段返回，因为「今天全跑完了」是最常见的情况（13:22 实测 22 条全跑完），
+   * 那时候最该看的是**接下来**（哪怕在明天凌晨），而不是一张空表：
+   *   upcoming —— 还没到的，按距现在排序，含明天；status 只有 pending / running
+   *   done     —— 今天已经跑过的，带结论（ok / partial / failed / …）和耗时
+   *
+   * 数据只认落盘证据：
+   *   1. data/runs/<今天>-<HHMM>-<jobId>.json   今天的结论
+   *   2. 调度器日志最后一条「🚀 … 任务开始」没收尾  → running
+   *   3. 时间过了、今天没记录 → 不进 upcoming，也不进 done（它今天确实没跑）
+   */
+  ipcMain.handle('schedule:plan', () => {
+    const nowD = new Date();
+    const today = nowD.toLocaleDateString('sv-SE');   // 本地日期，和调度器日志/记录同名
+    const nowMin = nowD.getHours() * 60 + nowD.getMinutes();
+    const pad = (n) => String(n).padStart(2, '0');
+    const out = { today, now: pad(nowD.getHours()) + ':' + pad(nowD.getMinutes()), upcoming: [], done: [] };
+
+    // ① 今天的轮次记录（同一任务多条时取最后一条）
+    const byJob = new Map();
+    try {
+      const dir = path.join(DATA_DIR, RUNS_REL);
+      for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+        if (!name.startsWith(today) || !name.endsWith('.json')) continue;
+        try {
+          const rec = fs.readJsonSync(path.join(dir, name));
+          const id = Number(rec.jobId);
+          if (!Number.isInteger(id)) continue;
+          const prev = byJob.get(id);
+          if (!prev || Number(rec.finishedAtMs || 0) >= Number(prev.finishedAtMs || 0)) byJob.set(id, rec);
+        } catch (_) {
+          /* 坏记录跳过，不影响整张表 */
+        }
+      }
+    } catch (_) {
+      /* 记录目录读不到就当今天没跑过 */
+    }
+
+    // ② 正在跑的是哪条（日志最后一条 🚀 还没有收尾行）
+    let runningAt = '';
+    try {
+      const logFile = path.join(DATA_DIR, 'logs', 'scheduler-' + today + '.log');
+      if (fs.existsSync(logFile)) {
+        const st = fs.statSync(logFile);
+        const from = Math.max(0, st.size - 200 * 1024);
+        const fd = fs.openSync(logFile, 'r');
+        const buf = Buffer.alloc(st.size - from);
+        fs.readSync(fd, buf, 0, buf.length, from);
+        fs.closeSync(fd);
+        const lines = buf.toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+        const START = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s*🚀\s*.+?\s*任务开始/;
+        const END = /(✅\s*.+?完成|❌\s*.+?失败|⚠️\s*.+?(未确认|部分完成)|⏱️|⏭️\s*跳过|进程结束)/;
+        let idx = -1;
+        for (let k = lines.length - 1; k >= 0; k--) {
+          if (START.test(lines[k])) { idx = k; break; }
+        }
+        if (idx >= 0 && !lines.slice(idx + 1).some((l) => END.test(l))) {
+          const m = lines[idx].match(START);
+          if (m) runningAt = m[1].slice(11, 16);
+        }
+      }
+    } catch (_) {
+      /* 日志读不到就不标「执行中」 */
+    }
+
+    // ③ 组表
+    let jobs = [];
+    try {
+      jobs = fs.existsSync(scheduleFile()) ? fs.readJsonSync(scheduleFile()) : [];
+    } catch (_) {
+      jobs = [];
+    }
+    const MODE_TEXT = { auto: '视频+图文', video: '仅视频', text: '仅图文', warmup: '养号', collect: '数据采集', post: '发布' };
+    const str = (v) => (v === undefined || v === null ? '' : String(v));
+
+    for (const j of Array.isArray(jobs) ? jobs : []) {
+      if (!j || !/^\d{1,2}:\d{2}$/.test(str(j.time))) continue;
+      if (j.enabled === false) continue;
+      const [h, m] = str(j.time).split(':').map(Number);
+      const at = h * 60 + m;
+      const mode = str(j.mode) || 'auto';
+      const warm = str(j.warmupAccounts).split(',').map((x) => x.trim()).filter(Boolean);
+      const accs = mode === 'warmup' ? warm : (str(j.account) ? [str(j.account)] : []);
+      const base = {
+        id: Number(j.id) || 0,
+        time: str(j.time),
+        label: str(j.label) || MODE_TEXT[mode] || mode,
+        modeText: MODE_TEXT[mode] || mode,
+        accounts: accs,
+        accountsText: mode === 'warmup'
+          ? (accs.length ? accs.length + ' 个号：' + accs.join(',') : '没勾账号')
+          : (accs[0] ? '账号 ' + accs[0] : '仅生成'),
+        durationText: mode === 'warmup' && Number(j.warmupMinutesMax) > 0
+          ? '每号随机 ' + (Number(j.warmupMinutesMin) || Number(j.warmupMinutesMax)) + '~' + Number(j.warmupMinutesMax) + ' 分钟'
+          : '',
+      };
+
+      const rec = byJob.get(base.id);
+      if (rec) {
+        // 今天跑过了 —— 结论进 done（就算时间还没到，也说明它真跑过，按记录说话）
+        out.done.push({
+          ...base,
+          status: str(rec.result) || 'failed',
+          finishedAt: rec.finishedAt
+            ? new Date(rec.finishedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+            : '',
+          tookSec: Math.round(Number(rec.durationMs || 0) / 1000),
+          reason: str(rec.reason),
+        });
+      }
+
+      // 「接下来」= 这条任务的**下一次**是什么时候。
+      // 注意：今天跑过的任务下一次是明天 —— 2026-10-23 13:30 实测当天 22 条全跑完，
+      // 旧写法这时候「接下来」是空的，用户看到一张空表，等于白做。
+      const running = runningAt && runningAt === base.time;
+      if (running) {
+        out.upcoming.push({ ...base, day: '今天', status: 'running', minsFromNow: 0 });
+      } else if (!rec && at > nowMin) {
+        out.upcoming.push({ ...base, day: '今天', status: 'pending', minsFromNow: at - nowMin });
+      } else {
+        // 有记录（今天已跑）或今天这个点已过却没记录 → 下一次都在明天同一时刻
+        out.upcoming.push({ ...base, day: '明天', status: 'pending', minsFromNow: 24 * 60 - nowMin + at });
+      }
+    }
+
+    out.upcoming.sort((a, b) => a.minsFromNow - b.minsFromNow || a.time.localeCompare(b.time));
+    out.done.sort((a, b) => b.time.localeCompare(a.time));
+    return out;
+  });
 
   ipcMain.handle('schedule:list', () => {
     const file = scheduleFile();
@@ -3275,9 +3649,35 @@ function setupIPC() {
       return {};
     }
   };
-  // 收件箱 / 截图 / 备份 / 报告统一放到数据目录：装在 Program Files 里也能写，升级不丢
+  // 收件箱 / 截图 / 备份 / 报告的位置。
+  // **收件箱（账号 txt）放安装目录下**：`<安装目录>\import\accounts`
+  // （用户 2026-10-24 明确要求：「位置放在安装目录下面」—— 放 %APPDATA% 里他找不到）。
+  // 安装目录不可写（比如装到 Program Files）时自动退回数据目录，绝不因为权限把导入弄坏。
+  const INSTALL_DIR = app.isPackaged ? path.dirname(process.execPath) : ROOT;
+  let inboxDirCache = '';
+  const inboxDir = () => {
+    if (inboxDirCache) return inboxDirCache;
+    const want = [
+      path.join(INSTALL_DIR, 'import', 'accounts'),
+      path.join(DATA_DIR, 'import', 'accounts'),
+    ];
+    for (const dir of want) {
+      try {
+        fs.ensureDirSync(dir);
+        const probe = path.join(dir, '.write-test');
+        fs.writeFileSync(probe, '');
+        fs.unlinkSync(probe);
+        inboxDirCache = dir;
+        return dir;
+      } catch (_) {
+        /* 不可写就看下一个 */
+      }
+    }
+    inboxDirCache = want[want.length - 1];
+    return inboxDirCache;
+  };
   const accountDirs = () => ({
-    inbox: path.join(DATA_DIR, 'import', 'accounts'),
+    inbox: inboxDir(),
     shots: path.join(DATA_DIR, 'output', 'login-shots'),
     backups: path.join(DATA_DIR, 'backups', 'cookies'),
     reports: path.join(DATA_DIR, 'output'),
@@ -3405,6 +3805,8 @@ function setupIPC() {
           email: st.email || acc.email || info.email || '',
           password: st.password || acc.password || '',
           emailPassword: st.emailPassword || acc.emailPassword || '',
+          // 2FA 密钥也带上：凭据编辑弹窗要能读回（以前只有写没有读，弹窗一保存就会把它清空）
+          totpSecret: st.totpSecret || '',
           region: info.region || st.region || acc.region || '',
           followers: info.followers || '',
           following: info.following || '',
@@ -3412,7 +3814,12 @@ function setupIPC() {
           verified: !!info.verified,
           createTime: info.createTime || '',
           profileAt: info.fetchedAt || '',
-          avatarAt: info.fetchedAt || '',
+          // 头像缓存键用**内容哈希**优先：同名同 URL 但内容变了（或被平台换回）时界面必须重载
+          avatarAt: info.avatarChangedAt || info.fetchedAt || '',
+          avatarSha: info.avatarSha || '',
+          avatarIntendedSha: info.avatarIntendedSha || '',
+          avatarReverted: !!info.avatarReverted,
+          avatarRevertedAt: info.avatarRevertedAt || '',
           hasAvatar: !!info.avatarFile && fs.existsSync(info.avatarFile),
           proxy: prof.proxy || '',
           exists: profileMap.has(env),
@@ -3452,13 +3859,36 @@ function setupIPC() {
   });
 
   // 选账号文件
+  // 2026-10-24 用户口径：「新增账号的文件放一起最好，我点导入你能打开正确的路径吗」
+  // → 默认就落在收件箱（<数据目录>\import\accounts）；如果他上次选的是别处，下次还去那儿。
   ipcMain.handle('accounts:pickFile', async () => {
+    const d = accountDirs();
+    fs.ensureDirSync(d.inbox);
+    let defaultPath = d.inbox;
+    try {
+      const last = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'data', 'last-import.json'), 'utf8'));
+      if (last && last.dir && fs.existsSync(last.dir)) defaultPath = last.dir;
+    } catch {
+      /* 没记录就用收件箱 */
+    }
     const r = await electron.dialog.showOpenDialog(mainWindow, {
       title: '选择账号文件（用户名｜密码｜邮箱｜邮箱密码｜2FA密钥｜地区）',
+      defaultPath,
       properties: ['openFile'],
       filters: [{ name: '账号文件', extensions: ['txt', 'csv'] }],
     });
-    return r.canceled ? null : r.filePaths[0];
+    if (r.canceled) return null;
+    // 记住这次选的目录，下次直接打开同一处（不要每次让用户重新翻盘）
+    try {
+      fs.mkdirSync(path.join(DATA_DIR, 'data'), { recursive: true });
+      fs.writeFileSync(
+        path.join(DATA_DIR, 'data', 'last-import.json'),
+        `${JSON.stringify({ dir: path.dirname(r.filePaths[0]), at: new Date().toISOString() }, null, 2)}\n`,
+      );
+    } catch {
+      /* 记不住也不影响导入 */
+    }
+    return r.filePaths[0];
   });
 
   // 打开收件箱目录
@@ -3469,14 +3899,71 @@ function setupIPC() {
     return { ok: true, inbox: d.inbox };
   });
 
+  // 备份账号文件：收件箱里的 txt/csv → 数据目录 + 一个 zip。
+  // 收件箱按要求放在安装目录（好找），代价是**卸载/重装会跟着删掉**，所以给一个一键留底。
+  ipcMain.handle('accounts:backupFiles', async () => {
+    try {
+      const d = accountDirs();
+      if (!fs.existsSync(d.inbox)) return { ok: false, message: `收件箱还没有：${d.inbox}` };
+      const files = [];
+      const walk = (dir) => {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, e.name);
+          if (e.isDirectory()) walk(p);
+          else if (/\.(txt|csv)$/i.test(e.name)) files.push(p);
+        }
+      };
+      walk(d.inbox);
+      if (!files.length) return { ok: false, message: '收件箱里没有 .txt/.csv 账号文件' };
+
+      const stamp = `${localDateStr()}_${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}`;
+      const root = path.join(DATA_DIR, 'backups', 'account-files');
+      const dir = path.join(root, stamp);
+      fs.ensureDirSync(dir);
+      let bytes = 0;
+      for (const f of files) {
+        // 子目录（done/）用下划线拼进文件名，避免 zip 里套目录
+        const name = path.relative(d.inbox, f).replace(/[\\/]+/g, '_');
+        fs.copyFileSync(f, path.join(dir, name));
+        bytes += fs.statSync(f).size;
+      }
+      // 打 zip：用系统 Compress-Archive，不再引依赖
+      let zip = '';
+      try {
+        const { execFileSync } = _require('child_process');
+        const zipPath = `${dir}.zip`;
+        execFileSync(
+          'powershell',
+          ['-NoProfile', '-NonInteractive', '-Command',
+            `Compress-Archive -Path '${dir}\\*' -DestinationPath '${zipPath}' -Force`],
+          { windowsHide: true, timeout: 60000 },
+        );
+        if (fs.existsSync(zipPath)) zip = zipPath;
+      } catch (_) {
+        /* zip 失败也不要紧，目录里的副本照样能拷走 */
+      }
+      return { ok: true, dir, zip, count: files.length, bytes };
+    } catch (e) {
+      return { ok: false, message: String((e && e.message) || e) };
+    }
+  });
+
   // 跑批量登录（流式回传日志）
   handle('accounts:run', async (event, opts = {}) => {
     if (loginChild) return { ok: false, message: '已有登录任务在进行中' };
     const script = loginScriptPath();
     if (!fs.existsSync(script)) return { ok: false, message: `找不到登录脚本：${script}` };
     const args = [script];
-    if (opts.file) args.push('--file', String(opts.file));
-    else args.push('--auto');
+    // 扫码模式（opts.qr）：没有账号密码的号，靠手机 TikTok 扫二维码登录，不需要账号文件
+    if (opts.qr) {
+      args.push('--qr');
+      if (opts.qrCount) args.push('--qr-count', String(opts.qrCount));
+      if (opts.qrTimeout) args.push('--qr-timeout', String(opts.qrTimeout));
+    } else if (opts.file) {
+      args.push('--file', String(opts.file));
+    } else {
+      args.push('--auto');
+    }
     if (opts.dryRun) args.push('--dry-run');
     if (opts.force) args.push('--force');
     if (opts.only) args.push('--only', String(opts.only).toUpperCase());
@@ -3551,10 +4038,9 @@ function setupIPC() {
       for (const line of raw.split(/\r?\n/)) {
         const t = line.trim();
         if (!t || /^[#/]|用户名|username|账号密码/i.test(t)) continue;
-        const parts = t
-          .split(/[｜|,\t]/)
-          .map((s) => s.trim())
-          .filter((s) => s !== '');
+        // ⚠️ 这里**不能**过滤空串：列是按位置读的，`tk.ins｜密码｜｜｜｜gb` 里的空列一旦被丢掉，
+        // 后面的 gb 就会跑到「邮箱」那一格（2026-10-24 用户要「密码+地区一起填」时发现）。
+        const parts = t.split(/[｜|,\t]/).map((s) => s.trim());
         if (parts.length < 2) continue;
         const [username, password, email, emailPassword, totpSecret, region] = parts;
         if (!username || !password) continue;
@@ -3563,26 +4049,23 @@ function setupIPC() {
       if (!rows.length) return { ok: false, message: '文件里没解析出账号（第一列用户名、第二列密码）' };
 
       const state = readAccountsState();
-      const envOf = (n) => `TK${String(n).padStart(2, '0')}`;
-      const used = new Set(Object.keys(state).filter((k) => state[k] && state[k].username));
-      const taken = new Set([...used].map((e) => (state[e].username || '').toLowerCase()));
+      // 账号 → 环境：已登记的用户名留在原环境，新用户名自动拿空号（TK11、TK12…）。
+      // 规则只有一份，在 src/account-env.js（命令行批量登录走的是同一份）。
+      const alloc = allocateAccountEnvs(rows, state);
       const mapping = [];
-      rows.forEach((row, i) => {
-        const env = envOf(i + 1);
-        // 用户名已经登记过的环境保持不变（别把 TK03 的资料写到 TK01 上）
-        let target = env;
-        for (const [e, v] of Object.entries(state)) {
-          if ((v.username || '').toLowerCase() === row.username.toLowerCase()) {
-            target = e;
-            break;
-          }
-        }
+      alloc.forEach((a) => {
+        if (a.duplicate) return; // 同一份文件里重复的号，只登记一次
+        const row = rows[a.index - 1] || {};
+        const target = a.env;
         state[target] = {
           ...(state[target] || {}),
           username: row.username,
           password: row.password,
-          email: row.email,
-          emailPassword: row.emailPassword,
+          // 文件里没给邮箱时**保留原来的**：账号页要显示完整邮箱，
+          // 只导入一行「用户名｜密码」补密码时不该把邮箱清空
+          // （2026-10-24 扫码号补密码时发现：原来这里是直接 `row.email`，两列文件会把 email 抹掉）。
+          email: row.email || (state[target] || {}).email || '',
+          emailPassword: row.emailPassword || (state[target] || {}).emailPassword || '',
           // 2FA 密钥必须落盘（2026-10-19 审查发现：这里以前解析了却**没写**，
           // 于是账号文件一删、密钥就再也找不回来，掉登录后无法重登）
           totpSecret: row.totpSecret || (state[target] || {}).totpSecret || '',
@@ -3593,10 +4076,64 @@ function setupIPC() {
       });
       fs.mkdirSync(path.dirname(accountsStateFile()), { recursive: true });
       fs.writeFileSync(accountsStateFile(), JSON.stringify(state, null, 2));
+      // 凭据一变就重写当天加密包，别等启动/备份 cookie 那个时机
+      try {
+        autoBackupSecrets();
+      } catch (_) {
+        /* 备份失败不影响导入 */
+      }
       return { ok: true, count: rows.length, mapping };
     } catch (e) {
       return { ok: false, message: String(e.message || e) };
     }
+  });
+
+  /**
+   * 界面里直接改一个环境的凭据（不用再造 txt 文件）。
+   * 语义：**按传入的值原样写**（空字符串 = 清空该字段）。
+   * 只允许改已有环境，不允许这里新建环境 —— 建环境只发生在登录/导入流程里。
+   */
+  ipcMain.handle('accounts:saveCredentials', async (_e, payload = {}) => {
+    try {
+      const env = String(payload.env || '').toUpperCase();
+      if (!/^TK\d+$/.test(env)) return { ok: false, message: `环境名不对：${payload.env || '（空）'}` };
+      const state = readAccountsState();
+      const prev = state[env] || {};
+      const next = {
+        ...prev,
+        username: String(payload.username || '').trim() || prev.username || '',
+        password: String(payload.password ?? ''),
+        email: String(payload.email ?? '').trim(),
+        emailPassword: String(payload.emailPassword ?? ''),
+        totpSecret: String(payload.totpSecret ?? '').trim(),
+        region: String(payload.region ?? '').trim().toLowerCase(),
+        at: new Date().toISOString(),
+      };
+      state[env] = next;
+      fs.mkdirSync(path.dirname(accountsStateFile()), { recursive: true });
+      fs.writeFileSync(accountsStateFile(), JSON.stringify(state, null, 2));
+      // 凭据改了立刻重写加密备份（这就是「一键更新备份」：不用再点一次备份按钮）
+      let backup = null;
+      try {
+        backup = autoBackupSecrets();
+      } catch (_) {
+        backup = { ok: false, reason: 'exception' };
+      }
+      return { ok: true, env, backup };
+    } catch (e) {
+      return { ok: false, message: String(e.message || e) };
+    }
+  });
+
+  /** 手动「一键备份凭据」：把凭据/资料/闹钟等写进当天的加密包（safeStorage 加密，不落明文） */
+  ipcMain.handle('accounts:backupSecrets', async () => {
+    const r = autoBackupSecrets();
+    return {
+      ...(r || { ok: false }),
+      dir: secretsDayDir(),
+      file: secretsBundlePath(),
+      keepDays: SECRET_KEEP_DAYS,
+    };
   });
 
   // 头像：读本地 jpg 转 data URI（渲染进程不用开 file:// 权限，也不依赖外网 CDN）
@@ -3775,6 +4312,487 @@ function setupIPC() {
         /* 已退出 */
       }
     }
+    return { ok: true };
+  });
+
+  /* ==========================================================================
+   * 浏览器环境（FoxProfile 托管面） 2026-10-28
+   *
+   * 用户口径：「两个软件结合使用，用起来也比较麻烦，能整合成一个软件吗」
+   * → FoxProfile 退成后台服务（scripts/foxprofile-guard.ps1 默认 headless，
+   *   没有 Flet 窗口可关，也就不会出现「关掉窗口把 11 个环境一起弄死」）；
+   *   环境的新建/删除/启动/停止/测出口全部搬到这里。
+   *
+   * 实现原则：**只用 FoxProfile 现成的 HTTP 接口**，不复制它的指纹逻辑：
+   *   GET    /profiles                   列表
+   *   POST   /profiles                   新建（proxy / os_type / timezone / locale / engine）
+   *   GET    /profiles/{name}/ip-check   测出口 IP（顺带证明这条代理通不通）
+   *   DELETE /profiles/{name}            删除（cookie 一起没，必须输入环境名确认）
+   *   POST   /browser/{name}/launch      启动（wait=true 等到真能用）
+   *   POST   /browser/{name}/stop        停止
+   * ========================================================================*/
+  // foxBase 已在模块级定义（守护脚本/无头自检也要用），这里不再重复定义
+
+  /** 统一发请求：不让 axios 抛 4xx/5xx，调用方自己看 status（要能说出"FoxProfile 拒绝的原因"） */
+  const foxReq = async ({ method = 'GET', url, body, timeout = 25000 }) => {
+    const axios = (await import('axios')).default;
+    return axios({
+      method,
+      url: `${foxBase()}${url}`,
+      data: body,
+      timeout,
+      validateStatus: () => true,
+    });
+  };
+
+  let sqliteModCache;
+  const loadSqlite = async () => {
+    if (sqliteModCache !== undefined) return sqliteModCache;
+    try {
+      sqliteModCache = await import('node:sqlite');
+    } catch (_) {
+      sqliteModCache = null; // 老 Node 没有这个模块 → 登录态显示「未知」
+    }
+    return sqliteModCache;
+  };
+
+  /** 读一个环境的 cookie 库判断登录态（毫秒级；不要用 /profiles/{env}/cookies，那个 4 秒） */
+  const readEnvCookieState = async (prof, env) => {
+    const dir = prof?.data_dir || path.join(FOX_DATA_DIR(), env);
+    const dbFile = path.join(dir, 'cookies.sqlite');
+    const out = { cookies: 0, loggedIn: null, lastActive: '', note: '' };
+    if (!fs.existsSync(dbFile)) {
+      out.note = '没有 cookie 库';
+      return out;
+    }
+    try {
+      out.lastActive = fs.statSync(dbFile).mtime.toISOString();
+    } catch (_) {
+      /* 忽略 */
+    }
+    const mod = await loadSqlite();
+    if (!mod) {
+      out.note = '登录态读不了';
+      return out;
+    }
+    try {
+      const db = new mod.DatabaseSync(dbFile, { readOnly: true });
+      try {
+        const row = db
+          .prepare(
+            `SELECT COUNT(*) AS total,
+                    SUM(CASE WHEN name IN ('sessionid','sessionid_ss','sid_tt','sid_guard') THEN 1 ELSE 0 END) AS session
+               FROM moz_cookies WHERE host LIKE '%tiktok%'`,
+          )
+          .get();
+        out.cookies = Number(row?.total || 0);
+        out.loggedIn = Number(row?.session || 0) > 0;
+        if (!out.loggedIn) out.note = '需登录';
+      } finally {
+        db.close();
+      }
+    } catch (_) {
+      out.note = 'cookie 库被占用';
+    }
+    return out;
+  };
+
+  /** 内核没在跑时也要能说清"哪些端口其实是通的"（可能是别的进程占着/上次没退干净） */
+  const listeningEnginePorts = async () => {
+    const out = [];
+    await Promise.all(
+      proxyEngine.ENGINE_PORTS.map(async (p) => {
+        if (await proxyEngine.portListening(p)) out.push(p);
+      }),
+    );
+    return out;
+  };
+
+  /** 环境列表 + 后台服务是否活着（界面红条就是靠 serviceOk） */
+  handle('envs:list', async () => {
+    const state = readAccountsState();
+    let profiles = [];
+    let running = [];
+    let serviceOk = true;
+    let serviceNote = '';
+    try {
+      const [p, b] = await Promise.all([
+        foxReq({ url: '/profiles', timeout: 10000 }),
+        foxReq({ url: '/browser', timeout: 8000 }),
+      ]);
+      profiles = Array.isArray(p.data?.profiles) ? p.data.profiles : [];
+      running = Array.isArray(b.data?.running) ? b.data.running : [];
+      if (p.status >= 400) {
+        serviceOk = false;
+        serviceNote = `后台服务返回 HTTP ${p.status}`;
+      }
+    } catch (e) {
+      serviceOk = false;
+      serviceNote =
+        e?.code === 'ECONNREFUSED'
+          ? '后台服务没在跑（127.0.0.1:8000 不通）'
+          : e?.message || String(e);
+    }
+
+    // 端口活不活，现在由内置内核说了算（1080–1109 一条环境一条），
+    // 不再读 proxy_relay 的配置文件 —— 那个链路要软路由+SSH，小白配不出来。
+    const engineRunning = proxyEngine.isRunning();
+    const enginePorts = engineRunning
+      ? new Set(proxyEngine.ENGINE_PORTS)
+      : new Set(await listeningEnginePorts());
+    const engineNode = proxyEngine.readNode(DATA_DIR);
+
+    const envs = await Promise.all(
+      profiles.map(async (prof) => {
+        const env = String(prof.name || '');
+        const port = localRelayPort(prof.proxy);
+        const st = state[env] || {};
+        const cookie = await readEnvCookieState(prof, env);
+        return {
+          env,
+          username: st.username || '',
+          proxy: prof.proxy || '',
+          port,
+          portOk: port ? enginePorts.has(port) : false,
+          timezone: prof.timezone || '',
+          locale: prof.locale || '',
+          engine: prof.engine || '',
+          osType: prof.os_type || '',
+          dataDir: prof.data_dir || '',
+          running: running.includes(env),
+          loggedIn: cookie.loggedIn,
+          cookies: cookie.cookies,
+          note: cookie.note,
+          lastActive: cookie.lastActive,
+          passwordSet: !!st.password,
+          totpSet: !!st.totpSecret,
+        };
+      }),
+    );
+    envs.sort((a, b) => a.env.localeCompare(b.env, 'en', { numeric: true }));
+
+    return {
+      ok: true,
+      serviceOk,
+      serviceNote,
+      base: foxBase(),
+      proxy: {
+        configured: !!engineNode,
+        running: engineRunning,
+        describe: engineNode ? describeNode(engineNode.node) : '未配置',
+        exitIp: '',
+        ports: proxyEngine.ENGINE_PORTS.length,
+        logFile: proxyEngine.logFile(DATA_DIR),
+      },
+      envs,
+      runningCount: envs.filter((e) => e.running).length,
+      loggedCount: envs.filter((e) => e.loggedIn).length,
+    };
+  });
+
+  /** 新建环境：分配一条独立中继端口 + 统一窗口尺寸（必须在**第一次启动之前**写指纹） */
+  handle('envs:create', async (_e, payload = {}) => {
+    const name = String(payload.name || '').trim();
+    if (!/^[A-Za-z0-9_-]{2,24}$/.test(name)) {
+      return { ok: false, message: '环境名只能是字母/数字/下划线，2–24 位（例：TK12）' };
+    }
+    const timezone = String(payload.timezone || '').trim();
+    const locale = String(payload.locale || '').trim();
+
+    let profiles = [];
+    try {
+      const p = await foxReq({ url: '/profiles', timeout: 10000 });
+      profiles = Array.isArray(p.data?.profiles) ? p.data.profiles : [];
+    } catch (e) {
+      return {
+        ok: false,
+        message:
+          e?.code === 'ECONNREFUSED'
+            ? '后台服务没在跑，先点「启动后台服务」'
+            : e?.message || String(e),
+      };
+    }
+    if (profiles.some((p) => String(p.name || '').toLowerCase() === name.toLowerCase())) {
+      return { ok: false, message: `环境 ${name} 已经存在` };
+    }
+
+    // 端口：一条环境一条，新号从 1090 起顺序递增（绝不能和别的号共用）
+    const port = Number(payload.port) || nextRelayPort(profiles);
+    if (!(port >= 1080 && port <= 1109)) {
+      return {
+        ok: false,
+        message: `端口 ${port} 超出内置内核范围（1080–1109）。最多 30 条，先删掉不用的环境。`,
+      };
+    }
+    // 端口是内核一启动就全开好的（1080–1109 一次开满），这里只需要确保内核在跑
+    const eng = await startProxyEngine();
+    if (!eng.ok) {
+      return { ok: false, message: `代理内核没起来（${eng.message}）：先去「配置 → 网络节点」粘一条节点链接` };
+    }
+
+    const res = await foxReq({
+      method: 'POST',
+      url: '/profiles',
+      body: {
+        name,
+        proxy: proxyUrl(port),
+        os_type: 'windows',
+        engine: 'camoufox',
+        ...(timezone ? { timezone } : {}),
+        ...(locale ? { locale } : {}),
+      },
+      timeout: 120000,
+    });
+    if (res.status >= 400 || res.data?.success === false) {
+      return {
+        ok: false,
+        message: `FoxProfile 拒绝创建：${JSON.stringify(res.data || {}).slice(0, 200)}`,
+      };
+    }
+
+    let screen = null;
+    try {
+      screen = applyUniformScreen(name);
+    } catch (e) {
+      screen = { ok: false, note: e?.message || String(e) };
+    }
+    addLog(
+      'success',
+      `🧩 新建浏览器环境 ${name}（代理端口 ${port}${screen?.ok ? '，窗口 1292x994' : ''}）`,
+    );
+    return { ok: true, env: name, port, screen };
+  });
+
+  /** 启动/停止：直接把 FoxProfile 的原话回给界面，失败不留"点了没反应" */
+  handle('envs:start', async (_e, env) => {
+    const name = String(env || '').trim();
+    if (!name) return { ok: false, message: '没指定要启动哪个环境' };
+    try {
+      // 先确保浏览器是"有窗口"的形态 —— 无头模式用户什么都看不见（2026-10-28 事故）
+      await ensureFoxProfileHeaded().catch(() => false);
+      const res = await foxReq({
+        method: 'POST',
+        url: `/browser/${encodeURIComponent(name)}/launch?wait=true&focus=true`,
+        timeout: 200000,
+      });
+      if (res.status >= 400 || res.data?.success === false) {
+        return {
+          ok: false,
+          message: String(res.data?.message || res.data?.detail || `HTTP ${res.status}`),
+        };
+      }
+      // 接口说成功不等于真起来了：回读一次 running（以前会出现"提示已启动、但桌面上什么都没有"）
+      const chk = await foxReq({ url: '/browser', timeout: 15000 });
+      const running = Array.isArray(chk.data?.running) ? chk.data.running : [];
+      if (!running.includes(name)) {
+        return {
+          ok: false,
+          message: `接口回了成功，但 ${name} 不在运行列表里（浏览器可能刚崩溃）——再点一次「启动」试试`,
+        };
+      }
+      addLog('info', `🌐 打开浏览器环境 ${name}`);
+      return { ok: true, env: name };
+    } catch (e) {
+      return {
+        ok: false,
+        message:
+          e?.code === 'ECONNREFUSED'
+            ? '后台服务没在跑，先点「启动后台服务」'
+            : e?.message || String(e),
+      };
+    }
+  });
+
+  handle('envs:stop', async (_e, env) => {
+    const name = String(env || '').trim();
+    if (!name) return { ok: false, message: '没指定要停止哪个环境' };
+    try {
+      const res = await foxReq({
+        method: 'POST',
+        url: `/browser/${encodeURIComponent(name)}/stop`,
+        timeout: 90000,
+      });
+      if (res.status >= 400 || res.data?.success === false) {
+        return {
+          ok: false,
+          message: String(res.data?.message || res.data?.detail || `HTTP ${res.status}`),
+        };
+      }
+      addLog('info', `🧹 关闭浏览器环境 ${name}`);
+      return { ok: true, env: name };
+    } catch (e) {
+      return { ok: false, message: e?.message || String(e) };
+    }
+  });
+
+  /** 测出口 IP：顺带证明这条端口的代理链路通不通（502 那类事故一眼能看出来） */
+  handle('envs:ipCheck', async (_e, env) => {
+    const name = String(env || '').trim();
+    if (!name) return { ok: false, message: '没指定环境' };
+    try {
+      const res = await foxReq({
+        url: `/profiles/${encodeURIComponent(name)}/ip-check`,
+        timeout: 90000,
+      });
+      if (res.status >= 400) {
+        return {
+          ok: false,
+          message: String(res.data?.detail || res.data?.message || `HTTP ${res.status}`),
+        };
+      }
+      const d = res.data || {};
+      // 真实返回形如：
+      //   { exit_ip, country, sources:[{ip,country,city}...], warnings:[{code,message}] }
+      // 城市只在 sources 里，出口 IP 在 exit_ip，两个都要拼出来，不然界面只显示一个「US」。
+      const src = Array.isArray(d.sources) ? d.sources : [];
+      const pick = (k) => {
+        for (const s of src) if (s && s[k]) return s[k];
+        return '';
+      };
+      const ip = String(d.exit_ip || pick('ip') || '');
+      const place = [d.country || pick('country'), pick('city')].filter(Boolean).join(' / ');
+      const warnings = (Array.isArray(d.warnings) ? d.warnings : [])
+        .map((w) => (w && w.message) || '')
+        .filter(Boolean);
+      return { ok: true, env: name, ip, place, warnings };
+    } catch (e) {
+      return { ok: false, message: e?.message || String(e) };
+    }
+  });
+
+  /** 删除环境：不可恢复（cookie 一起没），所以要求把环境名原样打一遍 */
+  handle('envs:delete', async (_e, payload = {}) => {
+    const name = String(payload.env || '').trim();
+    const confirm = String(payload.confirm || '').trim();
+    if (!name) return { ok: false, message: '没指定要删哪个环境' };
+    if (confirm !== name) return { ok: false, message: '确认名不一致，没有删除' };
+    try {
+      const b = await foxReq({ url: '/browser', timeout: 8000 }).catch(() => ({ data: {} }));
+      const running = Array.isArray(b.data?.running) ? b.data.running : [];
+      if (running.includes(name)) {
+        return { ok: false, message: `环境 ${name} 正在运行，先「停止」再删` };
+      }
+      const res = await foxReq({
+        method: 'DELETE',
+        url: `/profiles/${encodeURIComponent(name)}`,
+        timeout: 60000,
+      });
+      if (res.status >= 400) {
+        return {
+          ok: false,
+          message: String(res.data?.detail || res.data?.message || `HTTP ${res.status}`),
+        };
+      }
+      addLog('warning', `🗑️ 已删除浏览器环境 ${name}（cookie 一起删掉了）`);
+      return { ok: true, env: name };
+    } catch (e) {
+      return { ok: false, message: e?.message || String(e) };
+    }
+  });
+
+  /** 后台服务（FoxProfile）没起来时的一键修复：跑 headless 守护脚本，然后等 API */
+  handle('envs:ensureService', async () => {
+    const script = app.isPackaged
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'foxprofile-guard.ps1')
+      : path.join(ROOT, 'scripts', 'foxprofile-guard.ps1');
+    if (!fs.existsSync(script)) return { ok: false, message: `找不到守护脚本：${script}` };
+    try {
+      spawn(
+        'powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script],
+        { windowsHide: true, stdio: 'ignore', detached: false },
+      );
+    } catch (e) {
+      return { ok: false, message: `启动守护脚本失败：${e?.message || e}` };
+    }
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const h = await foxReq({ url: '/health', timeout: 4000 });
+        if (h.status < 400) {
+          addLog('success', '🧩 浏览器后台服务已就绪');
+          return { ok: true };
+        }
+      } catch (_) {
+        /* 还没起来，继续等 */
+      }
+    }
+    return { ok: false, message: '60 秒内后台服务没起来，去「日志」页看看' };
+  });
+
+  /* ==========================================================================
+   * 内置代理内核（xray） 2026-10-28
+   *
+   * 用户口径：「软件要给到其它用户使用，用户都是小白……用户只有一个 vless:// 节点」
+   * → 安装包自带 xray.exe，用户只做一件事：把节点粘进「配置 → 网络节点」。
+   *   内核在本机开 30 条 socks（1080–1109），一条环境一条，全自动。
+   *   旧的 SSH + 软路由 + proxy_relay.py 链路对小白不现实（要维护四样东西）。
+   * ========================================================================*/
+  // xrayBin / startProxyEngine 定义在模块级（setupIPC 外面）—— app.whenReady 里要直接调它们。
+  // 踩过的坑：定义在 setupIPC 内部时，whenReady 里那句 startProxyEngine() 抛 ReferenceError，
+  // 被 Promise 链吞掉 → 内核根本没起来，界面和日志一个字都不报（v1.8.0 实测）。
+
+  handle('proxy:status', async () => {
+    const s = await proxyEngine.status({ dataDir: DATA_DIR, bin: xrayBin() });
+    return { ok: true, ...s };
+  });
+
+  /** 粘一条链接就用：解析 → 保存 → 重起内核 → 实测出口 IP */
+  handle('proxy:importNode', async (_e, payload = {}) => {
+    const url = String(payload.url || '').trim();
+    if (!url) return { ok: false, message: '先把节点链接粘进来' };
+    const r = await proxyEngine.importNode({
+      dataDir: DATA_DIR,
+      bin: xrayBin(),
+      url,
+      ports: proxyEngine.ENGINE_PORTS,
+    });
+    if (!r.ok) {
+      addLog('error', `🔌 节点导入失败：${r.message}`);
+      return { ok: false, message: r.message };
+    }
+    addLog(
+      r.exitIp ? 'success' : 'warning',
+      r.exitIp
+        ? `🔌 节点已生效：${r.describe} → 出口 ${r.exitIp}`
+        : `🔌 节点已保存，但没测到出口 IP：${r.probeError || '未知原因'}`,
+    );
+    return r;
+  });
+
+  /** 只测出口（不换节点）：证明"现在的配置到底能不能出网" */
+  handle('proxy:test', async () => {
+    const saved = proxyEngine.readNode(DATA_DIR);
+    if (!saved) return { ok: false, message: '还没配置节点' };
+    if (!proxyEngine.isRunning()) {
+      const r = await startProxyEngine();
+      if (!r.ok) return { ok: false, message: r.message };
+    }
+    const probe = await proxyEngine.probeExitIp(proxyEngine.ENGINE_PORTS[0]);
+    return probe.ok
+      ? { ok: true, ip: probe.ip }
+      : { ok: false, message: `${probe.error}（点「重启内核」再试一次）` };
+  });
+
+  handle('proxy:restart', async () => {
+    const saved = proxyEngine.readNode(DATA_DIR);
+    if (!saved) return { ok: false, message: '还没配置节点' };
+    const r = await proxyEngine.restartEngine({
+      dataDir: DATA_DIR,
+      bin: xrayBin(),
+      ports: proxyEngine.ENGINE_PORTS,
+      outbound: saved.outbound,
+    });
+    if (!r.ok) return { ok: false, message: r.message };
+    const probe = await proxyEngine.probeExitIp(proxyEngine.ENGINE_PORTS[0]);
+    return { ok: true, ip: probe.ok ? probe.ip : '', probeError: probe.ok ? '' : probe.error };
+  });
+
+  handle('proxy:clear', async () => {
+    await proxyEngine.stopEngine();
+    proxyEngine.clearNode(DATA_DIR);
+    addLog('warning', '🔌 已清除代理节点配置（内核已停止）');
     return { ok: true };
   });
 
@@ -4914,6 +5932,17 @@ function restoreSecretsIfNeeded() {
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
+} else {
+  // 第二次启动（用户双击桌面图标想找回窗口）→ 把已经藏到托盘的窗口显示出来。
+  // 没有这个处理器时，第二个进程直接退出，用户会觉得"点了图标没反应"。
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    if (tray) tray.displayBalloon?.({ title: 'XNOWPost', content: '窗口已恢复（程序一直在后台运行，定时任务没停）' });
+  });
 }
 
 // === 调度器（定时任务后台进程） ===
@@ -4930,6 +5959,58 @@ function scheduleSchedulerRestart() {
   }, 10_000);
 }
 
+/**
+ * 素材库自动补（v1.6.52）。
+ *
+ * 用户口径：「素材库你会自动更新自动补吗，这样我以后就不用手动补了」。
+ * 每个应用启动后 **90 秒**（避开启动高峰）检查一次：今天没补过就跑一次后台补库，
+ * 最多补 6 段（1~2 分钟，只下 Pexels 免费素材，不花 API 费）。
+ *
+ * 为什么 spawn 脚本而不是直接 import：补库要下几十 MB、算 4 道闸，必须脱离主进程跑，
+ * 否则界面会卡；用 CLI 也保证「手动跑」和「自动跑」是同一份实现。
+ * 失败只写日志，绝不打扰用户、绝不影响出片。
+ */
+function scheduleBrollGrow() {
+  const timer = setTimeout(async () => {
+    try {
+      const { grownToday, markGrownToday } = await import('../src/broll-store.js');
+      if (grownToday()) return;
+      let key = '';
+      try {
+        key = fs.readJsonSync(path.join(DATA_DIR, 'config', 'user.json')).pexelsApiKey || '';
+      } catch (_) { return; }
+      if (!key) return; // 没配 Pexels Key 就别白跑
+      const base = app.isPackaged ? path.join(process.resourcesPath, 'app.asar.unpacked') : ROOT;
+      const script = path.join(base, 'scripts', 'grow-broll-library.mjs');
+      if (!fs.existsSync(script)) {
+        writeLogToFile({ time: new Date().toLocaleString('sv-SE'), type: 'warn', message: '素材库自动补跳过：找不到 grow-broll-library.mjs' });
+        return;
+      }
+      writeLogToFile({ time: new Date().toLocaleString('sv-SE'), type: 'info', message: '📚 素材库自动补开始（每天一次，最多 6 段）' });
+      const child = spawn(NODE_EXE, [script, '--max', '6', '--per-tag', '3'], {
+        cwd: base,
+        windowsHide: true,
+        env: { ...process.env, XNOWPOST_DATA_DIR: DATA_DIR, PEXELS_API_KEY: key },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => { out += d.toString(); });
+      child.stderr.on('data', (d) => { out += d.toString(); });
+      child.on('close', (code) => {
+        markGrownToday({ code, at: new Date().toISOString() });
+        const okLine = out.split('\n').reverse().find((l) => l.includes('入库')) || '';
+        writeLogToFile({
+          time: new Date().toLocaleString('sv-SE'),
+          type: code === 0 ? 'info' : 'warn',
+          message: `📚 素材库自动补结束（退出码 ${code}）${okLine ? '：' + okLine.trim() : ''}`,
+        });
+      });
+    } catch (e) {
+      writeLogToFile({ time: new Date().toLocaleString('sv-SE'), type: 'warn', message: `素材库自动补失败（不影响出片）: ${e.message}` });
+    }
+  }, 90 * 1000);
+  if (timer.unref) timer.unref();
+}
 function startScheduler() {
   // 安装版用解包目录，开发版用项目目录
   const schedulerRoot = app.isPackaged
@@ -5056,6 +6137,12 @@ app.whenReady().then(async () => {
   // 初始化配置文件
   try { await saveConfig(cfg); } catch {}
 
+  // ⚠️ 必须把数据目录同步进 process.env：
+  // src/paths.js 的 resolveDataDir() 只认 XNOWPOST_DATA_DIR，而主进程以前只给**子进程**传，
+  // 自己在主进程里 import 的模块（broll-store 等）就会退回 path.resolve('.') = 启动时的工作目录。
+  // 2026-10-20 实测踩到：从仓库目录启动安装版，「今天已补过素材库」的戳写进了仓库 data\。
+  process.env.XNOWPOST_DATA_DIR = DATA_DIR;
+
   // 凭据自愈：关键文件丢了/坏了就从最新的加密备份补回来（正常启动不做任何事）。
   // 放在 saveConfig 之后、prune 之前 —— 后面所有逻辑都能读到恢复好的文件。
   try { restoreSecretsIfNeeded(); } catch (_) { /* 自愈失败不阻断启动 */ }
@@ -5145,12 +6232,26 @@ app.whenReady().then(async () => {
 
   setupIPC();
   createWindow();
-  createTray();
+  await createTray();
+  startFoxProfileGuard();
   initUpdater(mainWindow);
   autoBackup();
   autoBackupSecrets();
   healthCheck();
   startScheduler();
+  scheduleBrollGrow();
+  // 内置代理内核（xray）：配过节点就静默起来，没配就等用户在「配置 → 网络节点」里粘链接。
+  // 这不是可选优化：环境内所有浏览器都走 127.0.0.1:1080…1109，内核不在 = 全都不通。
+  // 失败要留痕（曾因静默 ReferenceError 导致"内核悄悄没起来"，排查了半天）
+  startProxyEngine().catch((e) =>
+    addLog('error', `🔌 代理内核自动启动异常：${e?.message || e}`),
+  );
+
+  // FoxProfile 万一还是"浏览器无窗口"模式（老服务/别人手动起的），静默纠正一次。
+  // 用户点「启动」看不到窗口 = 以为功能没做完（2026-10-28 原话），这是必须自愈的问题。
+  setTimeout(() => {
+    ensureFoxProfileHeaded().catch(() => false);
+  }, 6000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

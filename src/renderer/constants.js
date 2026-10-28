@@ -43,9 +43,10 @@ export const MODE_OPTIONS = [
   { value: 'auto', label: '视频+图文' },
   { value: 'video', label: '仅视频' },
   { value: 'post', label: '仅图文' },
+  { value: 'warmup', label: '养号' },
 ]
 
-export const MODE_LABEL_MAP = { auto: '视频+图文', video: '仅视频', post: '仅图文' }
+export const MODE_LABEL_MAP = { auto: '视频+图文', video: '仅视频', post: '仅图文', warmup: '养号' }
 
 /** 格式化数字（万/K） */
 export function formatNum(n) {

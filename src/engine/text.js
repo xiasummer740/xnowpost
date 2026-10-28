@@ -221,6 +221,8 @@ function robustJSONParse(raw) {
 
 // ============ 内容校验 ============
 
+export function validateVideoContentForTest(data) { return validateVideoContent(data); }
+
 function validateVideoContent(data) {
   const errors = [];
   if (!data) return { valid: false, errors: ['返回为空'] };
@@ -229,11 +231,19 @@ function validateVideoContent(data) {
   if (!Array.isArray(data.scenes)) errors.push('scenes 不是数组');
   else if (data.scenes.length < 1) errors.push('scenes 为空数组');
   else {
+    // 时长区间必须跟着 config/default.json 的 video.min/maxDuration 走。
+    // 2026-10-20 21:42 踩到：配置已改成 2.4~3.6 秒，校验器还写死 3~20 →
+    // 模型给出的 2.9/2.8 秒被判"非法"，整条视频直接失败、白花钱。
+    const vc = getEngineConfig().video;
+    const minDur = Number(vc.minDuration) || 2.4;
+    const maxDur = Number(vc.maxDuration) || 6;
     data.scenes.forEach((s, i) => {
       if (!s.scene_text_zh || !s.scene_text_zh.trim()) errors.push(`分镜 ${i+1} 缺少 scene_text_zh`);
       if (!s.scene_text_en || !s.scene_text_en.trim()) errors.push(`分镜 ${i+1} 缺少 scene_text_en`);
       if (!s.image_desc || !s.image_desc.trim()) errors.push(`分镜 ${i+1} 缺少 image_desc`);
-      if (s.duration !== undefined && (s.duration < 3 || s.duration > 20)) errors.push(`分镜 ${i+1} duration ${s.duration} 超出 [3,20]`);
+      if (s.duration !== undefined && (s.duration < minDur || s.duration > maxDur)) {
+        errors.push(`分镜 ${i+1} duration ${s.duration} 超出 [${minDur},${maxDur}]`);
+      }
     });
   }
   return { valid: errors.length === 0, errors };
@@ -328,6 +338,28 @@ async function generateWithDedup(type) {
 
     const title = content.title_zh;
     if (!title) throw new Error('DeepSeek 返回缺少标题');
+
+    // 钩子必须有数字（2026-10-20 22:59 实测：提示词写了「第 1 镜必须含数字」，
+    // 模型仍有约 1/4 概率漏掉，成片自检卡会报「首句没有数字（钩子偏弱）」）。
+    // 与其让用户看到弱钩子，不如在这里重问一次 —— 一次 DeepSeek 调用约 ¥0.001。
+    if (type === 'video' && attempt < 2) {
+      const first = String(content?.scenes?.[0]?.scene_text_zh || '');
+      if (!/\d/.test(first)) {
+        console.log(`  🔢 第 1 镜没有数字（"${first.slice(0, 16)}"），重写中(${attempt + 1}/2)...`);
+        continue;
+      }
+    }
+
+    // 每镜中文 8~13 字（硬上限 16）：超了字幕折成两行，观感变差。
+    // 模型偶尔写 17~18 字（23:03 实测 18 字），提示词管不住就重问一次。
+    if (type === 'video' && attempt < 1) {
+      const lens = (content?.scenes || []).map((s) => String(s?.scene_text_zh || '').replace(/\s/g, '').length);
+      const over = lens.filter((n) => n > 16);
+      if (over.length) {
+        console.log(`  ✂️ ${over.length} 镜中文超过 16 字（最长 ${Math.max(...over)} 字），重写中...`);
+        continue;
+      }
+    }
 
     // 合规检查：价格 / 联系方式 / 硬承诺
     const hits = [

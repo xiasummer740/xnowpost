@@ -14,6 +14,8 @@ files:
   - src/engine/**/*
   - src/platforms/**/*
   - src/collector/**/*
+  # 内置代理内核的配置生成/节点解析（xray outbound 由 src/proxy/node.js 产出）
+  - src/proxy/**/*
   - src/analyzer/**/*
   - src/publisher/**/*
   # 账号页的两个脚本：界面是 spawn 它们来跑的，必须是真实磁盘文件（asar 里无法 spawn）
@@ -22,9 +24,25 @@ files:
   - scripts/tk-profile-edit.mjs
   # 环境窗口标题看护（主进程 spawn 的常驻 PowerShell，给窗口标题打 TKxx 前缀）
   - scripts/env-title-watch.ps1
+  # 把自动开的浏览器窗口缩到任务栏（资料刷新/采集这类只读任务用；缺了它会静默不缩）
+  - scripts/minimize-env.ps1
+  # FoxProfile 守护/最小化：它没有托盘，点 × 会连 API 一起关（启动时自动拉起 + 收进任务栏）
+  - scripts/minimize-foxprofile.ps1
+  - scripts/foxprofile-guard.ps1
+  # 素材库每日自动补：主进程 spawn 它来跑（漏了这条，安装版「自动补库」会静默不跑）
+  - scripts/grow-broll-library.mjs
+  # 自动养号：定时器/界面 spawn 它（漏了这条，界面点了养号会报找不到脚本）
+  - scripts/tk-warmup.mjs
   - assets/**/*
   - package.json
 extraResources:
+  # 内置代理内核（xray-core）：用户只粘一条 vless:// 链接就能出网，不用装任何第三方软件。
+  # 缺了它 = 环境里的浏览器全部打不开外网（界面会红条提示"代理内核启动失败"）。
+  - from: resources/bin
+    to: app.asar.unpacked/bin
+    filter:
+      - "xray.exe"
+      - "README-xray.txt"
   # ⚠️ 只发布「模板」配置，绝不能把开发机的个人配置打进安装包
   # user.json 含真实 API Key、schedule.json 是个人闹钟、window-state.json 是窗口位置
   - from: config
