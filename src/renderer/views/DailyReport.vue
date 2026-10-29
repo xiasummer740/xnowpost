@@ -718,7 +718,13 @@ onMounted(() => {
 }
 .trend-chip:hover { color: #94a3b8; border-color: #475569; }
 .trend-chip.active { background: #334155; color: #f59e0b; border-color: #f59e0b44; }
-.trend-chart { background: #0f172a; border-radius: 10px; padding: 12px; border: 1px solid #1e293b; }
+.trend-chart {
+  border-radius: 10px; padding: 12px;
+  background:
+    linear-gradient(rgba(11, 18, 30, 0.7), rgba(11, 18, 30, 0.7)) padding-box,
+    linear-gradient(135deg, rgba(168, 85, 247, 0.55), rgba(59, 130, 246, 0.4) 50%, rgba(20, 184, 166, 0.5)) border-box;
+  border: 1px solid transparent;
+}
 .trend-svg { width: 100%; height: auto; display: block; }
 
 /* ── 「这天发了什么」卡片（只读 theme.css 的变量，不写死色值）── */

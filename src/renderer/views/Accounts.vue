@@ -1114,11 +1114,16 @@ onUnmounted(() => {
 
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .kpi {
-  background: var(--bg2);
-  border: 1px solid var(--stroke);
+  /* 和 .x-card 一套：渐变描边 + 半透明底，让底纹透上来 */
+  background:
+    linear-gradient(160deg, rgba(26, 37, 56, 0.82), rgba(13, 21, 33, 0.74)) padding-box,
+    linear-gradient(135deg, rgba(168, 85, 247, 0.7), rgba(59, 130, 246, 0.5) 50%, rgba(20, 184, 166, 0.6)) border-box;
+  border: 1px solid transparent;
   border-radius: var(--r-md);
   padding: 13px 15px;
   min-width: 0;
+  backdrop-filter: blur(9px) saturate(135%);
+  box-shadow: 0 8px 24px rgba(4, 8, 16, 0.38);
 }
 .kpi .k { font-size: 11.5px; color: var(--text-3); }
 .kpi .v {

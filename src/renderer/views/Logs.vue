@@ -335,7 +335,14 @@ h2 { font-size: 24px; }
 }
 .more-btn:hover { background: #1e3a5f33; }
 
-.log-container { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; max-height: calc(100vh - 230px); overflow-y: auto; }
+.log-container {
+  border-radius: 8px; padding: 12px; max-height: calc(100vh - 230px); overflow-y: auto;
+  /* 日志区保持深底（等宽字要看得清），但描边走品牌渐变，和别的卡片是一套 */
+  background:
+    linear-gradient(rgba(10, 16, 27, 0.86), rgba(10, 16, 27, 0.86)) padding-box,
+    linear-gradient(135deg, rgba(168, 85, 247, 0.5), rgba(59, 130, 246, 0.35) 50%, rgba(20, 184, 166, 0.45)) border-box;
+  border: 1px solid transparent;
+}
 .log-line { display: flex; gap: 8px; padding: 3px 0; font-size: 13px; font-family: monospace; border-bottom: 1px solid #1e293b22; }
 .log-time { color: #64748b; min-width: 148px; }
 .log-src {

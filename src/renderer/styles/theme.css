@@ -133,11 +133,16 @@
    渐变描边用两层 background 实现（padding-box 填底色 / border-box 填渐变），
    这样描边不占布局、不挡内容，也不需要伪元素。 */
 .x-card {
+  /* 半透明卡片 + 毛玻璃：底下的极光会透上来（这就是"花"的来源，不是靠更多颜色） */
   background:
-    linear-gradient(var(--bg2), var(--bg2)) padding-box,
-    linear-gradient(135deg, rgba(168, 85, 247, 0.55), rgba(59, 130, 246, 0.4) 50%, rgba(20, 184, 166, 0.5)) border-box;
+    linear-gradient(160deg, rgba(26, 37, 56, 0.82), rgba(13, 21, 33, 0.74)) padding-box,
+    linear-gradient(135deg,
+      rgba(168, 85, 247, 0.75), rgba(59, 130, 246, 0.55) 45%,
+      rgba(20, 184, 166, 0.65) 78%, rgba(236, 72, 153, 0.6)) border-box;
   border: 1px solid transparent;
   border-radius: var(--r-md);
+  backdrop-filter: blur(9px) saturate(135%);
+  box-shadow: 0 10px 30px rgba(4, 8, 16, 0.42);
   overflow: hidden;
 }
 .x-card-head {
@@ -145,8 +150,9 @@
   align-items: center;
   gap: 9px;
   padding: 13px 16px;
-  border-bottom: 1px solid var(--stroke);
-  background: linear-gradient(90deg, rgba(168, 85, 247, 0.14), rgba(59, 130, 246, 0.09) 45%, rgba(20, 184, 166, 0.11));
+  border-bottom: 1px solid transparent;
+  border-image: linear-gradient(90deg, rgba(168, 85, 247, 0.5), rgba(59, 130, 246, 0.3) 50%, rgba(20, 184, 166, 0.45)) 1;
+  background: linear-gradient(90deg, rgba(168, 85, 247, 0.22), rgba(59, 130, 246, 0.13) 45%, rgba(20, 184, 166, 0.18));
 }
 .x-card-head .x-ic {
   width: 26px;
@@ -329,10 +335,11 @@
 .x-aurora {
   position: relative;
   background:
-    radial-gradient(1050px 600px at 6% -12%, rgba(168, 85, 247, 0.30), transparent 62%),
-    radial-gradient(980px 560px at 98% 2%, rgba(59, 130, 246, 0.26), transparent 64%),
-    radial-gradient(900px 620px at 44% 118%, rgba(20, 184, 166, 0.24), transparent 60%),
-    radial-gradient(720px 460px at 82% 66%, rgba(236, 72, 153, 0.16), transparent 66%),
+    radial-gradient(1050px 600px at 6% -12%, rgba(168, 85, 247, 0.34), transparent 62%),
+    radial-gradient(980px 560px at 98% 2%, rgba(59, 130, 246, 0.30), transparent 64%),
+    radial-gradient(760px 520px at 16% 112%, rgba(20, 184, 166, 0.16), transparent 62%),
+    radial-gradient(820px 500px at 78% 104%, rgba(99, 102, 241, 0.22), transparent 64%),
+    radial-gradient(680px 440px at 84% 58%, rgba(236, 72, 153, 0.20), transparent 66%),
     var(--bg0);
 }
 .x-aurora::after {
@@ -368,3 +375,81 @@
   background-color: rgba(139, 92, 246, 0.45);
 }
 ::-webkit-scrollbar-thumb:hover { background-color: rgba(168, 85, 247, 0.7); }
+
+/* ══════════════════════════════════════════════════════════
+   「更花」那一档（2026-10-29 v1.9.6，用户口径：更花一点）
+   原则没变：渐变只上色块/描边/文字强调，正文和状态色照旧。
+   ══════════════════════════════════════════════════════════ */
+
+/* 主按钮：渐变自己会慢慢流动（小面积重绘，代价可以忽略） */
+@keyframes xGradShift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.x-btn.primary {
+  background-size: 220% 220%;
+  animation: xGradShift 9s ease-in-out infinite;
+}
+
+/* 次级按钮 hover：描边渐变（不是填色，别抢主按钮） */
+.x-btn:not(.primary):hover {
+  border-color: rgba(168, 85, 247, 0.55);
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.18), 0 4px 14px rgba(139, 92, 246, 0.16);
+}
+
+/* 表格：表头渐变软底，行 hover 走渐变而不是纯灰
+   ⚠️ 渐变必须画在 <thead> / <tr> 上，不能画在 <th> 上 ——
+   每个 th 各自重新开始一段渐变，一行里会出现竖条状的色块（踩过）。 */
+.x-card thead,
+.x-card table thead {
+  background: linear-gradient(90deg, rgba(168, 85, 247, 0.16), rgba(59, 130, 246, 0.09) 55%, rgba(20, 184, 166, 0.12));
+}
+.x-card thead th,
+.x-card table thead th {
+  background: transparent;
+}
+.x-card tbody tr:hover {
+  background: linear-gradient(90deg, rgba(168, 85, 247, 0.14), rgba(59, 130, 246, 0.07) 55%, rgba(20, 184, 166, 0.06));
+}
+
+/* 字段分隔线也是渐变（原来的虚线灰线） */
+.x-field + .x-field {
+  border-top: 1px solid transparent;
+  border-image: linear-gradient(90deg, rgba(168, 85, 247, 0.32), rgba(59, 130, 246, 0.14) 50%, rgba(20, 184, 166, 0.26)) 1;
+}
+
+/* 品牌标签：渐变底 + 白字（原来是软底紫字，太素） */
+.x-tag.brand {
+  color: #fff;
+  background: var(--brand-grad);
+  box-shadow: 0 2px 8px var(--brand-glow);
+}
+
+/* 提示条：左侧渐变竖条 */
+.x-tip {
+  border-left: 3px solid transparent;
+  border-image: linear-gradient(180deg, #a855f7, #3b82f6, #14b8a6) 1;
+}
+
+/* 滚动条 thumb 也上渐变 */
+::-webkit-scrollbar-thumb {
+  background-image: linear-gradient(180deg, #a855f7, #3b82f6, #14b8a6);
+  background-color: transparent;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-image: linear-gradient(180deg, #c084fc, #60a5fa, #2dd4bf);
+}
+
+/* 弹层/浮层（账号选择器、时间选择器、AI 抽屉）统一渐变描边 */
+.x-pop,
+.acc-drop,
+.tp-pop {
+  border: 1px solid transparent !important;
+  background:
+    linear-gradient(rgba(17, 26, 39, 0.97), rgba(17, 26, 39, 0.97)) padding-box,
+    linear-gradient(135deg, rgba(168, 85, 247, 0.7), rgba(59, 130, 246, 0.5), rgba(20, 184, 166, 0.6)) border-box !important;
+  box-shadow: 0 18px 44px rgba(3, 6, 12, 0.6), 0 0 0 1px rgba(139, 92, 246, 0.12) !important;
+}
