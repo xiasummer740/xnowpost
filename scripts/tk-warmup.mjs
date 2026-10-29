@@ -22,7 +22,7 @@ import path from 'path';
 import { openFoxPage, closeFoxPage } from '../src/collector/foxpw.js';
 import { dataPath } from '../src/paths.js';
 import {
-  WARMUP_DEFAULTS, planWatchSeconds, planBudgets, shouldAct, actionRegistered, judgeWarmupRun, summarizeWarmup,
+  WARMUP_DEFAULTS, planWatchSeconds, planBudgets, shouldAct, actionRegistered, toastRegistered, judgeWarmupRun, summarizeWarmup,
   planAccountMinutes,
 } from '../src/warmup.js';
 
@@ -36,6 +36,15 @@ const val = (k, d = '') => {
 const num = (k, d) => {
   const v = Number(val(k, ''));
   return Number.isFinite(v) && v > 0 ? v : d;
+};
+// 预算类参数必须能接受 0（"这次一个赞都别点"）。
+// 2026-10-29 实测：`--favorites 1 --likes 0` 里那个 0 被上面的 `v > 0` 挡掉 →
+// 悄悄退回默认 2~4 个赞，命令看着生效、其实没生效（同 planBudgets 那个 undefined 坑）。
+const num0 = (k, d) => {
+  const raw = val(k, '');
+  if (raw === '') return d;                        // 没给这个参数 → 用默认
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? v : d;
 };
 
 const DRY = has('--dry-run') || has('--no-actions');
@@ -135,8 +144,20 @@ const READ_ACTIONS = () => {
   };
 };
 
-/** 点一下并读回（点赞/收藏用 aria-pressed 判定，关注用按钮消失/文字变化判定） */
-async function clickAndVerify(page, kind, before, deadlineMs = 3500) {
+/** 读页面刚弹的提示条（收藏/关注成功时只有它有反应，见 src/warmup.js#toastRegistered） */
+const READ_TOAST = () => {
+  const out = [];
+  for (const sel of ['[role="alert"]', '.TUXToast', '[class*="Toast"]', '[class*="toast"]']) {
+    for (const el of document.querySelectorAll(sel)) {
+      const t = String(el.innerText || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length > 2) out.push(t.slice(0, 80));
+    }
+  }
+  return [...new Set(out)].join(' | ');
+};
+
+/** 点一下并读回（点赞看 aria-pressed；收藏/关注还要看页面提示条） */
+async function clickAndVerify(page, kind, before, deadlineMs = 4000) {
   try {
     await page.mouse.move(before.cx, before.cy);
     await sleep(120 + rng() * 260);
@@ -145,16 +166,22 @@ async function clickAndVerify(page, kind, before, deadlineMs = 3500) {
     return { ok: false, why: `点击失败: ${e.message}` };
   }
   const t0 = Date.now();
+  let lastToast = '';
   while (Date.now() - t0 < deadlineMs) {
     await sleep(400);
     const st = await page.evaluate(READ_ACTIONS).catch(() => null);
-    if (!st) continue;
-    const cur = st[kind];
-    // 判据统一放在 src/warmup.js#actionRegistered（有单测），脚本里不再各写一套
-    const v = actionRegistered(kind, before, cur);
-    if (v.ok) return v;
+    if (st) {
+      const cur = st[kind];
+      // 判据统一放在 src/warmup.js#actionRegistered（有单测），脚本里不再各写一套
+      const v = actionRegistered(kind, before, cur);
+      if (v.ok) return v;
+    }
+    // 收藏按钮的 aria-label / 计数点完不变（2026-10-29 真机实测），只能靠提示条
+    lastToast = await page.evaluate(READ_TOAST).catch(() => '') || lastToast;
+    const vt = toastRegistered(kind, lastToast);
+    if (vt && vt.ok) return vt;
   }
-  return { ok: false, why: '没读到状态变化' };
+  return { ok: false, why: lastToast ? `没读到状态变化（页面提示：「${lastToast.slice(0, 30)}」）` : '没读到状态变化' };
 }
 
 /** 打开首页并点开第一条视频（没有这一步视频不会播） */
@@ -267,9 +294,9 @@ async function warmOne(env, minutes) {
   const budgetMs = minutes * 60 * 1000;
   const clampTo = (n) => (Number.isFinite(n) && n >= 0 ? [n, n] : undefined);
   const budgets = planBudgets(rng, {
-    likes: clampTo(num('--likes', -1)) || undefined,
-    favorites: clampTo(num('--favorites', -1)) || undefined,
-    follows: clampTo(num('--follows', -1)) || undefined,
+    likes: clampTo(num0('--likes', -1)) || undefined,
+    favorites: clampTo(num0('--favorites', -1)) || undefined,
+    follows: clampTo(num0('--follows', -1)) || undefined,
   });
   const caps = { ...budgets };   // 开跑前的预算 = 本次硬上限（判定用，别拿跑完扣减过的值）
   const records = [];

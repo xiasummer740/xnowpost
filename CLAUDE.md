@@ -1112,3 +1112,19 @@ node src/publisher/index.js --env TK01 --max 1
 - 导入账号文件时 `totpSecret`（2FA 密钥）必须写进 `env-accounts.json` —— 老代码解析了但没落盘，
   等于每次导入都把 2FA 丢了（已修）。
 
+
+## 收藏按钮的判据：只能看提示条（2026-10-29 真机探针）
+
+- 点赞 `[data-e2e="like-icon"]` **有** `aria-pressed`，点完翻 `true`，可靠。
+- 收藏 `[data-e2e="favorite-icon"]` **没有** `aria-pressed`；点成功后
+  `aria-label`（`Add to Favorites. 27.9K added to Favorites`）和
+  `<strong data-e2e="favorite-count">` 的计数**都一个字不变**（要重新进页面才刷新），
+  父级还带 `aria-haspopup="dialog"`（看着像会弹框，实测不弹）。
+  **唯一立刻可见的证据是页面左下角的 `Added to Favorites  Manage` 提示条。**
+- 所以 `src/warmup.js#toastRegistered()` 把提示条当兜底判据；
+  `scripts/tk-warmup.mjs` 的 `clickAndVerify` 同时看按钮状态和 `[role="alert"]`/`.TUXToast`。
+  修之前一天 13/17 次「收藏点了但没确认到变化」全是误报（收藏其实都成功了）。
+- 探针脚本：`out/probe-favorite.mjs`（结构快照 + 两次点击 diff）、
+  `out/probe-favorite2.mjs`（点一次 + 读提示条 + 截图 + Escape 收尾）。不进 git。
+- 顺带踩到：CLI 的 `num()` 只接受 `> 0`，`--likes 0` 会被悄悄换成默认 2~4 个赞 →
+  预算类参数改用 `num0()`（0 合法，缺省才用默认）。

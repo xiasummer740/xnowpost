@@ -112,6 +112,32 @@ export function actionRegistered(kind, before, after) {
 }
 
 /**
+ * 点击之后**页面自己弹的提示条**算不算数？
+ *
+ * 2026-10-29 真机探针（TK01）摸清了收藏按钮的真相：
+ *  - `[data-e2e="favorite-icon"]` **有** aria-label，但收藏成功后它**一个字都不变**
+ *    （`Add to Favorites. 27.9K added to Favorites` → 还是这句）；
+ *  - 计数 `<strong data-e2e="favorite-count">` 也**不刷新**（要等重新进页面）；
+ *  - 唯一立刻可见的证据是页面左下角弹的 `Added to Favorites  Manage` 提示条。
+ * 所以养号里 13/17 次「收藏点了但没确认到变化」是**判据瞎了**，收藏其实都成功了。
+ *
+ * 这里只把「提示条」当**兜底**判据（点赞/关注仍优先用 aria-pressed / 按钮文字，
+ * 那两个是真的会变）。返回 null 表示这条提示条与本次动作无关。
+ */
+export function toastRegistered(kind, toastText) {
+  const t = String(toastText || '');
+  if (!t) return null;
+  if (kind === 'favorite' && /added to favorites/i.test(t)) return { ok: true, why: '提示条「Added to Favorites」' };
+  if (kind === 'favorite' && /removed from favorites/i.test(t)) return { ok: true, why: '提示条「Removed from Favorites」' };
+  // "unliked" 里也含 "liked"，所以先排除取消类，再认点赞
+  if (kind === 'like' && /unliked|removed like/i.test(t)) return { ok: true, why: '提示条「Unliked」' };
+  if (kind === 'like' && /\bliked\b/i.test(t)) return { ok: true, why: '提示条「Liked」' };
+  if (kind === 'follow' && /\bfollowing\b|now following/i.test(t)) return { ok: true, why: '提示条「Following」' };
+  if (kind === 'follow' && /unfollowed/i.test(t)) return { ok: true, why: '提示条「Unfollowed」' };
+  return null;
+}
+
+/**
  * 汇总一轮养号的结果，并判断"这轮有没有真的干成活"。
  *
  * 判据只看落盘的数字：

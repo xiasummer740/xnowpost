@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  WARMUP_DEFAULTS, pickInt, planWatchSeconds, planBudgets, shouldAct, actionRegistered,
+  WARMUP_DEFAULTS, pickInt, planWatchSeconds, planBudgets, shouldAct, actionRegistered, toastRegistered,
   judgeWarmupRun, summarizeWarmup, planAccountMinutes, planSessionMinutes,
 } from '../../src/warmup.js';
 
@@ -211,4 +211,43 @@ test('actionRegistered：关注靠 class 变化或按钮消失（aria-label 是�
   assert.equal(actionRegistered('follow', before, null).ok, true);          // 按钮消失
   assert.equal(actionRegistered('follow', before, { cls: 'x', label: 'Following' }).ok, true);
   assert.equal(actionRegistered('follow', before, { ...before }).ok, false);
+});
+// ============ 提示条判据（2026-10-29 真机探针后补） ============
+// 背景：收藏成功后 `[data-e2e="favorite-icon"]` 的 aria-label 与计数**都不变**，
+// 只有页面弹的「Added to Favorites  Manage」提示条能证明点成功了。
+// 养号那 13/17 次「收藏没确认到变化」就是判据瞎了 —— 收藏其实都成功。
+
+test('toastRegistered：收藏成功只认提示条', () => {
+  const v = toastRegistered('favorite', 'Added to Favorites Manage');
+  assert.equal(v.ok, true);
+  assert.match(v.why, /Added to Favorites/);
+});
+
+test('toastRegistered：提示条重复出现（选择器命中多个节点）也算成功', () => {
+  const v = toastRegistered('favorite', 'Added to Favorites Manage | Added to Favorites Manage | Added to Favorites Manage');
+  assert.equal(v.ok, true);
+});
+
+test('toastRegistered：取消收藏是另一句话，不能被当成"没收藏"', () => {
+  assert.match(toastRegistered('favorite', 'Removed from Favorites').why, /Removed/);
+});
+
+test('toastRegistered：无关提示条不算数（复制链接、网络错误…）', () => {
+  assert.equal(toastRegistered('favorite', 'Link copied'), null);
+  assert.equal(toastRegistered('favorite', ''), null);
+  assert.equal(toastRegistered('favorite', null), null);
+  assert.equal(toastRegistered('like', 'Added to Favorites Manage'), null);
+});
+
+test('toastRegistered：点赞先排除 Unliked（含 liked 字样）', () => {
+  assert.match(toastRegistered('like', 'Unliked').why, /Unliked/);
+  assert.match(toastRegistered('like', 'Liked').why, /Liked/);
+  assert.equal(toastRegistered('like', 'Comment posted'), null);
+});
+
+test('toastRegistered：关注/取关', () => {
+  assert.match(toastRegistered('follow', 'Following').why, /Following/);
+  assert.match(toastRegistered('follow', 'Now following this account').why, /Following/);
+  assert.match(toastRegistered('follow', 'Unfollowed').why, /Unfollowed/);
+  assert.equal(toastRegistered('follow', 'Something went wrong'), null);
 });

@@ -1,5 +1,43 @@
 # 接力开发 — 新对话从这里开始
 
+## 最新：3B（2026-10-29 18:30，v1.8.7）收藏判据修好了 —— 真机探针给出的答案
+
+**用户拍板「做」之后，开 TK01 真机探了两轮**（probe 脚本在 `out/probe-favorite*.mjs`，不进 git）。
+
+### 探针发现（这个按钮和点赞完全不一样）
+| 字段 | 点收藏前 | 点收藏后 | 能不能当判据 |
+|---|---|---|---|
+| `aria-pressed` | 没有这个属性（点赞有） | 还是没有 | ❌ |
+| `aria-label` | `Add to Favorites. 27.9K added to Favorites` | **一字不变** | ❌ |
+| 计数 `<strong data-e2e="favorite-count">` | `27.9K` | **不刷新**（要重新进页面） | ❌ |
+| 父级 `aria-haspopup` | `dialog` | `dialog`、`aria-expanded` 仍 `false` | ❌ |
+| **页面提示条** | — | **`Added to Favorites  Manage`** | ✅ 唯一可信 |
+
+> 结论：收藏**一直点成功了**，坏的是"验证"这一环 —— 所以养号日志里 13/17 次
+> 「收藏点了但没确认到变化」全是误报（额度当时也按"已尝试"扣掉了，没造成重复点）。
+
+### 修法
+- `src/warmup.js` 新增 `toastRegistered(kind, toastText)`：只把**提示条**当兜底判据
+  （收藏认 `Added to Favorites`/`Removed from Favorites`；点赞先排除 `Unliked`；
+  关注认 `Following`/`Unfollowed`）。无关键返回 `null`，不影响原有判据。
+- `scripts/tk-warmup.mjs`：加 `READ_TOAST`（读 `[role="alert"]` / `.TUXToast` / `[class*="Toast"]`），
+  `clickAndVerify` 每 400ms 同时看按钮状态**和**提示条，超时时把提示条原文写进日志
+  （下次再出问题，日志里直接有页面说了什么）。超时 3.5s → 4s。
+- 单测 `tests/unit/warmup.test.js` 新增 6 条守着（含「Unliked 不能被当成 Liked」
+  「无关提示条不算数」）。
+
+### 真机验收（跑了 2 分钟的最小养号）
+```
+🏃 TK01 开始养号（2 分钟，预算：赞≤3 藏≤1）
+⭐ 收藏（提示条「Added to Favorites」）        ← 以前这里是「⚠️ 没读到状态变化」
+✅ TK01 看了 5 条（真播 5 条，共 73 秒） · 赞3 藏1
+```
+顺带修掉：`--likes 0 / --favorites 0` 这种"一个都别点"的参数原来会被
+`num()` 的 `v > 0` 挡掉、悄悄退回默认 2~4 个 → 新增 `num0()` 接受 0
+（演练验证：`预算：赞≤0 藏≤0 关注≤0`）。
+
+⚠️ 探针期间 TK01 实际被收藏了 1~2 条视频（就是它平时养号会做的事，没去逐条取消）。
+
 ## 最新：3A（2026-10-29 18:20，v1.8.5）今日日志体检 → 修 4 个问题并部署
 
 **今天跑成什么样**（`logs/app-2026-10-29.log` 2284 行 / `scheduler-2026-10-29.log` 167.8 KB）：
