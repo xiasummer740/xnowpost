@@ -1262,7 +1262,7 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 }
 .spin {
   width: 13px; height: 13px; border-radius: 50%; flex: 0 0 13px;
-  border: 2px solid rgba(255, 46, 91, 0.3); border-top-color: var(--brand);
+  border: 2px solid color-mix(in srgb, var(--brand) 30%, transparent); border-top-color: var(--brand-2);
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1274,7 +1274,7 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 .dbtn:hover { background: var(--bg3); color: var(--text); }
 .dbtn { display: inline-flex; align-items: center; gap: 4px; }
 .dbtn svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-.dbtn.copy:hover { color: var(--brand); border-color: rgba(255, 46, 91, 0.5); }
+.dbtn.copy:hover { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 50%, transparent); }
 .dbtn.danger { border-color: rgba(240, 81, 78, 0.4); color: #f0837f; }
 .log {
   padding: 8px 12px; overflow-y: auto; font-family: var(--font-mono);
@@ -1286,7 +1286,7 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 .logline.warn { color: var(--warn); }
 .logline.head { color: var(--text); font-weight: 600; margin-top: 4px; }
 .bar { height: 3px; background: var(--bg3); }
-.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--brand), #ff7a45); transition: width 0.4s; }
+.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--brand-1), var(--brand-2), var(--brand-3)); transition: width 0.4s; }
 .dmsg { padding: 8px 12px; font-size: 11.5px; color: var(--text-3); border-top: 1px solid var(--stroke); }
 /* ─── 单个编辑面板 / 批量弹窗 ─── */
 .chk { width: 14px; height: 14px; accent-color: var(--brand); cursor: pointer; vertical-align: middle; }
@@ -1317,7 +1317,7 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 .fhint { font-size: 11px; color: var(--text-3); margin: -4px 0 0; line-height: 1.5; }
 .fhint code {
   font-family: var(--font-mono); font-size: 10.5px; color: var(--brand);
-  background: rgba(255, 46, 91, 0.1); padding: 1px 4px; border-radius: 4px;
+  background: color-mix(in srgb, var(--brand) 10%, transparent); padding: 1px 4px; border-radius: 4px;
 }
 .pava { display: flex; align-items: center; gap: 10px; }
 .pava-act { display: flex; gap: 6px; }
@@ -1343,5 +1343,5 @@ tbody tr:hover { background: rgba(44, 61, 80, 0.16); }
 .pv-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-bio { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-name.none, .pv-bio.none { color: var(--text-3); opacity: 0.5; }
-.x-mini.hl { color: var(--brand); border-color: rgba(255, 46, 91, 0.5); background: rgba(255, 46, 91, 0.1); }
+.x-mini.hl { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 50%, transparent); background: color-mix(in srgb, var(--brand) 10%, transparent); }
 </style>

@@ -349,20 +349,20 @@ onUnmounted(() => {
 .asst-hints { display: flex; flex-wrap: wrap; gap: 8px; }
 .asst-hint {
   background: var(--brand-soft); color: var(--text);
-  border: 1px solid rgba(255, 46, 91, 0.22); border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--brand) 22%, transparent); border-radius: 999px;
   padding: 6px 12px; font-size: 12.5px; cursor: pointer; transition: background .15s, border-color .15s;
 }
-.asst-hint:hover { background: rgba(255, 46, 91, 0.16); border-color: rgba(255, 46, 91, 0.45); }
+.asst-hint:hover { background: color-mix(in srgb, var(--brand) 16%, transparent); border-color: color-mix(in srgb, var(--brand) 45%, transparent); }
 
 .asst-row { display: flex; }
 .is-user { justify-content: flex-end; }
 
 .bubble { max-width: 78%; padding: 9px 13px; border-radius: 12px; font-size: 13px; line-height: 1.65; word-break: break-word; }
-.bubble.user { background: var(--brand); color: #fff; border-bottom-right-radius: 4px; }
+.bubble.user { background: var(--brand-grad); color: #fff; border-bottom-right-radius: 4px; }
 .bubble.assistant { background: rgba(44, 61, 80, 0.42); color: var(--text); border-bottom-left-radius: 4px; }
 .bubble.assistant :deep(code) { background: rgba(0, 0, 0, 0.28); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 .bubble.assistant :deep(strong) { color: #fff; }
-.bubble.error { background: rgba(255, 77, 109, 0.14); border: 1px solid rgba(255, 77, 109, 0.4); color: #ffb3c1; }
+.bubble.error { background: rgba(255, 77, 109, 0.14); border: 1px solid rgba(255, 77, 109, 0.4); color: #ded1ff; }
 
 .tool-chip {
   align-self: flex-start; display: inline-flex; align-items: center; gap: 7px;
@@ -371,7 +371,7 @@ onUnmounted(() => {
   color: var(--text-dim); font-size: 12px;
 }
 .tool-chip svg { width: 13px; height: 13px; flex: 0 0 auto; }
-.tool-chip.bad { border-color: rgba(255, 77, 109, 0.45); color: #ffb3c1; }
+.tool-chip.bad { border-color: rgba(255, 77, 109, 0.45); color: #ded1ff; }
 .tool-chip.skip { opacity: 0.75; }
 .tool-chip.good { border-color: rgba(52, 211, 153, 0.4); }
 .tool-chip.warn { border-color: rgba(255, 176, 32, 0.45); color: #ffd9a0; }
@@ -380,7 +380,7 @@ onUnmounted(() => {
 .tool-detail {
   color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.tool-chip.bad .tool-detail { color: #ffb3c1; }
+.tool-chip.bad .tool-detail { color: #ded1ff; }
 .tool-ms { color: var(--text-dim); opacity: 0.7; flex: 0 0 auto; }
 
 /* 推理模型的思考过程：默认收起 */

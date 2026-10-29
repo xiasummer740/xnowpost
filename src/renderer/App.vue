@@ -276,7 +276,12 @@ onMounted(async () => {
 .app-container {
   display: flex;
   height: 100vh;
-  background: var(--bg0);
+  /* 极光底纹：XX-UI 那套渐变，暗色主题下压成三块光斑，不抢内容 */
+  background:
+    radial-gradient(900px 520px at 8% -12%, rgba(168, 85, 247, 0.20), transparent 62%),
+    radial-gradient(820px 480px at 96% -6%, rgba(59, 130, 246, 0.17), transparent 64%),
+    radial-gradient(760px 540px at 52% 112%, rgba(20, 184, 166, 0.14), transparent 62%),
+    var(--bg0);
   color: var(--text);
 }
 
@@ -300,18 +305,23 @@ onMounted(async () => {
   width: 28px;
   height: 28px;
   border-radius: 9px;
-  background: linear-gradient(135deg, var(--brand), #ff7a45);
+  background: var(--brand-grad);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 14px rgba(255, 46, 91, 0.35);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--brand) 35%, transparent);
   flex: 0 0 28px;
 }
 .logo-name {
   font-size: 15px;
   font-weight: 650;
   letter-spacing: 0.2px;
-  color: var(--text);
+  /* 品牌名用渐变字（XX-UI 的做法）；渐变不能给正文用，只用在 logo 上 */
+  background: var(--brand-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 .logo .ver {
   font-size: 10px;
@@ -353,7 +363,12 @@ nav { display: flex; flex-direction: column; gap: 2px; }
   opacity: 0.9;
 }
 .nav-item:hover { color: var(--text); background: rgba(44, 61, 80, 0.28); }
-.nav-item.active { background: var(--brand-soft); color: #fff; }
+/* 选中项：品牌渐变软底 + 左侧渐变竖条（XX-UI 的观感，但压暗到不抢正文） */
+.nav-item.active {
+  background: var(--brand-grad-soft);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.28);
+}
 .nav-item.active::before {
   content: '';
   position: absolute;
@@ -362,7 +377,7 @@ nav { display: flex; flex-direction: column; gap: 2px; }
   bottom: 8px;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: var(--brand);
+  background: var(--brand-grad);
 }
 .sidebar-footer {
   margin-top: auto;
@@ -438,7 +453,7 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .update-actions { display: flex; gap: 8px; align-items: center; }
 .downloading-text { font-size: 12px; color: var(--warn); }
 .update-progress-bar { height: 4px; background: var(--bg3); border-radius: 2px; margin-bottom: 8px; overflow: hidden; }
-.update-progress-fill { height: 100%; background: var(--brand); border-radius: 2px; transition: width 0.3s; }
+.update-progress-fill { height: 100%; background: var(--brand-grad); border-radius: 2px; transition: width 0.3s; }
 .btn-close {
   width: 100%;
   padding: 8px;

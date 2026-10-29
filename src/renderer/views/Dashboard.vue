@@ -1121,7 +1121,7 @@ a.x-btn { text-decoration: none; }
 .x-btn.danger { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .spin {
   width: 13px; height: 13px; flex: 0 0 13px; border-radius: 50%;
-  border: 2px solid var(--stroke-2); border-top-color: var(--brand);
+  border: 2px solid var(--stroke-2); border-top-color: var(--brand-2);
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1133,7 +1133,7 @@ a.x-btn { text-decoration: none; }
 .progress-title { flex: 1; font-size: 13px; font-weight: 600; color: var(--text); }
 .progress-step-label { font-size: 12.5px; color: var(--text-2); margin-bottom: 8px; }
 .progress-bar { height: 6px; border-radius: 3px; background: var(--bg3); overflow: hidden; margin-bottom: 10px; }
-.progress-fill { height: 100%; min-width: 2%; border-radius: 3px; background: var(--brand); transition: width 0.5s ease; }
+.progress-fill { height: 100%; min-width: 2%; border-radius: 3px; background: var(--brand-grad); transition: width 0.5s ease; }
 .progress-log {
   max-height: 132px; overflow-y: auto; padding: 8px 10px;
   background: var(--bg0); border: 1px solid var(--stroke); border-radius: var(--r-sm);
@@ -1380,7 +1380,7 @@ tbody tr.pc-picked { background: color-mix(in srgb, var(--brand) 9%, transparent
   height: 100%;
   width: 38%;
   border-radius: 3px;
-  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  background: linear-gradient(90deg, transparent, var(--brand-2), transparent);
   animation: sp-slide 1.5s ease-in-out infinite;
 }
 @keyframes sp-slide {
@@ -1406,7 +1406,7 @@ tbody tr.pc-picked { background: color-mix(in srgb, var(--brand) 9%, transparent
 }
 .sp-step.cur {
   color: var(--brand);
-  border-color: rgba(255, 46, 91, 0.5);
+  border-color: color-mix(in srgb, var(--brand) 50%, transparent);
   background: var(--brand-soft);
   font-weight: 640;
 }

@@ -1,5 +1,29 @@
 # 接力开发 — 新对话从这里开始
 
+## 3H（2026-10-29 22:10，v1.9.4）配色换成 XX-UI 那套渐变色系
+
+用户口径：「这个项目 采用 F:\summer\vs-code\XX-UI 这个项目一样的渐变色系」。
+XX-UI 的色系 = **紫 #a855f7 → 蓝 #3b82f6 → 青 #14b8a6** 的 135° 渐变（`aSidebar.html` 品牌字、
+`index.html`/`login.html` 品牌名都是这个），外加 `page.html` 的流动极光底纹。
+
+- `theme.css` 新增渐变令牌：`--brand-1/2/3`、`--brand-grad`、`--brand-grad-hover`、
+  `--brand-grad-soft`、`--brand-glow`；`--brand` 改成**实色 #a78bfa**（暗底小字对比度 ~5.6:1；
+  用渐变起点 #a855f7 只有 ~4:1，读着发闷）。
+- 规则照旧一条：**渐变只上色块**（主按钮 / 开关 / 进度条 / logo / 选中项 / 用户气泡），
+  文字和描边用实色 `--brand`；绿琥珀红仍然只表示状态。
+- 落地位置：`.x-btn.primary`（带 background-position 滑动）、`.x-switch.on`（渐变轨道 + 白钮）、
+  `.x-input:focus` 焦点环、`.x-mini.hi`、App 侧栏选中项（渐变软底 + 渐变竖条）、
+  logo 方块 + 品牌名渐变字、批量标签 `.segbtn.on`、养号勾选框、进度条、AI 气泡。
+- 底纹：`.app-container` 用三块 radial-gradient 光斑（紫/蓝/青）压到 0.14~0.20 透明度叠在 `--bg0` 上，
+  **不加动画**（省 GPU，也避免「闪一下」的老毛病）。
+- 迁移脚本 `scripts/_migrate-gradient-colors.mjs [--dry-run]`：把散在 8 个 .vue 里的
+  `rgba(255,46,91,α)` / `#ff2e5b` / 粉橙渐变一次性换成 `color-mix(in srgb, var(--brand) …)` 与
+  `var(--brand-grad)`（共 21 处 + theme.css 手改 12 处）。以后新页面**不许再写死色值**。
+- 顺带修 `groupTitle()`：一个「没选账号」的组里混着养号/批量 + 一个没选号的仅视频时，
+  原来会整组写成「未指定账号（仅生成，不发布）」—— 对养号/批量是错的。现在写
+  「不选账号的闹钟（批量/养号会发布，其余仅生成）」。
+- verify 708 pass / 0 fail；已部署 1.9.4（首页/账号/日报/定时四页截图过目）。
+
 ## 3G（2026-10-29 20:05，v1.9.3）图文模式退场：只留「批量 / 仅视频 / 养号」
 
 用户口径：「视频+图文和仅图文可以不需要」。

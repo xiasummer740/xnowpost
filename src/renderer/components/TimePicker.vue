@@ -174,7 +174,7 @@ watch(show, async (v) => {
   min-width: 0;
 }
 .tp-trigger:hover {
-  border-color: rgba(255, 46, 91, 0.55);
+  border-color: rgba(139, 92, 246, 0.55);
   background: var(--bg3);
 }
 .tp-chevron {

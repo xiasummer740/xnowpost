@@ -1,6 +1,8 @@
 /* ============================================================
    XNOWPost 设计变量 + 通用组件类
-   规则：颜色只留一个品牌色（TikTok 粉），绿/琥珀/红只表示状态。
+   规则：品牌色是**一套渐变**（紫 #a855f7 → 蓝 #3b82f6 → 青 #14b8a6，照 XX-UI 的色系），
+   渐变只上色块（按钮/开关/进度条/logo/选中项），文字和描边用实色 --brand；
+   绿/琥珀/红只表示状态。
    新页面一律用这里的 class，不要再写死色值。
    ============================================================ */
 :root {
@@ -17,10 +19,20 @@
   --text-2: #9aa9bc;
   --text-3: #64748b;
 
-  /* 品牌与状态 */
-  --brand: #ff2e5b;
-  --brand-hover: #ff4d73;
-  --brand-soft: rgba(255, 46, 91, 0.12);
+  /* 品牌渐变（2026-10-29 照搬 XX-UI 的渐变色系：紫 → 蓝 → 青）
+     --brand 是实色，专门给文字/描边/图标用；渐变只能上色块（按钮、开关、进度条、logo）。
+     实色比渐变起点亮一档（#a78bfa）：暗底上的小字用 #a855f7 对比度只有 ~4:1，读起来发闷。 */
+  --brand-1: #a855f7;
+  --brand-2: #3b82f6;
+  --brand-3: #14b8a6;
+  --brand: #a78bfa;
+  --brand-hover: #bda9ff;
+  --brand-grad: linear-gradient(135deg, #a855f7 0%, #3b82f6 52%, #14b8a6 100%);
+  --brand-grad-hover: linear-gradient(135deg, #b871ff 0%, #5b93ff 52%, #22d3c0 100%);
+  --brand-grad-soft: linear-gradient(135deg, rgba(168, 85, 247, 0.22), rgba(59, 130, 246, 0.16), rgba(20, 184, 166, 0.13));
+  --brand-soft: rgba(139, 92, 246, 0.14);
+  --brand-line: rgba(139, 92, 246, 0.45);
+  --brand-glow: rgba(139, 92, 246, 0.32);
   --ok: #2dd4a7;
   --ok-soft: rgba(45, 212, 167, 0.12);
   --warn: #f5a524;
@@ -73,12 +85,20 @@
 .x-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .x-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.8; }
 .x-btn.primary {
-  background: var(--brand);
-  border-color: var(--brand);
+  background: var(--brand-grad);
+  background-size: 165% 165%;
+  background-position: 0% 50%;
+  border-color: transparent;
   color: #fff;
-  box-shadow: 0 6px 18px rgba(255, 46, 91, 0.28);
+  box-shadow: 0 6px 18px var(--brand-glow);
+  transition: background-position 0.45s ease, box-shadow 0.18s, transform 0.06s;
 }
-.x-btn.primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+.x-btn.primary:hover {
+  background: var(--brand-grad-hover);
+  background-size: 165% 165%;
+  background-position: 100% 50%;
+  box-shadow: 0 8px 22px var(--brand-glow);
+}
 .x-btn.ghost { background: transparent; }
 
 /* 小号按钮（表格行内 / 字段右侧） */
@@ -102,11 +122,11 @@
 .x-mini:hover { background: var(--bg3); color: var(--text); }
 .x-mini svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.9; }
 .x-mini.hi {
-  border-color: rgba(255, 46, 91, 0.42);
-  color: #ff8aa0;
-  background: rgba(255, 46, 91, 0.08);
+  border-color: rgba(139, 92, 246, 0.42);
+  color: #c9b6ff;
+  background: rgba(139, 92, 246, 0.1);
 }
-.x-mini.hi:hover { background: rgba(255, 46, 91, 0.16); color: #ffb3c2; }
+.x-mini.hi:hover { background: rgba(139, 92, 246, 0.2); color: #ded1ff; }
 .x-mini:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── 卡片 ── */
@@ -186,8 +206,8 @@
 .x-input:focus,
 .x-select:focus,
 .x-textarea:focus {
-  border-color: rgba(255, 46, 91, 0.6);
-  box-shadow: 0 0 0 3px rgba(255, 46, 91, 0.12);
+  border-color: rgba(139, 92, 246, 0.65);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.16);
 }
 .x-input.mono { font-family: var(--font-mono); letter-spacing: 1.2px; }
 .x-select { appearance: none; cursor: pointer; }
@@ -266,8 +286,8 @@
   background: #6b7a8d;
   transition: left 0.18s, background 0.18s;
 }
-.x-switch.on { background: rgba(255, 46, 91, 0.22); border-color: rgba(255, 46, 91, 0.5); }
-.x-switch.on i { left: 19px; background: var(--brand); }
+.x-switch.on { background: var(--brand-grad); border-color: transparent; box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.45), 0 2px 10px var(--brand-glow); }
+.x-switch.on i { left: 19px; background: #fff; }
 
 /* ── 空状态 / 骨架屏（沿用旧类名，换成新色） ── */
 .x-empty {
@@ -278,4 +298,22 @@
   padding: 48px 20px;
   color: var(--text-3);
   font-size: 13px;
+}
+
+/* ── 品牌渐变文字（logo / 品牌名专用；渐变不能拿来写正文，暗底上读不清） ── */
+.x-brand-text {
+  background: var(--brand-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* ── 极光底纹（照 XX-UI 的「流动渐变」，暗色主题下压成氛围光斑，不动画省电） ── */
+.x-aurora {
+  background:
+    radial-gradient(900px 520px at 8% -12%, rgba(168, 85, 247, 0.20), transparent 62%),
+    radial-gradient(820px 480px at 96% -6%, rgba(59, 130, 246, 0.17), transparent 64%),
+    radial-gradient(760px 540px at 52% 112%, rgba(20, 184, 166, 0.14), transparent 62%),
+    var(--bg0);
 }

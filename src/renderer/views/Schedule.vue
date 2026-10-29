@@ -760,9 +760,15 @@ const groupedJobs = computed(() => {
 function groupTitle(v) {
   if (v.account) return `账号 ${v.account}`
   const modes = new Set(v.jobs.map((x) => x.mode))
-  if (modes.size === 1 && modes.has('warmup')) return '养号队列（不发布）'
-  if (modes.size === 1 && modes.has('batch')) return '批量队列（按顺序生成+发布）'
-  if ([...modes].every((m) => m === 'warmup' || m === 'batch')) return '养号 / 批量队列（账号在名单里）'
+  const listOnly = modes.has('warmup') || modes.has('batch')      // 账号写在名单里，照样会发布
+  const hasPlain = [...modes].some((m) => m !== 'warmup' && m !== 'batch')  // 没选号 = 只生成不发布
+  if (listOnly && !hasPlain) {
+    if (modes.size === 1 && modes.has('warmup')) return '养号队列（不发布）'
+    if (modes.size === 1 && modes.has('batch')) return '批量队列（按顺序生成+发布）'
+    return '养号 / 批量队列（账号在名单里）'
+  }
+  // 混着"没选号的仅视频"时，不能整组都说"仅生成"，也不能整组说"会发布"
+  if (listOnly && hasPlain) return '不选账号的闹钟（批量/养号会发布，其余仅生成）'
   return '未指定账号（仅生成，不发布）'
 }
 
@@ -882,7 +888,7 @@ async function save() {
   color: var(--text);
 }
 .acc-chip.on {
-  border-color: rgba(255, 46, 91, 0.55);
+  border-color: color-mix(in srgb, var(--brand) 55%, transparent);
   background: var(--brand-soft);
   color: var(--text);
 }
@@ -951,7 +957,7 @@ async function save() {
   border-radius: 8px;
   background: var(--brand-soft);
   color: var(--brand);
-  border: 1px solid rgba(255, 46, 91, 0.35);
+  border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1065,8 +1071,9 @@ async function save() {
   background: var(--bg3);
 }
 .segbtn.on {
-  background: var(--brand);
+  background: var(--brand-grad);
   color: #fff;
+  box-shadow: 0 2px 10px var(--brand-glow);
 }
 
 /* 账号选择器 */
@@ -1159,7 +1166,7 @@ async function save() {
 }
 .add-alarm:hover {
   color: var(--brand);
-  border-color: rgba(255, 46, 91, 0.5);
+  border-color: color-mix(in srgb, var(--brand) 50%, transparent);
   background: var(--brand-soft);
 }
 
@@ -1259,8 +1266,8 @@ async function save() {
   color: #fff;
 }
 .warm-item.on .warm-box {
-  background: var(--brand);
-  border-color: var(--brand);
+  background: var(--brand-grad);
+  border-color: transparent;
 }
 .warm-item .an {
   font-weight: 600;
