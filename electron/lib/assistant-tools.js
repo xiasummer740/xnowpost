@@ -187,7 +187,7 @@ export const TOOL_DEFS = [
       op: { type: 'string', enum: ['create', 'enable', 'disable', 'delete', 'update'] },
       id: { type: 'string', description: '任务 id（create 不需要；其它操作先用 get_schedule 查）' },
       time: { type: 'string', description: 'op=create 的时间，HH:MM 24 小时制，如 "08:30"' },
-      mode: { type: 'string', enum: ['video', 'auto', 'post', 'batch'], description: 'op=create 的类型，默认 video（仅视频）；batch = 一个闹钟按顺序把 accounts 里的号全部生成+发布（推荐用它代替「每 5 分钟一个号」的一串闹钟）' },
+      mode: { type: 'string', enum: ['video', 'batch'], description: 'op=create 的类型，默认 video（仅视频）；batch = 一个闹钟按顺序把 accounts 里的号全部生成+发布（推荐用它代替「每 5 分钟一个号」的一串闹钟）' },
       account: { type: 'string', description: 'op=create 发到哪个账号编号，如 "03"（必须已存在）' },
       accounts: { type: 'string', description: 'mode=batch 时要用的一串账号编号，逗号分隔（按顺序跑），如 "01,02,03"；也可用 items 传数组' },
       items: {

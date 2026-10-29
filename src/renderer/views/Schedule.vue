@@ -650,9 +650,10 @@ async function load() {
 }
 
 function resetDefaults() {
+  // 默认排一个「批量生成+发布」：一个闹钟一串账号，最省心（2026-10-29 用户口径）。
   jobs.value = [
-    { id: 1, time: '07:00', mode: 'auto',  label: '视频+图文', enabled: false, account: '' },
-    { id: 2, time: '19:00', mode: 'video', label: '仅视频',    enabled: false, account: '' },
+    { id: 1, time: '08:30', mode: 'batch', label: '批量生成+发布', enabled: false, account: '', warmupAccounts: '' },
+    { id: 2, time: '02:00', mode: 'warmup', label: '养号', enabled: false, account: '', warmupAccounts: '', warmupMinutesMin: 8, warmupMinutesMax: 15 },
   ]
 }
 
@@ -660,8 +661,8 @@ function addJob() {
   jobs.value.push({
     id: nextJobId(),
     time: '12:00',
-    mode: 'auto',
-    label: '视频+图文',
+    mode: 'video',
+    label: '仅视频',
     enabled: true,
     account: '',
   })

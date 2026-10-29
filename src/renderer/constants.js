@@ -39,11 +39,13 @@ export const METRICS_ORDER = [
   'saves', 'reach', 'engagement',
 ]
 
+// 2026-10-29 用户口径：「视频+图文和仅图文可以不需要」——
+// 只留三种：批量生成+发布（一个闹钟一串账号）/ 仅视频 / 养号。
+// 'auto'/'post' 仍然保留在 MODE_LABEL_MAP 里：老的 schedule.json 和轮次记录里还有它们，
+// 读取时要能翻译成人话（只是界面上不再给入口）。
 export const MODE_OPTIONS = [
   { value: 'batch', label: '批量生成+发布' },
-  { value: 'auto', label: '视频+图文' },
   { value: 'video', label: '仅视频' },
-  { value: 'post', label: '仅图文' },
   { value: 'warmup', label: '养号' },
 ]
 

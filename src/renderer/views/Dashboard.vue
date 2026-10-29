@@ -424,27 +424,15 @@
         </div>
 
         <!-- 主操作：同一行 .x-btn，只有「立即生成」是主按钮 -->
+        <!-- 2026-10-29 用户口径：「视频+图文和仅图文可以不需要」——
+             原来这里有三个按钮（立即生成=1视频+1图文 / 仅视频 / 仅图文），
+             去掉图文之后前两个其实是同一个动作，所以合并成一个「立即生成」（= 只出视频）。 -->
         <div class="gen-actions">
           <button class="x-btn primary" @click="runAuto" :disabled="store.status.running || !store.status.configured">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M13.5 3 5.5 13.5H11l-.7 7.5L18.5 10H13z" />
             </svg>
-            <span>立即生成（{{ isMorning ? '1视频+1图文' : '1视频' }}）</span>
-          </button>
-          <button class="x-btn" @click="runVideo" :disabled="store.status.running || !store.status.configured">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
-              <path d="m16 10.5 5-2.8v8.6l-5-2.8z" />
-            </svg>
-            <span>仅视频</span>
-          </button>
-          <button class="x-btn" @click="runPost" :disabled="store.status.running || !store.status.configured">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-              <circle cx="9" cy="10" r="1.6" />
-              <path d="m4.5 17 4.6-4.4 3.2 3 2.6-2.4 4.1 4" />
-            </svg>
-            <span>仅图文</span>
+            <span>立即生成（1 条视频）</span>
           </button>
           <!-- 「采集」不在这张卡里：它属于数据，不属于生成。入口统一在「定时 → 采集面板」。 -->
         </div>
@@ -602,7 +590,6 @@ async function pickShots() {
     store.addLog('error', '选择截图失败: ' + ((e && e.message) || e));
   }
 }
-const isMorning = new Date().getHours() < 12;
 const cancelling = ref(false);
 const publishing = ref(false);
 const quickTopic = ref('');
@@ -689,9 +676,8 @@ async function generate(mode) {
   loadPendingItems();
 }
 
-const runAuto = () => generate('auto');
-const runVideo = () => generate('video');
-const runPost = () => generate('post');
+// 只出视频了（图文入口已按用户要求去掉）：立即生成 = 一条视频
+const runAuto = () => generate('video');
 
 const topicCount = computed(() => batchTopics.value.trim() ? batchTopics.value.trim().split('\n').filter(Boolean).length : 0)
 
@@ -708,7 +694,7 @@ async function runBatch() {
     // 用 runEngine 返回的显式 cancelled 标记判断是否中断；
     // 绝不能再用 store.status.running —— 它在 runEngine 的 finally 里必然为 false，
     // 会让任何 ≥2 条的批量任务都在第 1 条后 break（P1-1）
-    const result = await store.runEngine('auto', topic, genOptions())
+    const result = await store.runEngine('video', topic, genOptions())
     batchDone.value = i + 1
     loadPendingItems()
     if (result?.cancelled) {
