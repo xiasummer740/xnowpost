@@ -101,7 +101,7 @@ test('结果码常量与文案分支对齐（新增结果码必须同时加文�
     );
     assert.ok(text.length > 8, `${code} 没有对应文案`);
   }
-  assert.deepEqual(Object.keys(RUN_MODE_LABEL).sort(), ['auto', 'collect', 'post', 'text', 'video']);
+  assert.deepEqual(Object.keys(RUN_MODE_LABEL).sort(), ['auto', 'batch', 'collect', 'post', 'text', 'video', 'warmup']);
 });
 
 // ───────────────────────── 3. 记录组装 ─────────────────────────

@@ -44,6 +44,8 @@ export const SCHEDULE_MODE_LABEL = {
   auto: '视频+图文',
   video: '仅视频',
   post: '仅图文',
+  batch: '批量生成+发布',
+  warmup: '养号',
   collect: '数据采集',
 };
 
@@ -185,8 +187,9 @@ export const TOOL_DEFS = [
       op: { type: 'string', enum: ['create', 'enable', 'disable', 'delete', 'update'] },
       id: { type: 'string', description: '任务 id（create 不需要；其它操作先用 get_schedule 查）' },
       time: { type: 'string', description: 'op=create 的时间，HH:MM 24 小时制，如 "08:30"' },
-      mode: { type: 'string', enum: ['video', 'auto', 'post'], description: 'op=create 的类型，默认 video（仅视频）' },
+      mode: { type: 'string', enum: ['video', 'auto', 'post', 'batch'], description: 'op=create 的类型，默认 video（仅视频）；batch = 一个闹钟按顺序把 accounts 里的号全部生成+发布（推荐用它代替「每 5 分钟一个号」的一串闹钟）' },
       account: { type: 'string', description: 'op=create 发到哪个账号编号，如 "03"（必须已存在）' },
+      accounts: { type: 'string', description: 'mode=batch 时要用的一串账号编号，逗号分隔（按顺序跑），如 "01,02,03"；也可用 items 传数组' },
       items: {
         type: 'array',
         description: 'op=create 批量新建（一次最多 10 条）：[{"time":"08:30","account":"01","mode":"video"}, …]。「每 5 分钟一个账号」这类请求用它，不要连着调 10 次 create。给了 items 就不用 time/account。',

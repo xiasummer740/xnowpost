@@ -97,8 +97,8 @@
         <span v-else class="x-ic">
           <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
         </span>
-        <!-- 养号闹钟没有"发布到哪个号"，别被归到「未指定账号（仅生成，不发布）」那一组去 -->
-        <h2>{{ group.account ? '账号 ' + group.account : (group.onlyWarmup ? '养号队列（不发布）' : '未指定账号（仅生成，不发布）') }}</h2>
+        <!-- 养号/批量闹钟没有"发布到哪个号"，别被归到「未指定账号（仅生成，不发布）」那一组去 -->
+        <h2>{{ group.title }}</h2>
         <span class="x-spacer"></span>
         <span class="x-hint">{{ group.jobs.length }} 个闹钟</span>
       </div>
@@ -134,15 +134,15 @@
             </button>
           </div>
 
-          <!-- 养号：一个闹钟管一批账号，多选即可，不用一个个填 -->
-          <div v-if="job.mode === 'warmup'" class="warm-picker">
+          <!-- 养号 / 批量：一个闹钟管一批账号，多选即可，不用一个个填 -->
+          <div v-if="job.mode === 'warmup' || job.mode === 'batch'" class="warm-picker">
             <button
               class="x-input warm-acc"
               :class="{ empty: !warmCount(job) }"
               :title="warmTitle(job)"
               @click.stop="toggleWarmDrop(globalIndex(group, jIdx), $event.currentTarget)"
             >
-              {{ warmCount(job) ? `已选 ${warmCount(job)} 个号` : '选择要养的账号' }}
+              {{ warmCount(job) ? `已选 ${warmCount(job)} 个号` : (job.mode === 'batch' ? '选择要处理的账号' : '选择要养的账号') }}
               <span class="warm-caret">▾</span>
             </button>
             <Teleport to="body">
@@ -217,6 +217,9 @@
             </select>
             <span class="warm-unit">随机/号</span>
           </div>
+          <span v-else-if="job.mode === 'batch'" class="auto-tag on" :title="batchEta(job)">
+            {{ batchTag(job) }}
+          </span>
           <span v-else class="auto-tag" :class="{ on: !!job.account }" :title="job.account ? '生成完自动发到这个账号' : '没选账号 = 只生成不发布'">
             {{ job.account ? '自动发布' : '仅生成' }}
           </span>
@@ -242,6 +245,7 @@
         关闭开关 = 暂停（配置保留）· 选了账号 = 生成后自动发布到该账号，不选 = 仅生成内容 ·
         定时由后台调度器执行，应用需要保持运行；出发前会先查登录态，账号掉登录会跳过这一轮并写日志。
       <br /><b>养号</b>：任何一行把模式切成「养号」，这一行的账号框就会变成「勾选要养的账号 + 随机时长」，可一次勾多个号按顺序养；切回发布模式会把原来的账号还回去。
+      <br /><b>批量生成+发布</b>：勾几个号就按顺序全做完（每个号：生成 → 自动发布），跑完自己结束；中间某个号失败只跳过它，不影响后面的号。
       </span>
     </div>
   </div>
@@ -577,6 +581,18 @@ function warmEta(job) {
   // 脚本里每个号之间还会歇 45~120 秒（避免两个号紧挨着活动）
   return `${n} 个号依次养 · 每号随机 ${lo}~${hi} 分钟 · 预计 ${fmtSpan(n * lo + (n - 1) * 0.75)}~${fmtSpan(n * hi + (n - 1) * 2)}`
 }
+
+// 批量：一个闹钟把选中的号按顺序做完（生成 → 发布），跑完就结束。
+// 实测单个号「生成 + 发布」5~10 分钟（生成 3~6 分钟，发布 1~3 分钟），所以按 10 分钟/号估。
+function batchTag(job) {
+  const n = warmCount(job)
+  return n ? `按顺序跑 ${n} 个号` : '未选账号'
+}
+function batchEta(job) {
+  const n = warmCount(job)
+  if (!n) return '还没选账号：先点「选择要处理的账号」'
+  return `${n} 个号依次生成+发布 · 每号约 5~10 分钟 · 预计 ${fmtSpan(n * 5)}~${fmtSpan(n * 10)}，跑完自己结束`
+}
 function toggleWarmDrop(i, el) {
   if (warmOpen.value === i) { warmOpen.value = -1; return }
   warmOpen.value = i
@@ -661,6 +677,7 @@ function addJob() {
 function setMode(i, val) {
   const job = jobs.value[i]
   const wasWarmup = job.mode === 'warmup'
+  const wasBatch = job.mode === 'batch'
   job.mode = val
   // 标签始终跟随模式选择
   job.label = modeLabelMap[val] || val
@@ -675,6 +692,17 @@ function setMode(i, val) {
     if (!(Number(job.warmupMinutesMax) > 0)) job.warmupMinutesMax = 15
     delete job.warmupMinutes
     job.account = ''
+  } else if (val === 'batch') {
+    // 批量：一个闹钟按顺序把选中的号全做完（生成 → 发布），跑完就结束。
+    // 没有「发布到哪个号」这回事，所以 job.account 清空；名单共用 warmupAccounts 字段
+    // （同样是"一串账号"的语义，存盘/热重载/跨重启都能还原）。
+    if (!wasBatch && !wasWarmup) job._prevAccount = job.account || ''
+    if (!warmList(job).length) {
+      job.warmupAccounts = job._prevAccount || accounts.value.map((a) => a.name).join(',')
+    }
+    job.account = ''
+    delete job.warmupMinutesMin
+    delete job.warmupMinutesMax
   } else if (wasWarmup && !job.account) {
     // 切回发布：把账号还回去。名单里只有一个号就用它（跨重启也能还原，靠 warmupAccounts）
     const list = warmList(job)
@@ -718,10 +746,24 @@ const groupedJobs = computed(() => {
   hasAccount.sort(([a], [b]) => a.localeCompare(b))
   return [...hasAccount, ...noAccount].map(([, v]) => ({
     ...v,
-    // 整组都是养号时用另一个标题：「未指定账号（仅生成，不发布）」对养号是误导
-    onlyWarmup: v.jobs.every((x) => x.mode === 'warmup'),
+    title: groupTitle(v),
   }))
 })
+
+/**
+ * 分组标题。
+ * 为什么不能只看 mode：一个「不指定账号」的组里可能同时有养号和批量闹钟（今天就是这样）。
+ * 「未指定账号（仅生成，不发布）」这句话对养号/批量是**错的** —— 它们照样会发布，
+ * 只是"发到哪个号"写在名单里，不写在单行上。
+ */
+function groupTitle(v) {
+  if (v.account) return `账号 ${v.account}`
+  const modes = new Set(v.jobs.map((x) => x.mode))
+  if (modes.size === 1 && modes.has('warmup')) return '养号队列（不发布）'
+  if (modes.size === 1 && modes.has('batch')) return '批量队列（按顺序生成+发布）'
+  if ([...modes].every((m) => m === 'warmup' || m === 'batch')) return '养号 / 批量队列（账号在名单里）'
+  return '未指定账号（仅生成，不发布）'
+}
 
 // 获取组内闹钟在全局 jobs 中的索引
 function globalIndex(group, jIdx) {

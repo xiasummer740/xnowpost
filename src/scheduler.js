@@ -12,6 +12,7 @@ import { buildRunRecord, resultFromRunWithRetry, pickSession, writeRunRecord, RU
 import { createSerialQueue } from './serial-queue.js';
 import { killTree } from './process-tree.js';
 import * as runLock from './run-lock.js';
+import { orderBatchAccounts, summarizeBatch, batchResult, perAccountBudgetMs, totalBudgetMs } from './batch-plan.js';
 
 // 代码目录（打包版 = app.asar.unpacked）与数据目录（%APPDATA%/xnowpost）是两回事：
 // 子进程 cwd 用代码目录才能定位 src/*.js；日志与 TG 配置必须用数据目录，
@@ -44,6 +45,8 @@ const TIMEOUTS = {
 };
 // 宿主比子进程多留的收尾时间（关浏览器、写标记/账本、写轮次记录）
 const PUBLISH_SLACK_MS = 5 * MIN;
+// 批量任务里每个号的发布留量：生成完顺路发布，单号最长等 15 分钟（含内容审查）
+const BATCH_PUBLISH_ALLOW_MS = 15 * MIN;
 
 // 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
 function findNodeExe() {
@@ -122,6 +125,9 @@ const CAPTURE_MAX = 400;
 // 所以开头这些行单独留住（它们才是"这轮到底做了什么"的证据）。
 const CAPTURE_KEEP_HEAD = 40;
 
+// 批量任务的计数（发布了几条 / 有几条没确认），每轮开始清零
+let runCounters = null;
+
 /** 子进程输出按行转发到调度器日志 */
 function forward(text) {
   if (!text) return;
@@ -129,6 +135,11 @@ function forward(text) {
     const one = line.trim();
     if (!one) continue;
     log(one);
+    // 批量任务要统计"这一轮到底发出去几条"：日志缓冲会被滚动淘汰，所以边转发边计数
+    if (runCounters) {
+      if (/\.published 已确认公开|发布成功并已确认/.test(one)) runCounters.published += 1;
+      if (/未确认（|确认公开失败/.test(one)) runCounters.unconfirmed += 1;
+    }
     if (captureLines) {
       captureLines.push(one);
       // 只从「开头之外」滚动淘汰：CAPTURE_KEEP_HEAD 之前的位置不动
@@ -429,6 +440,92 @@ async function runJob(job) {
       '--minutes-max', String(hi),
     ];
     return outcomeOf(await runWithRetry(args, job.label, { kind: 'warmup', retryOnFail: false, timeoutMs }));
+  } else if (job.mode === 'batch') {
+    // ── 批量：生成 + 发布，一个闹钟一串账号 ─────────────────────────────
+    // 用户口径（2026-10-29）：「我设置闹钟开始，然后选择几个账号，你就按顺序生成、发布完就完事了」。
+    // 以前要排 11 个「每 5 分钟一个」的闹钟，还得猜"一轮给多少分钟"——
+    // 现在就是一个闹钟、一串账号，按顺序一个一个做，做完就结束。
+    // 时间按账号数算（不再是固定 45 分钟那一套），中途某个号失败只跳过它，不影响后面的号。
+    const picks = safeAccountList(job.accounts || job.accountsList || job.warmupAccounts || job.account);
+    if (!picks.length) {
+      log(`⏭️ 跳过「${job.label || job.time}」：这个批量闹钟还没勾选账号。`);
+      log('   到「定时」页点「选择要处理的账号」勾上要跑的号（可多选，会按顺序一个一个跑）。');
+      return { result: 'skipped', reason: '批量闹钟没勾选账号（不知道该跑谁）' };
+    }
+    // 顺序按配置里的账号顺序（勾选顺序可能乱），保证"01 → 02 → …"这种可预期的顺序
+    const queue = orderBatchAccounts({
+      picks,
+      configAccounts: (cfg.accounts || []).map((a) => a.name),
+    });
+
+    const wantPublish = job.autoPublish !== false;
+    // 每个号的预算：生成（TIMEOUTS.engine）+ 发布留量。发布在这个进程里顺路做，
+    // 所以不能只给生成的那 30 分钟，否则发布必然被掐在半路。
+    const perAccountMs = perAccountBudgetMs({
+      engineMs: TIMEOUTS.engine,
+      publishAllowMs: BATCH_PUBLISH_ALLOW_MS,
+      wantPublish,
+    });
+    const totalMs = totalBudgetMs({ count: queue.length, perAccountMs, tailMs: 5 * MIN });
+
+    log(`👥 批量任务：${queue.length} 个号按顺序跑 —— ${queue.join(' → ')}`);
+    log(`   ${wantPublish ? '每个号：生成 → 自动发布' : '每个号：只生成，不发布'}；`
+      + `单号最多 ${Math.round(perAccountMs / MIN)} 分钟，整轮最多 ${Math.round(totalMs / MIN)} 分钟`);
+    log('   中途某个号失败只跳过它，后面的号继续（不会因为一个号没登录就整轮不跑）。');
+
+    const pre = await precheckLogin(resolveEnvs(queue.join(','), cfg));
+    const loggedOutEnvs = new Set(pre.out.map((r) => String(r.env || '').trim()));
+
+    const done = [];      // 成功
+    const failedList = []; // 失败
+    const skippedList = []; // 跳过
+    let published = 0;
+    let unconfirmed = 0;
+
+    for (let i = 0; i < queue.length; i += 1) {
+      const account = queue[i];
+      const tag = `账号 ${account}（${i + 1}/${queue.length}）`;
+      // 登录态：未登录的号直接跳过（生成出来也发不出去，还白花钱）
+      const envsOfThis = resolveEnvs(account, cfg);
+      const outNow = envsOfThis.filter((e) => loggedOutEnvs.has(e));
+      if (outNow.length && outNow.length === envsOfThis.length) {
+        log(`⏭️ ${tag} 未登录，跳过（不生成、不发布，省 API 费用）`);
+        skippedList.push(account);
+        continue;
+      }
+      const args = ['src/index.js', '--video-only', '--account', account];
+      if (wantPublish) args.push('--auto-publish');
+      runCounters = { published: 0, unconfirmed: 0 };
+      const r = await runWithRetry(args, `批量 · ${tag}`, {
+        kind: 'engine',
+        retryOnFail: false,          // 自动发布模式绝不重试（重试=重复上传/重复计费）
+        timeoutMs: perAccountMs,
+      });
+      published += runCounters.published;
+      unconfirmed += runCounters.unconfirmed;
+      runCounters = null;
+      if (r && r.ok) done.push(account);
+      else if (r && r.insufficient) skippedList.push(account);
+      else failedList.push(account);
+    }
+
+    const summary = summarizeBatch({
+      total: queue.length,
+      done,
+      failed: failedList,
+      skipped: skippedList,
+      published,
+      unconfirmed,
+      wantPublish,
+    });
+    if (failedList.length || unconfirmed) {
+      log(`⚠️ 批量任务跑完：${summary}`);
+      await sendAlert(`⚠️ 批量任务（${job.label || job.time}）\n${summary}\n时间: ${new Date().toLocaleString('zh-CN')}`);
+    } else {
+      log(`✅ 批量任务跑完：${summary}`);
+    }
+    const result = batchResult({ total: queue.length, done, failed: failedList });
+    return { result, reason: summary };
   } else {
     // 🔴 如果闹钟指定了账号，会加自动发布参数（作为独立 argv 元素传递，不拼字符串）
     const account = String(job.account || '').trim();
@@ -520,6 +617,7 @@ async function executeJob(job) {
 
   const startedAtMs = Date.now();
   captureLines = [];
+  runCounters = null;   // 计数只在批量分支里用，别把上一轮的数字带进来
   let outcome = { result: 'failed', reason: '' };
   try {
     outcome = (await runJob(job)) || { result: 'ok', reason: '' };
@@ -547,6 +645,7 @@ async function executeJob(job) {
     } catch (e) {
       log(`⚠️ 轮次记录写入失败（不影响任务本身）: ${e.message}`);
     }
+    runCounters = null;
     clearInterval(beatTimer);
     if (acquired.ok) {
       try { runLock.release(LOCK_FILE); } catch (_) { /* ignore */ }

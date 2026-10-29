@@ -1841,7 +1841,7 @@ function setupIPC() {
     } catch (_) {
       jobs = [];
     }
-    const MODE_TEXT = { auto: '视频+图文', video: '仅视频', text: '仅图文', warmup: '养号', collect: '数据采集', post: '发布' };
+    const MODE_TEXT = { auto: '视频+图文', video: '仅视频', text: '仅图文', batch: '批量生成+发布', warmup: '养号', collect: '数据采集', post: '发布' };
     const str = (v) => (v === undefined || v === null ? '' : String(v));
 
     for (const j of Array.isArray(jobs) ? jobs : []) {
@@ -1851,14 +1851,16 @@ function setupIPC() {
       const at = h * 60 + m;
       const mode = str(j.mode) || 'auto';
       const warm = str(j.warmupAccounts).split(',').map((x) => x.trim()).filter(Boolean);
-      const accs = mode === 'warmup' ? warm : (str(j.account) ? [str(j.account)] : []);
+      // 养号 / 批量 = 一个闹钟一串账号；其它模式只有一个「发到哪个号」
+      const multi = mode === 'warmup' || mode === 'batch';
+      const accs = multi ? warm : (str(j.account) ? [str(j.account)] : []);
       const base = {
         id: Number(j.id) || 0,
         time: str(j.time),
         label: str(j.label) || MODE_TEXT[mode] || mode,
         modeText: MODE_TEXT[mode] || mode,
         accounts: accs,
-        accountsText: mode === 'warmup'
+        accountsText: multi
           ? (accs.length ? accs.length + ' 个号：' + accs.join(',') : '没勾账号')
           : (accs[0] ? '账号 ' + accs[0] : '仅生成'),
         durationText: mode === 'warmup' && Number(j.warmupMinutesMax) > 0

@@ -31,6 +31,8 @@ export const RUN_MODE_LABEL = {
   video: '仅视频',
   post: '仅图文',
   auto: '视频+图文',
+  batch: '批量生成+发布',
+  warmup: '养号',
   collect: '数据采集',
   text: '仅文案',
 };
