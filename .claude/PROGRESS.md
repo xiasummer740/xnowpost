@@ -1,5 +1,40 @@
 # 接力开发 — 新对话从这里开始
 
+## 最新：3C（2026-10-29 18:55，v1.8.8）上帝视角审查 → 修 8 处 + 上闸门，剩下的按优先级列在这
+
+三路只读审计（调度 / 发布器 / 安全杂项）跑完，**已修的 8 条**见 commit `f2335ee`：
+⏱️「时间轴校验通过」→🎵（今天第 9 条假错误）、`check-log-levels.mjs` 进 verify、
+生成入口清 `schemaFeedback`、schedule/env-accounts 改原子写、`.published` 两段式（confirmed:false → 确认后升级）、
+轮次回报跳过未确认账本行 + 兼容 `publishedAt`、captureLines 保住 `📅` 行、`data/collect-meta.json` 赶出索引。
+
+### 还没修，按「会不会真出事」排序（下一轮从这里挑）
+1. 🔴 **闹钟会静默丢轮**（`src/scheduler.js:493` + node-cron 默认）：上一轮没跑完（`spawnSync` 占满事件循环），
+   跨过下一轮的分钟就**直接丢掉、不排队不补跑**。今天 08:50 那轮跑了 4m16s，距下一轮只剩 44 秒。
+   00:30–01:20 / 08:30–09:20 都是 11 个号每 5 分钟一个 ⇒ 任一轮超 5 分钟就少吃一个号。
+   修法：改异步 spawn + 串行队列（推荐），或开 `recoverMissedExecutions` + 日志写"错过 X 轮"。
+2. 🔴 **超时不杀进程树**（`src/scheduler.js:127`）：`spawnSync` 超时只杀直接子进程，
+   publisher 的 `finally closeFoxProfile` 没机会跑 ⇒ camoufox 窗口留着、占着 `cookies.sqlite`，
+   下一轮撞 "Browser is still starting"/launch 被挤。主进程早有 `killProcessTree`（taskkill /T /F），
+   调度器这边没有 —— 照抄一份即可。
+3. 🟠 **宿主预算 < 子进程预算**：publish 模式宿主给 45 分钟，而每条视频自己拿 30 分钟预算且 `--all` 不限条数
+   ⇒ 合法的多条目发布会被宿主强杀（表现为"发了一半 + 未确认"）。
+4. 🟠 **跨进程无互斥**：界面手动发布/采集 vs 调度器 = 两个进程同时开同一个 FoxProfile 环境，
+   而 `openFoxPage` 会 `foxStopOthers` 把对方的浏览器关掉。建议 `data/` 下放 pid 锁（带过期）。
+5. 🟠 **养号每号 +1.5 分钟开销已过时**（`src/scheduler.js:349`）：3A 之后最坏每号 150s 等页面通道 +
+   15s 等环境退出 ⇒ 11 号最坏 221 分钟 > 预算 207 分钟（今天实跑 142 分钟，属边界风险）。改 `+3` 即可。
+6. 🟠 **`whenReady` 整链无 `.catch`**（`electron/main.js:6113`）：任一步抛错就只剩 crash.log，
+   连 `startScheduler` 都不执行 ⇒ 界面正常但定时永不跑。
+7. 🟡 发布确认仍靠整页 `innerText` 找「所有人」（`tiktok.js:1163`）：今天 9 轮都是 21~36 秒才确认，
+   说明旧作品没误命中；但如果某天旧作品行带「Everyone」，会在 ~0 秒假成功。理想是按标题定位"本条"。
+8. 🟡 英文位中文兜底后（`text.js` fillMissingBilingual）自检卡仍显示"达标"，只有一行 `🩹` 留痕；
+   发布出去的描述可能是"中文标题 + 同一句中文"。建议 quality 抽检 EN 行 ASCII 占比。
+9. 🟡 磁盘：`release/` 22.8 GB / 143 个 Setup（一天 8 个 ≈1.8 GB）；`%APPDATA%\xnowpost\output` 2.2 GB、
+   约 +200 MB/天且交付物永不删；`backups/<日期>` 自 6-17 起 19 个未清、`publish-ledger.jsonl` 只增不减。
+10. 🟡 公开仓库历史里仍有 `tmp.db`（BitBrowser 数据库，blob `73e46f51`，1.2 MB）：
+   删除提交 ≠ 移出历史，需 filter-repo/BFG 清史（**破坏性操作，必须用户拍板**）。
+11. 🟡 「确认公开」的 `confirmed` 字段目前只有 `.published`/账本里有，历史账本行没有该字段 ——
+    读取端一律按 `confirmed !== false`（未写 = 确认过）兼容，别写成 `=== true`。
+
 ## 最新：3B（2026-10-29 18:30，v1.8.7）收藏判据修好了 —— 真机探针给出的答案
 
 **用户拍板「做」之后，开 TK01 真机探了两轮**（probe 脚本在 `out/probe-favorite*.mjs`，不进 git）。
