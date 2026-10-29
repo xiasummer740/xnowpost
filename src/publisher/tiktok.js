@@ -9,6 +9,8 @@ import { writeJsonAtomicSync } from '../fs-atomic.js';
 import { appendLedger, dataDirOfSession } from '../publish-history.js';
 import { handleDialogs, findFatalDialog } from './dialogs.js';
 import { releaseMessage, releaseNote } from './check-wording.js';
+// 「确认公开」必须认到**这一条**作品，不能靠整页出现过「所有人」
+import { titleKey, pickOwnBlock, verdictOf, collectBlocksFn } from './publish-verify.js';
 import {
   createDeadline, assertBudget, budgetedWait, envBudgetMs,
   BudgetExceededError, MIN_RETRY_BUDGET_MS,
@@ -1138,40 +1140,87 @@ async function publishToTikTokCore(options) {
         // 已跳转到内容管理页 → 等待视频状态变为公开
         // 刚发布的视频显示 "内容审查中" + 仅自己
         // 等 "内容审查中" 消失 + "仅自己" → "所有人" → 才算真正发布成功
-        // 注意：必须先确认视频已渲染（"仅自己"或"内容审查中"出现过），
-        // 防止页面刚加载时 text 为空就误判为已公开
+        //
+        // 🔴 2026-10-29 审查发现：老实现读**整页** innerText，只要页面上出现一次
+        //    「所有人」且没有「审查中」就判成功 —— 而这个号本来就有历史作品，
+        //    首屏里老作品那一行也可能带「所有人」→ 点完 Post 立刻"确认公开"。
+        //    今天 9 轮实测都是 21~36 秒才确认（暂时没踩到），但这是运气不是判据。
+        //    现在先按**本条标题**定位到它自己那一块，只认那一块的可见性文案；
+        //    定位不到就继续等，最后仍定位不到就如实报"未确认"，不再拿整页凑成功。
+        //    多给一个候选 key（英文标题）：万一中文标题被平台改写/截断，英文那行一般还在。
+        const keys = [...new Set([titleKey(title || ''), titleKey(titleEn || '')].filter(Boolean))];
+        let usedFallback = false;
+        let matchedKey = '';
+        const readOwn = async () => {
+          for (const k of keys) {
+            const blocks = await page.evaluate(collectBlocksFn, k).catch(() => []);
+            const pick = pickOwnBlock(blocks, k);
+            if (pick.found) {
+              if (matchedKey !== k) { matchedKey = k; console.log(`  🎯 用「${k}」定位到本条作品`); }
+              return pick;
+            }
+          }
+          return { found: false, text: '', index: -1, state: null };
+        };
+        if (!keys.length) {
+          console.log(`  ⚠️ 标题太短/只有标签（${JSON.stringify(String(title || '').slice(0, 20))}），无法按本条作品定位`);
+        }
+
         console.log('  ⏳ 等待视频出现在内容页...');
         let videoSeen = false;
         for (let i = 0; i < 30; i++) {  // 最多等 2.5 分钟视频渲染
           await budgetedWait(page, 5000, deadline, '等待视频出现在内容页', { posted: true });
+          const pick = await readOwn();
+          if (pick.found) {
+            videoSeen = true;
+            usedFallback = false;
+            console.log(`  🎯 已在内容页定位到本条作品 (约${(i + 1) * 5}秒，可见性: ${pick.state || '暂无'})`);
+            break;
+          }
+          // 定位不到时，看整页有没有视频块（只用来判断"页面渲染出来了没有"，不用于判公开）
           const text = await page.evaluate(() => document.body.innerText).catch(() => '');
           if (/仅自己|所有人|内容审查中|Only me|Everyone|Under review/i.test(text)) {
             videoSeen = true;
-            console.log(`  ✅ 视频已出现在内容页 (约${(i+1)*5}秒)`);
+            usedFallback = !keys.length ? true : usedFallback;
+            console.log(`  ✅ 内容页已渲染 (约${(i + 1) * 5}秒)${keys.length ? '，但还没定位到本条作品（继续找）' : ''}`);
             break;
           }
         }
 
         if (videoSeen) {
           // 视频已确认在页面上 → 等待审查完成 + 公开
-          // 先读一次再看等待（原来先等 5s 才第一次读，白等一个周期），轮询间隔 5s→3s
           console.log('  ⏳ 等待审查完成（内容审查中消失，仅自己 → 所有人）...');
           for (let i = 0; i < 200; i++) {  // 最长等 10 分钟
-            const text = await page.evaluate(() => document.body.innerText).catch(() => '');
-            const reviewing = /内容审查中|Under review|Checking/i.test(text);
-            const onlyMe = /仅自己|Only me/i.test(text);
-            const everyone = /所有人|Everyone/i.test(text);
-            if (!reviewing && everyone) {
+            const pick = await readOwn();
+            const verdict = verdictOf(pick, { requireOwn: true });
+            if (verdict === 'public') {
               publishSuccess = true;
-              markConfirmed();   // 真的看到「所有人」了，才把标记升级成 confirmed:true
-              console.log(`  ✅ 审查完成，视频已公开 (约${i * 3}秒)`);
+              markConfirmed();   // 本条自己的块里看到「所有人」→ 才升级成 confirmed:true
+              console.log(`  ✅ 审查完成，本条作品已公开 (约${i * 3}秒)`);
               break;
             }
-            if (!reviewing && !onlyMe) {
-              publishSuccess = true;
-              markConfirmed();
-              console.log(`  ✅ 审查完成，仅自己已消失 (约${i * 3}秒)`);
-              break;
+            if (!keys.length) {
+              // 没有可定位的标题：只能退回整页判断，且**明确标注**这次确认不牢靠
+              const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+              const reviewing = /内容审查中|Under review|Checking/i.test(text);
+              const onlyMe = /仅自己|Only me/i.test(text);
+              const everyone = /所有人|Everyone/i.test(text);
+              if (!reviewing && everyone) {
+                publishSuccess = true;
+                usedFallback = true;
+                markConfirmed();
+                console.log(`  ✅ 审查完成，视频已公开（约为 ${i * 3} 秒；标题无法定位，按整页判断）`);
+                break;
+              }
+              if (!reviewing && !onlyMe) {
+                publishSuccess = true;
+                usedFallback = true;
+                markConfirmed();
+                console.log(`  ✅ 审查完成，仅自己已消失（约为 ${i * 3} 秒；标题无法定位，按整页判断）`);
+                break;
+              }
+            } else if (pick.found && pick.state === 'private') {
+              if (i % 20 === 0) console.log(`  ⏳ 本条作品仍是「仅自己」，继续等（${i * 3} 秒）`);
             }
             // 这一轮没结果 → 等 3 秒再读（原来的写法是先等再读，白等一整个周期）
             try {
@@ -1179,10 +1228,15 @@ async function publishToTikTokCore(options) {
             } catch (_) { break; }
           }
           if (!publishSuccess) {
-            console.log('  ⚠️ 等待审查超时（10分钟），结果未确认（窗口由 finally 统一关闭）');
+            console.log(keys.length
+              ? '  ⚠️ 等待审查超时（10分钟），本条作品仍未公开 → 结果未确认（窗口由 finally 统一关闭）'
+              : '  ⚠️ 等待审查超时（10分钟），结果未确认（窗口由 finally 统一关闭）');
           }
         } else {
           console.log('  ⚠️ 内容页未检测到视频，结果未确认');
+        }
+        if (usedFallback) {
+          console.log('  ℹ️ 本次确认用的是整页信息（没有可定位的标题），请在账号页核对「最后发布」');
         }
       } else {
         console.log('  ⚠️ 未跳转到内容管理页，发布可能未成功（结果未确认）');

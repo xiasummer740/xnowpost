@@ -114,6 +114,26 @@ function within(v, range) {
  * 把测到的指标 + 文案整理成一张可打印的自检卡。
  * 返回 { lines, metrics, problems, ok }：ok=false 只代表"有项没达标"，不阻断发布。
  */
+/**
+ * 一段文本里"英文字母占所有字母"的比例（数字/标点/空白不算）。
+ * 用途：识别"英文位其实是中文兜底"——2026-10-29 审查发现 text.js 在模型漏 title_en 时
+ * 会静默用中文顶上，只打一行 🩹，视频就带着中文"英文台词"发出去了（英文观众看不懂）。
+ * @returns {number} 0~1；没有任何字母时返回 0
+ */
+export function latinRatio(text) {
+  const t = String(text || '');
+  const letters = t.match(/\p{L}/gu) || [];
+  if (!letters.length) return 0;
+  const latin = letters.filter((ch) => /[A-Za-z]/.test(ch)).length;
+  return latin / letters.length;
+}
+
+/** 看起来是英文吗（默认：字母里至少一半是拉丁字母） */
+export function looksEnglish(text, { minRatio = 0.5 } = {}) {
+  if (!String(text || '').match(/[A-Za-z]/)) return false;
+  return latinRatio(text) >= minRatio;
+}
+
 export function buildQualityReport({ videoFile, scenes, assFile, targets = QUALITY_TARGETS }) {
   const probe = probeVideo(videoFile);
   const loud = measureLoudness(videoFile);
@@ -128,6 +148,12 @@ export function buildQualityReport({ videoFile, scenes, assFile, targets = QUALI
   const lastCta = /评论|扣|留言|私信|注册|下单|链接|主页|下方|点|领|试|联系|找我|立即|马上|现在/.test(zh[zh.length - 1] || '');
   const overChars = zh.filter((t) => t.length > targets.zhChars.max).length;
   const tooShort = zh.filter((t) => t.length > 0 && t.length < targets.zhChars.min).length;
+  // 英文位是不是真的英文（模型漏字段时 text.js 会拿中文兜底，只打一行 🩹）
+  const enFilled = en.filter((t) => t.trim().length > 0);
+  const enNotEnglish = enFilled.filter((t) => !looksEnglish(t)).length;
+  if (enFilled.length && enNotEnglish) {
+    problems.push(`英文台词有 ${enNotEnglish}/${enFilled.length} 镜不是英文（英文观众看不懂）`);
+  }
 
   if (loud) {
     if (!within(loud.lufs, { min: targets.loudness.min, max: targets.loudness.max })) {
@@ -179,7 +205,8 @@ export function buildQualityReport({ videoFile, scenes, assFile, targets = QUALI
     // —— 2026-10-29 就因为它把一轮成功的发布记成了错误。
     const mark = (ok) => (ok ? '✅' : '⚠️');
     lines.push(`  文案 每镜字数 ${zh.map((t) => t.length).join('/')} ｜ 首句数字 ${mark(firstHasNumber)} ｜ 结尾 CTA ${mark(lastCta)}`);
-    lines.push(`  英文每镜字符 ${en.map((t) => t.length).join('/')}`);
+    lines.push(`  英文每镜字符 ${en.map((t) => t.length).join('/')}`
+      + (enFilled.length ? ` ｜ 真英文 ${enFilled.length - enNotEnglish}/${enFilled.length} ${mark(enNotEnglish === 0)}` : ''));
   }
   lines.push(problems.length ? `  ⚠️ 待改进 ${problems.length} 项：${problems.join('；')}` : '  ✅ 各项指标达标');
 

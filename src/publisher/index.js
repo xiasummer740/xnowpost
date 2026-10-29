@@ -12,6 +12,8 @@ import path from 'path';
 import fs from 'fs-extra';
 import { publishToTikTok } from './tiktok.js';
 import { envBudgetMs } from './waits.js';
+// 总预算分配（宿主给 45 分钟 → 子进程按"还剩多少"分给每一条）
+import { planItemBudget, envTotalBudgetMs, humanMin } from './budget.js';
 import { resolveDataDir } from '../paths.js';
 import { writeJsonAtomicSync } from '../fs-atomic.js';
 import { closeFoxProfile } from '../collector/foxprofile.js';
@@ -93,7 +95,7 @@ export async function publishAll(options = {}) {
 
   if (items.length === 0) {
     console.log('📭 没有未发布的内容');
-    return { published: 0, total: 0, failed: 0, skipped: 0, unconfirmed: 0 };
+    return { published: 0, total: 0, failed: 0, skipped: 0, unconfirmed: 0, deferred: 0 };
   }
 
   // 上限在扫描之后截断（扫描已经把"为什么没发"写进日志了）
@@ -108,10 +110,33 @@ export async function publishAll(options = {}) {
   let failed = 0;
   let skipped = 0;
   let unconfirmed = 0;
+  let deferred = 0;
+
+  // 总预算：调度器通过 XNOWPOST_PUBLISH_TOTAL_MS 给；命令行手动跑时没有 → 只受单条上限约束
+  const totalBudgetMs = Number(options.totalBudgetMs) > 0 ? Number(options.totalBudgetMs) : envTotalBudgetMs();
+  const perItemCapMs = Number(budgetMs) > 0 ? Number(budgetMs) : envBudgetMs();
+  const startedMs = Date.now();
+  if (totalBudgetMs > 0) {
+    console.log(`🧮 本轮总预算 ${humanMin(totalBudgetMs)}（单条最多 ${humanMin(perItemCapMs)}，按剩余时间逐条分配）`);
+  }
 
   try {
-  for (const item of toPublish) {
-    console.log(`\n📤 发布: ${item.date}/${item.session}`);
+  for (let idx = 0; idx < toPublish.length; idx++) {
+    const item = toPublish[idx];
+    // 每一条开跑前重新分配：剩余不够就明确收工，绝不启动一个"必然被宿主掐死"的发布
+    const plan = planItemBudget({
+      totalBudgetMs,
+      elapsedMs: Date.now() - startedMs,
+      perItemCapMs,
+    });
+    if (!plan.ok) {
+      deferred = toPublish.length - idx;
+      console.log(`\n🧮 本轮总预算用完（剩余 ${humanMin(plan.remainingMs)}），还剩 ${deferred} 条没发 —— 留给下一轮，不冒险开新的一条`);
+      break;
+    }
+    const itemBudgetMs = plan.itemBudgetMs;
+    const remainMin = Number.isFinite(plan.remainingMs) ? `，本轮剩余 ${humanMin(plan.remainingMs)}` : '';
+    console.log(`\n📤 发布: ${item.date}/${item.session}（本条预算 ${humanMin(itemBudgetMs)}${remainMin}）`);
     console.log(`   ${item.title}`);
 
     try {
@@ -128,7 +153,7 @@ export async function publishAll(options = {}) {
           titleFile: item.txtFile,
           envId,
           apiKey,
-          budgetMs,
+          budgetMs: itemBudgetMs,
         });
         // ⚠️ .published 是 tiktok.js 在「确认点到发布按钮」时写的。
         //    这里只在标记缺失时兜底写入（且写成"未确认"，绝不假装成功）——
@@ -176,12 +201,16 @@ export async function publishAll(options = {}) {
     `\n📊 发布完成: ${published}/${toPublish.length}`
     + `${skipped ? `（跳过 ${skipped}）` : ''}`
     + `${failed ? `（失败 ${failed}）` : ''}`
-    + `${unconfirmed ? `（未确认 ${unconfirmed}）` : ''}`,
+    + `${unconfirmed ? `（未确认 ${unconfirmed}）` : ''}`
+    + `${deferred ? `（预算用完、留到下一轮 ${deferred}）` : ''}`,
   );
   if (unconfirmed) {
     console.log('   ℹ️ 未确认 = 点过 Post 但没能证明已公开：不算成功、也不重发（重发会产生重复作品），请人工核对');
   }
-  return { published, total: items.length, failed, skipped, unconfirmed };
+  if (deferred) {
+    console.log(`   ℹ️ 本轮总预算 ${humanMin(totalBudgetMs)} 用完，剩下 ${deferred} 条没动（下一轮会自动接着发）`);
+  }
+  return { published, total: toPublish.length, failed, skipped, unconfirmed, deferred };
   } finally {
     // 发完把指纹浏览器窗口关掉（发布器原来从头到尾**没有**关环境的地方，
     // 每跑一轮就留一个 camoufox 窗口，越跑越多、还占着 cookie 库）。

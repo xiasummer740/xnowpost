@@ -35,10 +35,15 @@ function envMs(name, fallback) {
 const TIMEOUTS = {
   collect: envMs('XNOWPOST_TIMEOUT_COLLECT_MS', 15 * MIN),
   engine: envMs('XNOWPOST_TIMEOUT_ENGINE_MS', 30 * MIN),
+  // 发布：这个 45 分钟是**本轮发布的总时间**（不再是"每条 30 分钟 × 不限条数"的对不上）。
+  // 真实宿主超时 = 它 + PUBLISH_SLACK_MS，总预算通过 XNOWPOST_PUBLISH_TOTAL_MS 交给子进程，
+  // 由子进程逐条分配（src/publisher/budget.js）。
   publish: envMs('XNOWPOST_TIMEOUT_PUBLISH_MS', 45 * MIN),
   // 养号：每号默认 10 分钟 + 账号间隔，2~3 个号一轮约 25~40 分钟
   warmup: envMs('XNOWPOST_TIMEOUT_WARMUP_MS', 45 * MIN),
 };
+// 宿主比子进程多留的收尾时间（关浏览器、写标记/账本、写轮次记录）
+const PUBLISH_SLACK_MS = 5 * MIN;
 
 // 找到真正的 node.exe（不用 process.execPath 因为 electron.exe 是 GUI 程序，windowsHide 对它无效）
 function findNodeExe() {
@@ -141,7 +146,7 @@ function forward(text) {
  * 现在改成异步 spawn + 逐行转发：cron 准时触发（进串行队列），超时用 taskkill /T /F，
  * 日志时间是真实的。
  */
-function runOnce(args, { timeoutMs }) {
+function runOnce(args, { timeoutMs, env = null }) {
   return new Promise((resolve) => {
     let settled = false;
     let timedOut = false;
@@ -160,6 +165,7 @@ function runOnce(args, { timeoutMs }) {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,   // CLAUDE.md 硬规则：绝不允许 CMD 弹窗
         shell: false,        // 参数是数组，不拼 shell 字符串（原实现可被账号名注入）
+        env: env ? { ...process.env, ...env } : process.env,
       });
     } catch (e) {
       return finish({ ok: false, timeout: false, code: null, message: `启动/执行失败: ${e.message}` });
@@ -206,7 +212,7 @@ function runOnce(args, { timeoutMs }) {
   });
 }
 
-async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true, timeoutMs: timeoutOverride = 0 } = {}) {
+async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true, timeoutMs: timeoutOverride = 0, env = null } = {}) {
   // 养号这类「一批账号串行」的任务预算要按账号数算，所以允许调用方覆盖
   const timeoutMs = Number(timeoutOverride) > 0 ? Number(timeoutOverride) : (TIMEOUTS[kind] || TIMEOUTS.engine);
   const maxAttempts = retryOnFail ? MAX_RETRIES + 1 : 1;
@@ -216,7 +222,7 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true, 
   for (let i = 0; i < maxAttempts; i++) {
     // 措辞与 electron/main.js 的状态识别对齐（START_RE 认"任务开始"、DONE_RE 认"完成/失败"）
     log(`🚀 ${label} 任务开始（超时预算 ${Math.round(timeoutMs / 1000)}s）`);
-    const r = await runOnce(args, { timeoutMs });
+    const r = await runOnce(args, { timeoutMs, env });
 
     if (r.ok) {
       log(`✅ ${label} 完成`);
@@ -369,7 +375,13 @@ async function runJob(job) {
     if (pre.out.length) {
       log(`⚠️ 这些环境未登录，本轮发布会跳过/失败：${pre.out.map(r => r.env).join(', ')}`);
     }
-    return outcomeOf(await runWithRetry(['src/publisher/index.js', '--all'], job.label, { kind: 'publish' }));
+    return outcomeOf(await runWithRetry(['src/publisher/index.js', '--all'], job.label, {
+      kind: 'publish',
+      // 宿主超时 = 子进程总预算 + 收尾余量；总预算交给子进程逐条分配，
+      // 这样"待发 2 条"时不会第一条吃掉 30 分钟、第二条被宿主掐死半路。
+      timeoutMs: TIMEOUTS.publish + PUBLISH_SLACK_MS,
+      env: { XNOWPOST_PUBLISH_TOTAL_MS: String(TIMEOUTS.publish) },
+    }));
   } else if (job.mode === 'warmup') {
     // 养号：按勾选顺序一个号一个号养（同一时刻只开一个环境，共用 IP 不能并发）。
     // 每号时长在区间里随机抽（界面「8 分 ~ 15 分 随机/号」）。
@@ -401,7 +413,9 @@ async function runJob(job) {
 
     // 超时按「账号数 × 最长时长 + 号间歇脚 + 开浏览器开销」算，别用固定 45 分钟：
     // 10 个号每个最多 15 分钟就要 2.5 小时，固定预算会把后半程直接掐掉。
-    const perAccountMax = hi + 1.5;            // +1.5 分钟：开/关浏览器、首页加载
+    // 2026-10-29 实测：`launchAndWait` 等页面通道最多 150 秒 + 收尾关窗，
+    // +1.5 分钟偏紧（11 个号时任何两个慢号就把后面的号顶掉），改 +3 分钟。
+    const perAccountMax = hi + 3;              // +3 分钟：开/关浏览器、等页面通道(≤150s)、首页加载
     const gapMaxMin = (accounts.length - 1) * 2;  // 号与号之间最多歇 120 秒
     const budgetMin = Math.ceil(accounts.length * perAccountMax + gapMaxMin + 5);
     const timeoutMs = Math.max(TIMEOUTS.warmup, budgetMin * MIN);
@@ -616,7 +630,7 @@ console.log('\n[Scheduler] XNOW Scheduler');
 console.log(`  -> config: ${SCHEDULE_FILE}`);
 console.log(`  -> logs:   ${LOG_DIR}`);
 console.log(`  -> cwd:    ${CODE_ROOT}`);
-console.log(`  -> timeout: collect ${TIMEOUTS.collect / 1000}s / engine ${TIMEOUTS.engine / 1000}s / publish ${TIMEOUTS.publish / 1000}s`);
+console.log(`  -> timeout: collect ${TIMEOUTS.collect / 1000}s / engine ${TIMEOUTS.engine / 1000}s / publish ${(TIMEOUTS.publish + PUBLISH_SLACK_MS) / 1000}s（其中发布总预算 ${TIMEOUTS.publish / 1000}s，逐条分配）`);
 console.log(`  -> retry: ${MAX_RETRIES} times, hot-reload enabled\n`);
 
 loadSchedule();
