@@ -83,12 +83,23 @@ const READ_VIDEO = () => {
   });
   const idx = vis.findIndex((x) => x.inView);
   const v = vis[idx >= 0 ? idx : 0] || null;
-  // 给"当前这条视频"取个指纹：作者 + 文案头。用来确认翻页真的换了内容
+  // 给"当前这条视频"取个指纹：用来确认翻页真的换了内容。
+  // ⚠️ 2026-10-29 踩到：以前用 `item.innerText.slice(0, 50)`，而 TikTok 的卡片正文
+  // 大量以「CapCut · Try this template…」这种模板文案开头 → 不同视频的指纹一模一样，
+  // 于是 4 个号被误报「看了 21 条只出现 5 种不同视频，翻页多半没生效」。
+  // 视频地址里的 id 才是真正唯一的；拿不到才退回「作者 + 更长的正文」。
   let key = '';
   if (v) {
     const el = [...document.querySelectorAll('video')][idx >= 0 ? idx : 0];
     const item = el && el.closest('[data-e2e="recommend-list-item-container"]');
-    key = item ? (item.innerText || '').replace(/\s+/g, ' ').slice(0, 50) : '';
+    const src = String((el && (el.currentSrc || el.src)) || '');
+    const m = src.match(/\/video\/(\d+)/) || src.match(/\/([0-9a-f]{16,})\./i) || src.match(/\/([A-Za-z0-9_-]{16,})\?/);
+    if (m) key = `v${m[1]}`;
+    if (!key && item) {
+      const a = item.querySelector('a[href^="/@"]');
+      const author = a ? String(a.getAttribute('href') || '') : '';
+      key = `${author}|${(item.innerText || '').replace(/\s+/g, ' ').slice(0, 80)}`;
+    }
   }
   return {
     video: v ? { ...v, key } : null,

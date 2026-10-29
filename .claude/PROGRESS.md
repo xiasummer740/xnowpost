@@ -1,5 +1,69 @@
 # 接力开发 — 新对话从这里开始
 
+## 最新：3A（2026-10-29 18:20，v1.8.5）今日日志体检 → 修 4 个问题并部署
+
+**今天跑成什么样**（`logs/app-2026-10-29.log` 2284 行 / `scheduler-2026-10-29.log` 167.8 KB）：
+
+| 时间 | 任务 | 结果 |
+|---|---|---|
+| 02:00 | 养号 11 号 | 部分完成（142 分钟，实际都播了；4 个号被判「翻页没生效」是**误报**） |
+| 08:35–09:18 | 仅视频 ×10 | 10/10 发布成功（DeepSeek 每条约 ¥0.02） |
+| 09:20 | 仅视频 #24 | ❌ `视频内容校验失败: 缺少 title_en` → 整轮白废，当天断更一个号 |
+| 11:00 | 采集 + 日报 | 11/11 有数据 |
+| 14:00 | 养号 11 号 | **6/11 失败**：`Browser is still starting`（TK06–TK11） |
+
+### 修 1：`Browser is still starting` —— 就绪判据错了（丢掉 6/11 个号）
+- **根因**：FoxProfile 的 `GET /browser` 只表示**进程活着**；控制通道
+  `self._controls[name]` 还没登记时，任何页面动作都返回 `503 {"detail":"Browser is still starting"}`
+  （`launcher.py#run_action`）。旧 `launchAndWait` 一看 running 里有它就 `break` 成功
+  → 第一个页面动作立刻 503 → 整轮这个号作废。**浏览器本身没问题**，晚 20 秒就好。
+- **修法**：新增 `foxPageReady(name, base)` —— 探针 `GET /page/tabs`（必须走控制通道），
+  通了才算真就绪；`launchAndWait` 改成「launch → 等页面通道 ≤150s，期间进程不在就补 launch ≤3 次」。
+  `foxStopOthers` 关完环境后再等它真的从 running 里消失（≤15s），减少下一个号被挤掉。
+  守护脚本加 `FOXPROFILE_LAUNCH_TIMEOUT=150`（FoxProfile 自己默认 90s）。
+- **单测**：`tests/unit/foxprofile-launch.test.js`（5 条，用假 FoxProfile 的 http 服务钉住：
+  通道没好不算成功 / 好了必须成功 / 一直不好要超时收手 / 真失败不许被"等待"掩盖）。
+  ⚠️ 该测试里把 `console.log` 静音了：被测模块的异步日志和 node:test 的 stdout 序列化交错会报
+  `Unable to deserialize cloned data`（Node 24 实测）。
+
+### 修 2：`缺少 title_en` —— 结构校验放在循环外，白废一整轮
+- **根因**：`generateWithDedup()` 只对「钩子数字 / 字数 / 违规词 / 重复标题」重试，
+  **结构校验在循环外**（`generateVideoContent` 里），模型偶尔漏 `title_en` 就直接 throw。
+- **修法**：校验搬进循环 → 缺字段带着「缺什么」重问（`schemaFeedback` 追加到提示词末尾）；
+  最后一次还缺 → `fillMissingBilingual()` 用中文兜底填英文位（**日志明说**「🩹 英文位缺失，已用中文兜底」），
+  只有救不了的结构问题（scenes 不是数组、缺 image_desc）才继续报错。
+- **单测**：`tests/unit/text-bilingual.test.js`（7 条：完整内容一个字不改 / 缺 title_en 兜底 /
+  逐镜兜底带序号 / 空白串也算缺 / 中文也没就不编造 / 结构问题救不了 / 坏数据不崩）。
+
+### 修 3：假错误 + 假通知（一天 9 条假 ERROR、12 次误弹窗）
+- `src/publisher/tiktok.js` 的 `⏱️ 发布预算: …` 每发一条就打一次；而日志分类器
+  （`electron/main.js` 的 `isFailure` 与系统通知条件都是 `/❌|⏱️|⚠️.*未确认/`）
+  把行内 `⏱️` 一律当"超时失败" → 界面上「错误 9 条」、用户被弹 12 次「XNOWPost 定时任务异常」。
+- 修法：图标改成 `🧮`、文案改成「超过就提前收尾，未确认的下一轮自动重试」。
+  `src/quality.js` 的自检行（`结尾 CTA ❌`）改成 `⚠️` —— 那是**自检提示**，不是这轮失败。
+- 没动分类器本身：真超时行（`⏱️ <任务> 超时 …按失败处理（未确认…）`）还得靠 `⏱️` 命中。
+
+### 修 4：「翻页没生效」误报（判据太弱）
+- `READ_VIDEO` 的视频指纹原来是 `item.innerText.slice(0, 50)`，而 TikTok 卡片正文大量以
+  「CapCut · Try this template…」开头 → 不同视频指纹相同 → 4 个号被误判
+  「看了 21~33 条只出现 5~8 种不同视频」。现在优先取**视频地址里的 id**
+  （`currentSrc` 里的 `/video/<id>`），拿不到才退回「作者 href + 80 字正文」。
+
+### 验证与部署
+- `npm run verify`：**646 pass / 0 fail**（新增 12 条），vite 构建通过。
+- 打包 1.8.5 → robocopy（带 `/XD ...\import`）→ 清 `ELECTRON_RUN_AS_NODE` 重启。
+- 起机自检：版本 `1.8.5.0`、调度器 1 个、xray 1 个、出口 `69.63.205.35`、
+  FoxProfile `headless:false`、四个修复的文件都已进 `app.asar.unpacked`。
+
+### 还没修（下次）
+1. **收藏验证 13/17 失败**（`⭐ 收藏` 只成功 4 次）：`favorite-icon` 上没有 `aria-pressed`，
+   `count` 读的是图标元素的 `innerText`（空的，计数在同级元素里）→ 判据基本失效。
+   要么改读 `[data-e2e="favorite-count"]` 之类同级元素，要么换成"点完看 `收藏` 页签列表"。
+   今天实际只收藏成功 4 次（预算本来 0~2/号），影响不大但**证据不可信**，需要一次真机探针定选择器。
+2. 02:00 那轮 142 分钟偏长（11 号 × 8~15 分钟 + 歇脚），如果嫌久可以调 `warmup.minutesPerAccount`。
+3. FoxProfile 进程还没重启过，`FOXPROFILE_LAUNCH_TIMEOUT=150` 下次服务重启才生效
+   （应用侧已 150s 兜底，不重启也不影响）。
+
 ## 最新：2Z（2026-10-29 01:00，v1.8.4 之后）「过一会就闪一下」= 老 SSH 隧道计划任务
 
 用户：「怎么过一会就闪一下，是这个软件的问题吗」→「像 powershell 或者 cmd 窗口」

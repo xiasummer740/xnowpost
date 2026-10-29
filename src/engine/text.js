@@ -36,6 +36,7 @@ function sanitizeForPrompt(text) {
 let globalUserTopic = '';
 let globalScreenshotContext = '';
 let strictPolicy = false;   // 触发违规重试时置位，让提示词更狠
+let schemaFeedback = '';    // 结构不全（漏 title_en 等）时置位，追加到下一轮提示词末尾
 
 // ============ 合规过滤（价格 / 联系方式 / 硬承诺）============
 // 截图里往往写着"千粉¥13""用28925"这类信息，视觉模型读出来模型就照抄进旁白。
@@ -198,6 +199,9 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 ${strictPolicy ? '\n⚠️ 上一次生成违反了上述红线，这次必须彻底避开，宁可少说也不许出现敏感信息。\n' : ''}`;
   }
 
+  // 结构不全（漏了 title_en 之类）时的针对性要求，正文末尾最容易被模型看到
+  if (schemaFeedback) prompt += schemaFeedback;
+
   return prompt;
 }
 
@@ -247,6 +251,37 @@ function validateVideoContent(data) {
     });
   }
   return { valid: errors.length === 0, errors };
+}
+
+/**
+ * 英文位缺了就先用中文顶上（并在日志里说清楚）。
+ *
+ * 为什么不做成"直接失败"：一轮视频要烧掉文案 + 配音 + 剪片 + 发布（¥0.5 上下 + 十几分钟），
+ * 而缺的只是一个英文字段。用中文兜底：内容照样发出去（观众看到中文标题），
+ * 但**绝不静默**——调用方会打印「英文位缺失，已用中文兜底」。
+ */
+function fillMissingBilingual(content) {
+  const filled = [];
+  if (!content || typeof content !== 'object') return filled;
+  const needs = (v) => !v || !String(v).trim();
+  if (needs(content.title_en) && !needs(content.title_zh)) {
+    content.title_en = content.title_zh;
+    filled.push('title_en');
+  }
+  if (needs(content.body_en) && !needs(content.body_zh)) {
+    content.body_en = content.body_zh;
+    filled.push('body_en');
+  }
+  if (Array.isArray(content.scenes)) {
+    content.scenes.forEach((s, i) => {
+      if (!s || typeof s !== 'object') return;
+      if (needs(s.scene_text_en) && !needs(s.scene_text_zh)) {
+        s.scene_text_en = s.scene_text_zh;
+        filled.push(`分镜${i + 1} scene_text_en`);
+      }
+    });
+  }
+  return filled;
 }
 
 function validatePostContent(data) {
@@ -339,6 +374,30 @@ async function generateWithDedup(type) {
     const title = content.title_zh;
     if (!title) throw new Error('DeepSeek 返回缺少标题');
 
+    // 结构校验（2026-10-29 事故）：以前只在循环**外**校验，模型偶尔漏掉 title_en
+    // 就直接 throw → 09:20 那轮整条视频白废：没生成、没发布，一个号当天断更。
+    // 现在把校验搬进循环：缺字段就带着"缺什么"重问；最后一次还缺 → 用中文兜底填英文位，
+    // 宁可英文位是中文（日志里明说），也不要整轮报废。
+    const structural = type === 'video' ? validateVideoContent(content) : validatePostContent(content);
+    if (!structural.valid) {
+      const missing = structural.errors.filter((e) => /缺少|不是数组|为空/.test(e));
+      const retryable = missing.length > 0 && attempt < MAX - 1;
+      if (retryable) {
+        schemaFeedback = `\n## 上一次返回缺字段（必须补全）\n${missing.map((m) => `- ${m}`).join('\n')}\n中英双语每个字段都要有**真实内容**：title_en / scene_text_en 不许留空、不许照抄中文、不许省略键名。\n`;
+        console.log(`  📝 结构不全（${missing.join('；')}），重写中(${attempt + 1}/${MAX - 1})...`);
+        continue;
+      }
+      const filled = fillMissingBilingual(content);
+      const still = (type === 'video' ? validateVideoContent(content) : validatePostContent(content));
+      if (filled.length) {
+        console.log(`  🩹 英文位缺失，已用中文兜底：${filled.join('/')}${still.valid ? '（这一轮继续跑）' : ''}`);
+      }
+      if (!still.valid) {
+        throw new Error(`${type === 'video' ? '视频' : '图文'}内容校验失败: ${still.errors.join('; ')}`);
+      }
+    }
+    schemaFeedback = '';
+
     // 钩子必须有数字（2026-10-20 22:59 实测：提示词写了「第 1 镜必须含数字」，
     // 模型仍有约 1/4 概率漏掉，成片自检卡会报「首句没有数字（钩子偏弱）」）。
     // 与其让用户看到弱钩子，不如在这里重问一次 —— 一次 DeepSeek 调用约 ¥0.001。
@@ -423,6 +482,6 @@ export async function generatePostContent(topic) {
 }
 
 // ============ 导出（测试用） ============
-export { robustJSONParse, validateVideoContent, validatePostContent };
+export { robustJSONParse, validateVideoContent, validatePostContent, fillMissingBilingual };
 // 供测试与外部校验使用（不参与主流程）
 export { policyViolations as checkSensitive, scrubClause as scrubSensitive };

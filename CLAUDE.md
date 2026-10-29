@@ -620,6 +620,40 @@
   4. 用 `scripts\win-shot.ps1 -ProcName camoufox -Out output\x.png` 抓窗口图 **给人看**
      —— FoxProfile 的 `/page/screenshot` 在无头时同样能出图，**它不能证明用户看得见**。
 
+## 启动环境后必须等「页面通道」，不能只看进程活着（2026-10-29 14:00 养号 6/11 全废）
+
+- **`GET /browser` 的 running = 进程活着，不等于能用。** FoxProfile 内部还要等浏览器把控制通道
+  登记上（`launcher.py` 的 `self._controls[name] = (port, token)`）；这之前任何页面动作都返回
+  `503 {"detail":"Browser is still starting"}`（`run_action` 里 `endpoint is None` 那条分支）。
+- 事故形态：`launch?wait=true` 等满 `FOXPROFILE_LAUNCH_TIMEOUT`（默认 90s）后返回
+  **202 + `{"success":true,"message":"Browser for 'TK06' is still starting"}`**；
+  旧 `launchAndWait` 的去重条件只认 `running.includes(name)`，于是立刻当成功返回
+  → 第一个页面动作 503 → 「❌ TK06 养号失败：Browser is still starting」，
+  而浏览器 20 秒后完全可用。11 个号里后 6 个全栽在这（前面的号正常，最容易误判成"平台拦截"）。
+- **正确判据 `foxPageReady()`**：探针 `GET /browser/{name}/page/tabs`（必须走控制通道、
+  不开新页、不改状态），通了才算就绪。`launchAndWait` 现在就等它，最多 150 秒，
+  期间发现进程没在 running 里就补 launch（≤3 次）；真失败（`Launch failed: …`）立刻返回不等待。
+- `foxStopOthers` 关完别的环境后**再等它真的从 running 消失**（≤15 秒）—— 上一个 Camoufox
+  还在收尾时 launch 会被挤掉，这就是上面那条 202 的来源。
+- 单测 `tests/unit/foxprofile-launch.test.js` 用假 FoxProfile（node:http）钉住四种情形。
+  ⚠️ 测试里必须静音 `console.log`：被测模块的异步日志和 node:test 的 stdout 序列化消息交错会报
+  `Unable to deserialize cloned data due to invalid or unsupported version`（Node 24）。
+
+## 日志图标＝日志级别（`⏱️` 一天造出 9 条假错误 + 12 次误弹窗）
+
+- `electron/main.js` 的 `classifyEngineLine()` 与调度器行判定（`isFailure`、
+  `notifyFailure` 的触发条件）都是**看行内图标**：`/❌|⏱️|⚠️.*未确认/`。
+  所以**谁都不许随手用 `⏱️` 写普通提示**。
+- 2026-10-29 真实后果：`src/publisher/tiktok.js` 的 `⏱️ 发布预算: 12.0 分钟（…超时…未确认…）`
+  每发一条视频就打一次 → 界面「错误 9 条」+ 桌面被弹 12 次「XNOWPost 定时任务异常」。
+  现已改 `🧮`。
+- `src/quality.js` 的自检行长这样：`文案 每镜字数 … ｜ 首句数字 ✅ ｜ 结尾 CTA ⚠️` ——
+  缺 CTA 是**质量提示**，不影响这轮发布，所以不能用 `❌`（会被记成 error）。
+- 反过来也别"为了干净"把真超时行里的 `⏱️` 去掉：`⏱️ <任务> 超时 …按失败处理（未确认…）`
+  正是靠 `⏱️` 命中才算失败的。
+- 改动这类图标/文案后，回归口径是 `%APPDATA%\xnowpost\logs\app-<日期>.log` 里
+  `[ERROR]` 条数 —— 正常一轮成功发布应该是 0。
+
 ## 网络节点：内置 xray 内核，用户只粘一条链接（2026-10-29 v1.7.0–1.8.x 定案）
 用户口径：「这个软件要给到其它用户使用，用户都是小白……用户只有一个 vless:// 节点，该怎么使用呢」
 「以后我要换网络的话，直接像这样换个节点就 OK 了，行吗」→ **行，这就是现在的唯一用法。**

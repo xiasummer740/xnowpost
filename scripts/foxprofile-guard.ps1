@@ -55,6 +55,11 @@ if (-not (Test-Api)) {
     #    FOXPROFILE_HEADLESS 只关 Flet 管理界面，FOXPROFILE_BROWSER_HEADLESS 才关浏览器窗口。
     #    （2026-10-28 踩过：只设了前者，结果 camoufox 带 -headless 启动，桌面上一片安静。）
     $env:FOXPROFILE_BROWSER_HEADLESS = '0'
+    # 等浏览器真正可用的上限（秒）。默认 90 秒在高负载/连开多个环境时不够：
+    # 超了之后 launch 返回 202「still starting」，调用方拿到一个点不动的浏览器
+    # （2026-10-29 14:00 养号 6/11 就是这么废的）。调到 150 秒，配合应用侧
+    # launchAndWait 的页面通道探针，双保险。
+    $env:FOXPROFILE_LAUNCH_TIMEOUT = '150'
     Start-Process -FilePath $py -ArgumentList 'src\main.py' -WorkingDirectory $root -WindowStyle Hidden
   }
 

@@ -174,7 +174,11 @@ export function buildQualityReport({ videoFile, scenes, assFile, targets = QUALI
     lines.push(`  字幕 中文 ${ass.zhLines} 行 / 英文 ${ass.enLines} 行 ｜ 字号 ${ass.zhSize}/${ass.enSize}px ｜ 染色 ${ass.highlightedLines} 行`);
   }
   if (zh.length) {
-    lines.push(`  文案 每镜字数 ${zh.map((t) => t.length).join('/')} ｜ 首句数字 ${firstHasNumber ? '✅' : '❌'} ｜ 结尾 CTA ${lastCta ? '✅' : '❌'}`);
+    // 这里用 ⚠️/✗ 而不是 ❌：这是**自检报告**，一条文案缺 CTA 不代表这轮失败
+    // （视频照样生成、照样发布）。用 ❌ 会被日志分类器记成 [ERROR]
+    // —— 2026-10-29 就因为它把一轮成功的发布记成了错误。
+    const mark = (ok) => (ok ? '✅' : '⚠️');
+    lines.push(`  文案 每镜字数 ${zh.map((t) => t.length).join('/')} ｜ 首句数字 ${mark(firstHasNumber)} ｜ 结尾 CTA ${mark(lastCta)}`);
     lines.push(`  英文每镜字符 ${en.map((t) => t.length).join('/')}`);
   }
   lines.push(problems.length ? `  ⚠️ 待改进 ${problems.length} 项：${problems.join('；')}` : '  ✅ 各项指标达标');

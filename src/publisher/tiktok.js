@@ -93,7 +93,11 @@ export async function publishToTikTok(options) {
     ? options.budgetMs
     : envBudgetMs();
   const deadline = createDeadline(budgetMs);
-  console.log(`  ⏱️ 发布预算: ${(budgetMs / 60000).toFixed(1)} 分钟（P2-5，超时提前结束并报"未确认"）`);
+  // ⚠️ 图标不能用 ⏱️：日志分类器把行内 ⏱️ 当"超时失败"
+  //    （electron/main.js 的 isFailure 与系统通知条件都是 /❌|⏱️|⚠️.*未确认/），
+  //    于是每发一条视频就记一条 [ERROR]、弹一次「XNOWPost 定时任务异常」
+  //    —— 2026-10-29 一天 9 条假错误 + 12 次误弹窗。
+  console.log(`  🧮 发布预算: ${(budgetMs / 60000).toFixed(1)} 分钟（超过就提前收尾，未确认的下一轮自动重试）`);
   return withActionLog(options?.sessionPath, () => publishWithRetry({ ...options, budgetMs, deadline }));
 }
 

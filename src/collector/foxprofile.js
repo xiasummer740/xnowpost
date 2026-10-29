@@ -140,44 +140,81 @@ export async function foxStop(name, base) {
 }
 
 /**
- * 启动环境，并且把「Browser is still starting」当成"还没好"来处理。
+ * 页面通道真的就绪了吗？—— **这是"能不能用"的唯一判据**。
+ *
+ * ⚠️ 2026-10-29 事故（14:00 那轮养号 6/11 全废）：
+ * `/browser` 返回的 running 只代表**进程还活着**。FoxProfile 内部还要等浏览器把
+ * 控制通道登记上（`self._controls[name] = (port, token)`），这之前任何页面动作都返回
+ * `503 {"detail":"Browser is still starting"}`。
+ * 旧版 launchAndWait 一看 running 里有它就当成功 → 第一个页面动作立刻 503
+ * → TK06–TK11 六个号整轮被判「养号失败：Browser is still starting」，
+ * 而浏览器其实 20 秒后就完全可用了。
+ *
+ * 探针用 `GET /page/tabs`：它必须走控制通道，通得回来才算真就绪（不打开新页、不改状态）。
+ */
+export async function foxPageReady(name, base) {
+  try {
+    const d = await call(base, `/browser/${NAME_SEG(name)}/page/tabs`, { timeout: 5000 });
+    if (!d) return false;
+    const bad = String(d.detail || d.message || '');
+    if (/still starting|not running|未运行|启动中/i.test(bad)) return false;
+    if (d.success === false) return false;
+    return Array.isArray(d.tabs);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 启动环境，等它**真的能用**（不是"进程起来了"）。
  *
  * ⚠️ 2026-10-20 23:31 实测：`launch?wait=true` 仍可能立刻返回
- * `{"success":false,"message":"Browser is still starting"}` —— 上一步刚 stop 掉别的环境时，
- * Camoufox 进程还在收尾，下一个环境就抢不到。旧代码直接判失败，
- * 结果那个号整轮没数据（用户手动抓资料时 TK02 就被跳过，资料停在 5 小时前）。
+ * `{"success":false,"message":"Browser is still starting"}`，或者等满
+ * `FOXPROFILE_LAUNCH_TIMEOUT`（默认 90s）后返回 202 + `"Browser for 'X' is still starting"`
+ * —— 上一步刚 stop 掉别的环境时，Camoufox 还在收尾，下一个环境就抢不到。
+ * 旧代码把"进程在 running 列表里"当成就绪，于是第一个页面动作直接撞 503（见 foxPageReady）。
+ * 现在统一等 `foxPageReady` 通过才返回，调用方拿到的一定是能点能读的浏览器。
  * 2026-10-22 起发布/采集/养号都走这一个函数，别再各写一份。
+ *
+ * @param {number} readySeconds 等页面通道就绪的上限（默认 150s：留够 11 个号串行的余量）
+ * @param {number} pollMs 轮询间隔（单测里调小，别真等 2 秒）
  */
-export async function launchAndWait(name, base, { focus = false } = {}) {
-  let d = await foxLaunch(name, base, { focus });
-  if (!(d && d.success === false && /still starting|starting|starting up/i.test(String(d.message || '')))) {
+export async function launchAndWait(name, base, { focus = false, readySeconds = 150, pollMs = 2000 } = {}) {
+  const t0 = Date.now();
+  let d = await foxLaunch(name, base, { focus }).catch((e) => ({ success: false, message: e.message }));
+  // 真失败（端口/配置/环境不存在）立刻报，别拿 150 秒去等一个起不来的东西
+  if (d && d.success === false && !/still starting|starting up/i.test(String(d.message || ''))) {
     return d;
   }
-  console.log(`  ⏳ ${name} 还在启动中，等它就绪（最多 90 秒）...`);
-  const startedAt = Date.now();
-  for (let i = 0; i < 45; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
-    let running = [];
-    try {
-      running = await foxRunning(base);
-    } catch (_) { /* 状态查不到就继续等 */ }
-    if (running.includes(name)) {
-      d = { success: true };
-      break;
+  if (await foxPageReady(name, base)) return { success: true };
+
+  console.log(`  ⏳ ${name} 进程已起、页面通道还没就绪，等它（最多 ${readySeconds} 秒）...`);
+  let relaunched = 0;
+  while (Date.now() - t0 < readySeconds * 1000) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    if (await foxPageReady(name, base)) {
+      console.log(`  ✅ ${name} 已就绪（等了 ${Math.round((Date.now() - t0) / 1000)} 秒）`);
+      return { success: true };
     }
-    // 没在运行列表里就再补一次 launch（有些版本 stop 完成后 launch 才会真正接管）
-    if (i === 10 || i === 25) {
+    // 进程根本没在跑（被上一轮的 stop 挤掉了）→ 补一次 launch，最多 3 次
+    if (relaunched < 3 && Date.now() - t0 > 8000) {
+      let running = [];
       try {
-        const retry = await foxLaunch(name, base, { focus });
-        if (retry && retry.success !== false) { d = retry; break; }
-      } catch (_) { /* 继续等 */ }
+        running = await foxRunning(base);
+      } catch (_) { /* 查不到就继续等 */ }
+      if (!running.includes(name)) {
+        relaunched++;
+        try {
+          await foxLaunch(name, base, { focus });
+        } catch (_) { /* 继续等 */ }
+      }
     }
-    if (Date.now() - startedAt > 90000) break;
   }
-  if (d && d.success !== false) {
-    console.log(`  ✅ ${name} 已就绪（等了 ${Math.round((Date.now() - startedAt) / 1000)} 秒）`);
-  }
-  return d;
+  return {
+    success: false,
+    message: `环境 ${name} 的浏览器进程起来了，但页面 ${readySeconds} 秒都没就绪`
+      + `（上一个环境可能还在收尾）。这一轮跳过它，下一轮会重新开。`,
+  };
 }
 
 /**
@@ -202,6 +239,22 @@ export async function foxStopOthers(envName, base) {
       await foxStop(name, base);
       stopped.push(name);
     } catch (_) { /* 关不掉不影响主流程 */ }
+  }
+  // 关完别立刻开下一个：Camoufox 进程还在收尾时 launch 会被挤掉，
+  // 表现为"Browser is still starting"（2026-10-29 14:00 那轮 6/11 就是这么废的）。
+  // 这里最多等 15 秒，等它真的从 running 列表里消失。
+  if (stopped.length) {
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000));
+      let still = [];
+      try {
+        still = await foxRunning(base);
+      } catch (_) {
+        break; // 查不到就别死等
+      }
+      if (!still.some((n) => stopped.some((s) => String(s).trim().toLowerCase() === String(n).trim().toLowerCase()))) break;
+    }
   }
   return stopped;
 }
