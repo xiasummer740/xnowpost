@@ -1,12 +1,12 @@
 {
   "name": "xnowpost",
-  "version": "1.8.7",
+  "version": "1.8.8",
   "type": "module",
   "description": "XNOWPost 内容营销自动化引擎",
   "author": "xiasummer740",
   "main": "electron/main.js",
   "scripts": {
-    "verify": "node scripts/check-leaks.mjs && node scripts/check-windows-hide.mjs && node --test tests/unit/*.test.js && vite build",
+    "verify": "node scripts/check-leaks.mjs && node scripts/check-windows-hide.mjs && node scripts/check-log-levels.mjs && node --test tests/unit/*.test.js && vite build",
     "verify:leaks": "node scripts/check-leaks.mjs",
     "verify:windows-hide": "node scripts/check-windows-hide.mjs",
     "dev": "node ./node_modules/electron/cli.js . --use-gl=swiftshader --no-sandbox",

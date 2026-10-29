@@ -361,6 +361,10 @@ async function callDeepSeek(sysPrompt, userPrompt, retries = 2) {
 
 async function generateWithDedup(type) {
   const MAX = 5;
+  // 上一轮如果抛错退出，schemaFeedback/strictPolicy 会留在模块变量里（同一进程先跑视频
+  // 再跑图文时就会把"上次缺字段"的提醒串到这次）。每次进新的一轮先清干净。
+  schemaFeedback = '';
+  strictPolicy = false;
   for (let attempt = 0; attempt < MAX; attempt++) {
     const strategy = pickStrategy();
     const template = loadPrompt(type);

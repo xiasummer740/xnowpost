@@ -108,6 +108,10 @@ async function sendAlert(message) {
  */
 let captureLines = null;
 const CAPTURE_MAX = 400;
+// 引擎的 `📅 …/am_0830 | 模式: video` 是本轮第 2~3 行 —— 被 400 行滚动缓冲挤掉之后，
+// 轮次记录的 session 就是空串，回报退化成「没看到成片也没看到发布记录」。
+// 所以开头这些行单独留住（它们才是"这轮到底做了什么"的证据）。
+const CAPTURE_KEEP_HEAD = 40;
 
 /** 子进程输出按行转发到调度器日志 */
 function forward(text) {
@@ -118,7 +122,8 @@ function forward(text) {
     log(one);
     if (captureLines) {
       captureLines.push(one);
-      if (captureLines.length > CAPTURE_MAX) captureLines.shift();
+      // 只从「开头之外」滚动淘汰：CAPTURE_KEEP_HEAD 之前的位置不动
+      if (captureLines.length > CAPTURE_MAX) captureLines.splice(CAPTURE_KEEP_HEAD, 1);
     }
   }
 }

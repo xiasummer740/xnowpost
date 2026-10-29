@@ -97,7 +97,7 @@ export async function publishToTikTok(options) {
   //    （electron/main.js 的 isFailure 与系统通知条件都是 /❌|⏱️|⚠️.*未确认/），
   //    于是每发一条视频就记一条 [ERROR]、弹一次「XNOWPost 定时任务异常」
   //    —— 2026-10-29 一天 9 条假错误 + 12 次误弹窗。
-  console.log(`  🧮 发布预算: ${(budgetMs / 60000).toFixed(1)} 分钟（超过就提前收尾，未确认的下一轮自动重试）`);
+  console.log(`  🧮 发布预算: ${(budgetMs / 60000).toFixed(1)} 分钟（超过就提前收尾；已点过的不会再自动重试，未确认请人工核对）`);
   return withActionLog(options?.sessionPath, () => publishWithRetry({ ...options, budgetMs, deadline }));
 }
 
@@ -309,35 +309,77 @@ async function publishToTikTokCore(options) {
     // 只有「真的点了 Post 按钮」才写 .published 标记。
     // 标记一旦写入，findUnpublished() 就永久跳过该内容，
     // 所以绝不能在没有点击的情况下写（否则会静默丢内容）。
+    //
+    // ⚠️ 语义：这里写的是 `confirmed: false`（"点过了，但还没确认公开"）。
+    // 旧写法在**点击瞬间**就写 confirmed:true —— 而点击之后还要经历跳转 + 渲染 +
+    // 审查（最长 15 分钟），中途被 SIGKILL（调度器超时、进程强制 exit）就永远停在
+    // "已确认成功"，账号页「最后发布」和轮次回报都会把它当成功。现在只有真的
+    // 看到「所有人」/「仅自己消失」才由 markConfirmed() 升级成 true。
+    let clickedAt = '';
     const markPublishedNow = (note = '') => {
       try {
-        // 原子写：半截 JSON 会让后续读取标记失败 → 误判为未发布 → 重复上传
-        // env/session/title 是给「账号页最后发布时间」用的：以前标记里只有时间，
-        // 复盘时根本不知道这个作品是哪个环境发的（要从 publish.log 里反解析）。
+        clickedAt = clickedAt || new Date().toISOString();
         writeJsonAtomicSync(path.join(sessionPath, '.published'), {
-          publishedAt: new Date().toISOString(),
+          publishedAt: clickedAt,
           platform: 'tiktok',
           url: page.url() || '',
-          note,
+          note: note || 'post-clicked',
           env: envId,
           session: path.basename(sessionPath),
           title: (title || '').slice(0, 120),
-          confirmed: true,
+          confirmed: false,
         }, 2);
-        console.log('  ✅ .published 已标记');
-        // 同时写一行「发布账本」：账号页靠它做到「刚发完就更新最后发布时间」。
-        // 失败不影响发布（账本只是展示用）。
+        console.log('  📝 .published 已标记（已点击，待确认公开）');
         appendLedger(dataDirOfSession(sessionPath), {
           env: envId,
-          at: new Date().toISOString(),
+          at: clickedAt,
           date: path.basename(path.dirname(sessionPath)),
           session: path.basename(sessionPath),
           title,
           url: page.url() || '',
           source: 'publisher',
+          confirmed: false,
         });
       } catch (e) {
         console.warn(`  ⚠️ .published 写入失败: ${e.message}`);
+      }
+    };
+
+    // 确认公开之后把标记升级成 confirmed:true（账本再追加一行，取最新即为准）
+    let confirmedDone = false;
+    const markConfirmed = () => {
+      if (confirmedDone) return;
+      confirmedDone = true;
+      try {
+        const p = path.join(sessionPath, '.published');
+        let prev = {};
+        try { if (fs.existsSync(p)) prev = fs.readJsonSync(p); } catch (_) { /* ignore */ }
+        const now = new Date().toISOString();
+        writeJsonAtomicSync(p, {
+          ...prev,
+          platform: 'tiktok',
+          publishedAt: prev.publishedAt || clickedAt || now,
+          confirmedAt: now,
+          url: page.url() || prev.url || '',
+          note: 'confirmed-public',
+          env: envId,
+          session: path.basename(sessionPath),
+          title: (title || '').slice(0, 120),
+          confirmed: true,
+        }, 2);
+        console.log('  ✅ .published 已确认公开');
+        appendLedger(dataDirOfSession(sessionPath), {
+          env: envId,
+          at: prev.publishedAt || clickedAt || now,
+          date: path.basename(path.dirname(sessionPath)),
+          session: path.basename(sessionPath),
+          title,
+          url: page.url() || '',
+          source: 'publisher',
+          confirmed: true,
+        });
+      } catch (e) {
+        console.warn(`  ⚠️ 确认标记写入失败: ${e.message}`);
       }
     };
 
@@ -1121,11 +1163,13 @@ async function publishToTikTokCore(options) {
             const everyone = /所有人|Everyone/i.test(text);
             if (!reviewing && everyone) {
               publishSuccess = true;
+              markConfirmed();   // 真的看到「所有人」了，才把标记升级成 confirmed:true
               console.log(`  ✅ 审查完成，视频已公开 (约${i * 3}秒)`);
               break;
             }
             if (!reviewing && !onlyMe) {
               publishSuccess = true;
+              markConfirmed();
               console.log(`  ✅ 审查完成，仅自己已消失 (约${i * 3}秒)`);
               break;
             }

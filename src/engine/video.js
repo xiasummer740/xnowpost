@@ -582,7 +582,10 @@ export async function synthesizeAllPlatforms(dirPath, content, outputPath, preco
     if (drift > 0.5) {
       console.warn(`  ⚠️ 时间轴校验失败: 音频 ${audioDur.toFixed(2)}s vs 时间轴 ${timelineTotal.toFixed(2)}s（相差 ${drift.toFixed(2)}s）`);
     } else {
-      console.log(`  ⏱️ 时间轴校验通过: 音频 ${audioDur.toFixed(2)}s ≈ 时间轴 ${timelineTotal.toFixed(2)}s`);
+      // ⚠️ 不能用 ⏱️：日志分类器把行内 ⏱️ 一律当"超时失败"
+      //    （electron/main.js 的 isFailure / classifyEngineLine 都是 /❌|⏱️|⚠️.*未确认/）。
+      //    这行是**通过**，2026-10-29 一天被记成 9 条 [ERROR]（和「发布预算」同一类坑）。
+      console.log(`  🎵 时间轴校验通过: 音频 ${audioDur.toFixed(2)}s ≈ 时间轴 ${timelineTotal.toFixed(2)}s`);
     }
   } catch (e) {
     console.warn(`  ⚠️ 时间轴校验跳过: ${e.message}`);

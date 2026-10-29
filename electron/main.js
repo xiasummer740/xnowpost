@@ -85,6 +85,11 @@ import { applyUniformScreen } from '../src/collector/uniform-screen.js';
 import * as proxyEngine from '../src/proxy/engine.js';
 // 节点描述（`vless · host:port · 备注`）来自解析层，别再拼第二份
 import { describeNode } from '../src/proxy/node.js';
+// 原子写：关键状态文件（定时任务 / 凭据）必须「要么旧的、要么新的」。
+// 直接覆盖写遇到断电/崩溃会留下半截 JSON；而 env-accounts.json 读失败时是 return {}，
+// 等于一次断电就把所有账号的密码/2FA 从界面上清空（文件其实还在，但没人敢赌）。
+// fs-atomic.js 采集器/引擎早就在用（临时文件 + rename），这里别再各写一份。
+import { writeJsonAtomicSync, writeFileAtomicSync } from '../src/fs-atomic.js';
 
 /** 日志页一次最多渲染多少行（再多 DOM 会卡；文件本身不截断，界面可以「显示更早」） */
 const LOG_LINE_LIMIT = 6000;
@@ -176,9 +181,12 @@ function readSessionRow(dayDir, n, since = 0) {
   try {
     if (fs.existsSync(path.join(sp, '.published'))) {
       const m = fs.readJsonSync(path.join(sp, '.published'));
-      const at = Date.parse(m.at || '');
+      // 标记里存的是 publishedAt（不是 at）—— 只读 m.at 会让时间窗过滤恒为真，
+      // 于是「本轮发没发」可能把上一轮的作品算进来（CLAUDE.md 里记过这个坑）。
+      const stamp = m.publishedAt || m.at || '';
+      const at = Date.parse(stamp || '');
       if (!Number.isFinite(at) || at >= since) {
-        row.published = { confirmed: m.confirmed !== false, env: m.env || '', at: m.at || '' };
+        row.published = { confirmed: m.confirmed !== false, env: m.env || '', at: stamp };
       }
     }
   } catch (_) { /* 坏标记忽略 */ }
@@ -1911,7 +1919,7 @@ function setupIPC() {
       if (changed) addLog('warning', '⚠️ 检测到重复的定时任务 id，已自动修正');
       const file = scheduleFile();
       fs.ensureDirSync(path.dirname(file));
-      fs.writeJsonSync(file, fixed, { spaces: 2 });
+      writeJsonAtomicSync(file, fixed, 2);
       return { ok: true, jobs: fixed, changed };
     } catch (e) {
       return { ok: false, message: e.message };
@@ -3438,6 +3446,10 @@ function setupIPC() {
       for (const rec of readLedger(DATA_DIR)) {
         const at = Date.parse(rec.at || '');
         if (!Number.isFinite(at) || at < from || at > to) continue;
+        // 账本行在「点击 Post 的瞬间」就写（confirmed:false），确认公开后才追加一条
+        // confirmed:true。这里必须跳过未确认的行 —— 否则一轮被超时强杀、结果根本没确认，
+        // 回报里也会说「已发布 → TKxx《…》」。
+        if (rec.confirmed === false) continue;
         raw.push({ env: rec.env || '', session: rec.session || '', at: rec.at || '', title: rec.title || '' });
       }
       ev.published = mergePublishedEvidence(raw)
@@ -4075,7 +4087,7 @@ function setupIPC() {
         mapping.push({ env: target, username: row.username });
       });
       fs.mkdirSync(path.dirname(accountsStateFile()), { recursive: true });
-      fs.writeFileSync(accountsStateFile(), JSON.stringify(state, null, 2));
+      writeFileAtomicSync(accountsStateFile(), JSON.stringify(state, null, 2));
       // 凭据一变就重写当天加密包，别等启动/备份 cookie 那个时机
       try {
         autoBackupSecrets();
@@ -4111,7 +4123,7 @@ function setupIPC() {
       };
       state[env] = next;
       fs.mkdirSync(path.dirname(accountsStateFile()), { recursive: true });
-      fs.writeFileSync(accountsStateFile(), JSON.stringify(state, null, 2));
+      writeFileAtomicSync(accountsStateFile(), JSON.stringify(state, null, 2));
       // 凭据改了立刻重写加密备份（这就是「一键更新备份」：不用再点一次备份按钮）
       let backup = null;
       try {
