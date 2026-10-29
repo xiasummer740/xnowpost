@@ -90,6 +90,8 @@ import { describeNode } from '../src/proxy/node.js';
 // 等于一次断电就把所有账号的密码/2FA 从界面上清空（文件其实还在，但没人敢赌）。
 // fs-atomic.js 采集器/引擎早就在用（临时文件 + rename），这里别再各写一份。
 import { writeJsonAtomicSync, writeFileAtomicSync } from '../src/fs-atomic.js';
+// 跨进程互斥：调度器（独立进程）与界面手动发布/采集共用一个锁文件
+import * as runLock from '../src/run-lock.js';
 
 /** 日志页一次最多渲染多少行（再多 DOM 会卡；文件本身不截断，界面可以「显示更早」） */
 const LOG_LINE_LIMIT = 6000;
@@ -4995,6 +4997,22 @@ function setupIPC() {
     if (Date.now() - publishLastAt < 3000) {
       return { ok: false, message: '刚刚点过一次（3 秒内不重复执行）' };
     }
+    // 跨进程互斥（2026-10-29 审查发现）：调度器是独立进程，它的锁文件在这里也要看。
+    // 两边同时开同一个 FoxProfile 环境时，openFoxPage 会把对方的浏览器直接关掉。
+    {
+      const lockFile = runLock.lockFile(DATA_DIR);
+      const held = runLock.readLock(lockFile);
+      const verdict = runLock.canTakeOver(held, { selfPid: process.pid });
+      if (!verdict.take && held && held.kind !== 'publish') {
+        const who = runLock.describeHolder(held);
+        addLog('warning', `⚠️ ${who} 正在运行，先等它结束再发布（避免抢同一个指纹环境）`);
+        return { ok: false, message: `${who} 正在运行，请等它结束后再点发布` };
+      }
+      const got = runLock.tryAcquire(lockFile, { kind: 'publish' });
+      if (!got.ok) {
+        return { ok: false, message: `${runLock.describeHolder(got.holder)} 正在运行，请稍后再试` };
+      }
+    }
     publishInFlight = true;
     publishLastAt = Date.now();
     try {
@@ -5129,6 +5147,7 @@ function setupIPC() {
       return { ok: false, message: err.message };
     } finally {
       publishInFlight = false;
+      try { runLock.release(runLock.lockFile(DATA_DIR)); } catch (_) { /* ignore */ }
     }
   });
 
@@ -5140,6 +5159,18 @@ function setupIPC() {
       if (collectProcess) {
         addLog('warning', '采集已在进行中，忽略本次请求');
         return { ok: false, message: '采集已在进行中' };
+      }
+      // 跨进程互斥：调度器同一时刻只能开一个环境，手动采集也要抢同一把锁
+      {
+        const lockFile = runLock.lockFile(DATA_DIR);
+        const verdict = runLock.canTakeOver(runLock.readLock(lockFile), { selfPid: process.pid });
+        if (!verdict.take && verdict.holder) {
+          const who = runLock.describeHolder(verdict.holder);
+          addLog('warning', `⚠️ ${who} 正在运行，先等它结束再采集（避免抢同一个指纹环境）`);
+          return { ok: false, message: `${who} 正在运行，请等它结束后再采集` };
+        }
+        const got = runLock.tryAcquire(lockFile, { kind: 'collect' });
+        if (!got.ok) return { ok: false, message: `${runLock.describeHolder(got.holder)} 正在运行，请稍后再试` };
       }
 
       const list = Array.isArray(accounts) ? accounts.filter(a => typeof a === 'string') : [];
@@ -5179,6 +5210,7 @@ function setupIPC() {
           settled = true;
           clearTimeout(collectTimer);
           if (collectProcess === proc) collectProcess = null;
+          try { runLock.release(runLock.lockFile(DATA_DIR)); } catch (_) { /* ignore */ }
           invalidateHistoryCache();
           if (code === 0 && !errorMessage) {
             addLog('success', '✅ 数据采集完成');
@@ -5234,6 +5266,7 @@ function setupIPC() {
     if (!collectProcess) return { ok: false, message: '没有运行中的采集' };
     killProcessTree(collectProcess);
     collectProcess = null;
+    try { runLock.release(runLock.lockFile(DATA_DIR)); } catch (_) { /* ignore */ }
     addLog('warning', '采集已被用户取消');
     return { ok: true, message: '已取消' };
   });
@@ -6268,6 +6301,21 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch((e) => {
+  // 🔴 2026-10-29 审查发现：这条启动链原来是裸的 `.then()` —— 中间任何一步抛错都会被
+  //    当成未处理 rejection（只写进 crash.log），而 startScheduler() 在链条靠后的位置，
+  //    于是会出现「界面一切正常、闹钟永远不会触发」这种最难查的形态。
+  const msg = (e && e.message) || String(e);
+  try { addLog('error', `❌ 应用启动流程失败：${msg}`); } catch (_) { /* 日志都没起来就只剩控制台 */ }
+  try { console.error('启动流程失败:', e); } catch (_) { /* ignore */ }
+  try { notifyFailure({ title: 'XNOWPost 启动异常', body: msg, key: `boot|${msg}` }); } catch (_) { /* ignore */ }
+  // 定时器是这个软件的命脉：即使前面某步失败，也再试一次把调度器拉起来
+  try {
+    startScheduler();
+    addLog('warning', '⚠️ 启动流程出错，已单独尝试拉起定时调度器（请检查上面的报错）');
+  } catch (e2) {
+    try { addLog('error', `❌ 定时调度器也没能启动：${(e2 && e2.message) || e2}`); } catch (_) { /* ignore */ }
+  }
 });
 
 app.on('window-all-closed', () => {

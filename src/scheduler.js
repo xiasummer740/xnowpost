@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import cron from 'node-cron';
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs-extra';
 import { dataPath, resolveCodeRoot } from './paths.js';
@@ -8,6 +8,10 @@ import { writeJsonAtomicSync } from './fs-atomic.js';
 import { todayStr } from './organizer.js';
 import { checkLogins, resolveEnvs, allConfigEnvs, describeLogin } from './login-state.js';
 import { buildRunRecord, resultFromRunWithRetry, pickSession, writeRunRecord, RUNS_REL } from './scheduled-run.js';
+// 任务串行排队（不丢轮）+ 超时连进程树一起结束 + 跨进程互斥
+import { createSerialQueue } from './serial-queue.js';
+import { killTree } from './process-tree.js';
+import * as runLock from './run-lock.js';
 
 // 代码目录（打包版 = app.asar.unpacked）与数据目录（%APPDATA%/xnowpost）是两回事：
 // 子进程 cwd 用代码目录才能定位 src/*.js；日志与 TG 配置必须用数据目录，
@@ -128,32 +132,78 @@ function forward(text) {
   }
 }
 
-/** 执行一次子进程（参数走数组、shell:false → 无命令注入面） */
+/** 执行一次子进程（参数走数组、shell:false → 无命令注入面）
+ *
+ * 2026-10-29 改造：原来是 `spawnSync` —— 跑的时候整个事件循环被占死，
+ *   ① node-cron 到点也触发不了 → 上一轮跨过下一轮的分钟，那一轮**当天直接消失**；
+ *   ② 超时只杀直接子进程，浏览器/ffmpeg 留在后台占 cookies；
+ *   ③ stdout 退出时才回放，日志里一整轮的时间戳全是同一个（复盘看不出卡在哪）。
+ * 现在改成异步 spawn + 逐行转发：cron 准时触发（进串行队列），超时用 taskkill /T /F，
+ * 日志时间是真实的。
+ */
 function runOnce(args, { timeoutMs }) {
-  const res = spawnSync(NODE_EXE, args, {
-    cwd: CODE_ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    encoding: 'utf-8',
-    timeout: timeoutMs,
-    maxBuffer: 32 * 1024 * 1024,
-    windowsHide: true,   // CLAUDE.md 硬规则：绝不允许 CMD 弹窗
-    shell: false,        // 参数是数组，不拼 shell 字符串（原实现可被账号名注入）
+  return new Promise((resolve) => {
+    let settled = false;
+    let timedOut = false;
+    let timer = null;
+    let child = null;
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(r);
+    };
+
+    try {
+      child = spawn(NODE_EXE, args, {
+        cwd: CODE_ROOT,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,   // CLAUDE.md 硬规则：绝不允许 CMD 弹窗
+        shell: false,        // 参数是数组，不拼 shell 字符串（原实现可被账号名注入）
+      });
+    } catch (e) {
+      return finish({ ok: false, timeout: false, code: null, message: `启动/执行失败: ${e.message}` });
+    }
+
+    // 增量转发：一轮跑到哪一步、几点几分，日志里都是真的。
+    // ⚠️ 必须自己攒行：stdout 的 chunk 边界不等于行边界，直接 forward(chunk) 会把一行
+    //    切成两半（`📅 …/am_0830` 被切开 → pickSession 抓不到 → 轮次记录 session 空）。
+    let outBuf = '';
+    let errBuf = '';
+    const pump = (chunk, isErr) => {
+      const text = (isErr ? (errBuf += chunk) : (outBuf += chunk));
+      const lines = text.split('\n');
+      const rest = lines.pop() || '';
+      if (isErr) errBuf = rest; else outBuf = rest;
+      for (const line of lines) forward(line + '\n');
+    };
+    const flushRest = () => {
+      if (outBuf) { forward(outBuf + '\n'); outBuf = ''; }
+      if (errBuf) { forward(errBuf + '\n'); errBuf = ''; }
+    };
+    if (child.stdout) child.stdout.on('data', (b) => pump(b.toString('utf-8'), false));
+    if (child.stderr) child.stderr.on('data', (b) => pump(b.toString('utf-8'), true));
+
+    timer = setTimeout(async () => {
+      timedOut = true;
+      const res = await killTree(child.pid, { onLog: log });
+      if (res.ok) log(`⏱️ 超时 ${Math.round(timeoutMs / 1000)}s，已连同子进程树一起结束（PID ${child.pid}）`);
+    }, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+
+    child.on('error', (e) => { flushRest(); finish({ ok: false, timeout: false, code: null, message: `启动/执行失败: ${e.message}` }); });
+    child.on('close', (code, signal) => {
+      flushRest();   // 最后一行可能没有换行符
+      if (timedOut) {
+        return finish({ ok: false, timeout: true, code: null, message: `超时 ${Math.round(timeoutMs / 1000)}s（已连进程树一起结束）` });
+      }
+      if (signal) {
+        return finish({ ok: false, timeout: false, code: null, message: `被信号结束 (${signal})` });
+      }
+      if (code !== 0) return finish({ ok: false, timeout: false, code, message: `退出码 ${code}` });
+      finish({ ok: true, timeout: false, code: 0, message: '' });
+    });
   });
-
-  forward(res.stdout);
-  forward(res.stderr);
-
-  const timedOut = !!res.error && res.error.code === 'ETIMEDOUT';
-  if (timedOut) {
-    return { ok: false, timeout: true, code: null, message: `超时 ${Math.round(timeoutMs / 1000)}s（子进程已被强制结束）` };
-  }
-  if (res.error) {
-    return { ok: false, timeout: false, code: null, message: `启动/执行失败: ${res.error.message}` };
-  }
-  if (res.status !== 0) {
-    return { ok: false, timeout: false, code: res.status, message: `退出码 ${res.status}` };
-  }
-  return { ok: true, timeout: false, code: 0, message: '' };
 }
 
 async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true, timeoutMs: timeoutOverride = 0 } = {}) {
@@ -166,7 +216,7 @@ async function runWithRetry(args, label, { kind = 'engine', retryOnFail = true, 
   for (let i = 0; i < maxAttempts; i++) {
     // 措辞与 electron/main.js 的状态识别对齐（START_RE 认"任务开始"、DONE_RE 认"完成/失败"）
     log(`🚀 ${label} 任务开始（超时预算 ${Math.round(timeoutMs / 1000)}s）`);
-    const r = runOnce(args, { timeoutMs });
+    const r = await runOnce(args, { timeoutMs });
 
     if (r.ok) {
       log(`✅ ${label} 完成`);
@@ -421,7 +471,39 @@ async function runJob(job) {
  *
  * 写记录本身绝不能让任务失败：整段包在 try 里，出错只打一行日志。
  */
+
+// 串行队列：所有闹钟轮次一个接一个跑（同一时刻只有一个子进程 / 一个指纹环境）
+const RUN_QUEUE = createSerialQueue({
+  onQueued: (ahead, job) => {
+    const name = (job && (job.label || job.time)) || '任务';
+    log(`⏳ 上一轮还没跑完，「${name}」已排队（前面还有 ${ahead} 个）—— 这一轮不会丢，跑完就接着来`);
+  },
+});
+// 跨进程锁文件（调度器 ↔ 界面手动发布/采集共用），等界面那头最多 20 分钟
+const LOCK_FILE = runLock.lockFile(dataPath(''));
+const LOCK_WAIT_MS = 20 * 60 * 1000;
+
 async function runJobTracked(job) {
+  // 串行队列：cron 到点就入队；前面还没跑完就排队等着（老实现是 spawnSync 占死事件循环，
+  // 跨过下一轮的分钟 = 那一轮当天静默消失。宁可晚几分钟，也不能悄悄少发一条）。
+  return RUN_QUEUE.push(() => executeJob(job), job);
+}
+
+/** 真正跑一轮（已进入串行队列，同一时刻只有一个） */
+async function executeJob(job) {
+  // 跨进程互斥：界面上手动「发布 / 采集」时，调度器别去抢同一个指纹环境
+  // （openFoxPage 会 foxStopOthers 把对方的浏览器关掉，两边都失败）。
+  const acquired = await runLock.waitForLock(LOCK_FILE, {
+    kind: job.mode === 'warmup' ? 'warmup' : 'job',
+    timeoutMs: LOCK_WAIT_MS,
+    onWait: (m) => log(m),
+  });
+  if (!acquired.ok) {
+    log(`⚠️ ${runLock.describeHolder(acquired.holder)} 占用超过 ${Math.round(LOCK_WAIT_MS / 60000)} 分钟，本轮仍然继续（总比整晚不干活好）`);
+  }
+  const beatTimer = setInterval(() => { try { runLock.beat(LOCK_FILE); } catch (_) { /* ignore */ } }, runLock.BEAT_MS);
+  if (typeof beatTimer.unref === 'function') beatTimer.unref();
+
   const startedAtMs = Date.now();
   captureLines = [];
   let outcome = { result: 'failed', reason: '' };
@@ -450,6 +532,10 @@ async function runJobTracked(job) {
       writeRunRecord(dataPath(RUNS_REL), record);
     } catch (e) {
       log(`⚠️ 轮次记录写入失败（不影响任务本身）: ${e.message}`);
+    }
+    clearInterval(beatTimer);
+    if (acquired.ok) {
+      try { runLock.release(LOCK_FILE); } catch (_) { /* ignore */ }
     }
   }
   return outcome;
