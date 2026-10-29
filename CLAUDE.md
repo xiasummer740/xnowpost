@@ -1128,3 +1128,43 @@ node src/publisher/index.js --env TK01 --max 1
   `out/probe-favorite2.mjs`（点一次 + 读提示条 + 截图 + Escape 收尾）。不进 git。
 - 顺带踩到：CLI 的 `num()` 只接受 `> 0`，`--likes 0` 会被悄悄换成默认 2~4 个赞 →
   预算类参数改用 `num0()`（0 合法，缺省才用默认）。
+
+## 定时任务：串行排队，绝不丢轮（2026-10-29 v1.8.9）
+
+- **`spawnSync` 是死路**：它跑任务时把整个事件循环占死，而 node-cron 只在「当前这一秒」
+  触发回调 ⇒ 上一轮跨过下一轮的分钟，**那一轮当天静默消失**（不排队、不补跑、日志无痕）。
+  实测 08:50 那轮跑了 4m16s，距下一轮 08:55 只剩 44 秒；凌晨是 11 个号每 5 分钟一个，
+  任一轮超 5 分钟就有一个号当天没有视频，而事后看日志像是"本来就没这个任务"。
+  现在 `src/serial-queue.js` 排队 + `spawn` 异步跑，日志写
+  `⏳ 上一轮还没跑完，「X」已排队（前面还有 N 个）`。**新增任务/改调度别再回到 spawnSync。**
+- **超时必须杀进程树**：`spawnSync({timeout})` 只杀直接子进程，camoufox/ffmpeg 留在后台
+  占着 `cookies.sqlite`，下一轮就撞 "Browser is still starting"。`src/process-tree.js`
+  用 `taskkill /PID n /T /F`（退出码 128 = 进程已不在，也算结束）。
+- **增量转发要自己攒行**：`child.stdout.on('data')` 的 chunk 边界**不等于**行边界，
+  直接把 chunk 丢给 `forward()` 会把 `📅 …/am_0830` 切成两半 → `pickSession()` 抓不到 →
+  轮次记录 session 空 → 回报变成"没看到成片也没看到发布记录"。
+- **跨进程互斥 `data/run.lock`**（`src/run-lock.js`）：调度器与界面手动发布/采集共用一把锁。
+  两边同时开同一个 FoxProfile 环境时，`openFoxPage()` 的 `foxStopOthers()` 会把对方的浏览器
+  直接关掉，然后双方日志互相甩锅。锁带 pid + 心跳，30 分钟没心跳或持有者进程已死可接管；
+  界面撞锁会明确回「XX 正在运行，请等它结束」，调度器最多等 20 分钟（超时就继续并写警告，
+  总比整晚不干活好）。
+- **`app.whenReady()` 不许裸 `.then()`**：整条启动链任一步抛错就只剩 crash.log，而
+  `startScheduler()` 在链条靠后 ⇒「界面一切正常、闹钟永不触发」——最难查的形态。
+  现在有 `.catch`：写错误 + 弹通知 + **单独再拉一次调度器**。
+
+## 公开仓库的卫生（2026-10-29 清史）
+
+- 仓库是 **PUBLIC**，所以"删文件"≠"删历史"：`tmp.db`（比特浏览器数据库）曾被提交过，
+  文件删了但 blob 还在历史里，任何人能 `git checkout` 取回。
+  已用 `git filter-branch --index-filter 'git rm --cached --ignore-unmatch tmp.db' --prune-empty -- --all`
+  重写全部历史（168 个提交 + 41 个标签），`git reflog expire --expire=now --all` +
+  `git gc --prune=now` 后 `git rev-list --objects --all | grep tmp.db` 为空，再 `push --force`。
+  备份留在仓库外：`F:\summer\vs-code\xnowpost-backup-20261029.bundle`（15 MB）。
+  ⚠️ 重写历史后**所有人已有的 clone 都会分叉**，需要重新 clone；GitHub 侧旧 blob 在它自己
+  GC 之前仍可能通过直链 SHA 访问 —— 真正翻篇靠时间。
+- **`data/collect-meta.json` 曾经"该忽略却被 tracked"**：它在 `.gitignore` 里（`data/`），
+  但历史上被 `git add` 过 ⇒ `git add -A` 会把**真实运行数据**再推进公开仓库。
+  已 `git rm --cached`。以后再往仓库里加运行时文件前，先 `git check-ignore -v <path>` 看一眼。
+- 开发态 `src/paths.js` 的数据目录就是**仓库根**（没有 `XNOWPOST_DATA_DIR` 时 `path.resolve('.')`）
+  ⇒ 在仓库目录跑 CLI 会往仓库里写 `config/user.json`、`data/analytics.db`、`output/`。
+  这些都被 .gitignore 覆盖，但**风险在于一旦某个文件被 tracked 过就再也拦不住**。
