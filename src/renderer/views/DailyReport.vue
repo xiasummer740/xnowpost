@@ -189,12 +189,14 @@ const curIdx = ref(0)
 const pushing = ref(false)
 
 // --- KPI 配置 ---
+// 指标强调色只在品牌渐变家族里挑（紫/蓝/青/靛）：红=失败、黄=警告、绿=成功，
+// 这三种颜色在这个应用里只表示状态，不能拿去当装饰色（2026-10-29 配色收口）。
 const kpiDefs = [
   { key: 'views',      label: '总播放',   icon: '▶️', color: '#3b82f6' },
-  { key: 'profile_views', label: '主页访问', icon: '👁️', color: '#8b5cf6' },
-  { key: 'likes',      label: '总点赞',   icon: '❤️', color: '#ef4444' },
-  { key: 'comments',   label: '总评论',   icon: '💬', color: '#22c55e' },
-  { key: 'followers',  label: '总粉丝',   icon: '👥', color: '#f59e0b' },
+  { key: 'profile_views', label: '主页访问', icon: '👁️', color: '#a855f7' },
+  { key: 'likes',      label: '总点赞',   icon: '❤️', color: '#ec4899' },
+  { key: 'comments',   label: '总评论',   icon: '💬', color: '#6366f1' },
+  { key: 'followers',  label: '总粉丝',   icon: '👥', color: '#14b8a6' },
 ]
 
 // diff 字符串（箭头+绝对值）
@@ -567,10 +569,14 @@ onMounted(() => {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 20px; flex-wrap: wrap; gap: 12px;
 }
-.page-header h2 { margin: 0; font-size: 22px; }
+.page-header h2 {
+  margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 1px;
+  background: var(--brand-grad); -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
 .date-nav {
   display: flex; align-items: center; gap: 8px;
-  background: #1e293b; border-radius: 8px; padding: 5px 10px; border: 1px solid #334155;
+  background: rgba(19, 29, 43, 0.86); border-radius: 8px; padding: 5px 10px; border: 1px solid rgba(139, 92, 246, 0.3);
 }
 /* ── 账号明细表（替换原来的每号一卡 + 每指标一根进度条） ── */
 .ac-table-wrap {
@@ -671,14 +677,17 @@ onMounted(() => {
 .kpi-card { flex: 0 0 210px; }
 .kpi-card {
   display: flex; align-items: center; gap: 12px;
-  background: linear-gradient(135deg, #1e293b, #1a1f2e);
-  border: 1px solid #334155; border-radius: 12px;
+  /* 渐变描边 + 半透明深底：和外面那些 .x-card 是一套观感 */
+  background:
+    linear-gradient(rgba(19, 29, 43, 0.86), rgba(19, 29, 43, 0.86)) padding-box,
+    linear-gradient(135deg, rgba(168, 85, 247, 0.6), rgba(59, 130, 246, 0.45) 50%, rgba(20, 184, 166, 0.55)) border-box;
+  border: 1px solid transparent; border-radius: 12px;
   padding: 14px 16px;
   position: relative; overflow: hidden;
-  transition: border-color .2s, transform .15s;
+  transition: box-shadow .2s, transform .15s;
 }
 .kpi-card:hover {
-  border-color: var(--accent, #3b82f6) !important;
+  box-shadow: 0 8px 24px var(--brand-glow);
   transform: translateY(-2px);
 }
 .kpi-card::before {
@@ -689,7 +698,11 @@ onMounted(() => {
 .kpi-icon { font-size: 20px; flex-shrink: 0; }
 .kpi-body { display: flex; flex-direction: column; min-width: 0; }
 .kpi-label { font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
-.kpi-val { font-size: 20px; font-weight: 800; color: #f1f5f9; line-height: 1.2; margin: 2px 0; }
+.kpi-val {
+  font-size: 20px; font-weight: 800; line-height: 1.2; margin: 2px 0;
+  background: var(--brand-grad); -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
 .kpi-diff { font-size: 11px; font-weight: 700; }
 .kpi-diff.up { color: #22c55e; }
 .kpi-diff.dn { color: #ef4444; }

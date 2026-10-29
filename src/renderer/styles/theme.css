@@ -129,10 +129,14 @@
 .x-mini.hi:hover { background: rgba(139, 92, 246, 0.2); color: #ded1ff; }
 .x-mini:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ── 卡片 ── */
+/* ── 卡片 ──
+   渐变描边用两层 background 实现（padding-box 填底色 / border-box 填渐变），
+   这样描边不占布局、不挡内容，也不需要伪元素。 */
 .x-card {
-  background: var(--bg2);
-  border: 1px solid var(--stroke);
+  background:
+    linear-gradient(var(--bg2), var(--bg2)) padding-box,
+    linear-gradient(135deg, rgba(168, 85, 247, 0.55), rgba(59, 130, 246, 0.4) 50%, rgba(20, 184, 166, 0.5)) border-box;
+  border: 1px solid transparent;
   border-radius: var(--r-md);
   overflow: hidden;
 }
@@ -142,18 +146,20 @@
   gap: 9px;
   padding: 13px 16px;
   border-bottom: 1px solid var(--stroke);
+  background: linear-gradient(90deg, rgba(168, 85, 247, 0.14), rgba(59, 130, 246, 0.09) 45%, rgba(20, 184, 166, 0.11));
 }
 .x-card-head .x-ic {
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: var(--bg3);
+  background: var(--brand-grad);
+  box-shadow: 0 2px 10px var(--brand-glow);
   display: flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 26px;
 }
-.x-card-head .x-ic svg { width: 15px; height: 15px; stroke: var(--text-2); fill: none; stroke-width: 1.8; }
+.x-card-head .x-ic svg { width: 15px; height: 15px; stroke: #fff; fill: none; stroke-width: 1.8; }
 .x-card-head h2 {
   font-size: 13.5px;
   font-weight: 640;
@@ -260,7 +266,16 @@
   gap: 14px;
   padding: 0 0 16px;
 }
-.x-head h1 { font-size: 16.5px; font-weight: 640; letter-spacing: 0.2px; color: var(--text); }
+.x-head h1 {
+  font-size: 16.5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  background: var(--brand-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
 .x-head .x-sub { font-size: 12px; color: var(--text-3); }
 .x-head .x-spacer { flex: 1; }
 
@@ -300,7 +315,7 @@
   font-size: 13px;
 }
 
-/* ── 品牌渐变文字（logo / 品牌名专用；渐变不能拿来写正文，暗底上读不清） ── */
+/* ── 品牌渐变文字（logo / 页面大标题 / KPI 数字；正文一律用实色，暗底上读不清） ── */
 .x-brand-text {
   background: var(--brand-grad);
   -webkit-background-clip: text;
@@ -309,11 +324,47 @@
   color: transparent;
 }
 
-/* ── 极光底纹（照 XX-UI 的「流动渐变」，暗色主题下压成氛围光斑，不动画省电） ── */
+/* ── 极光底纹（照 XX-UI 的「流动渐变」做暗色版：紫/蓝/青/品红四块光斑 + 慢速漂移） ──
+   只动 background-position（GPU 合成），不动颜色，避免整窗重绘闪烁。 */
 .x-aurora {
+  position: relative;
   background:
-    radial-gradient(900px 520px at 8% -12%, rgba(168, 85, 247, 0.20), transparent 62%),
-    radial-gradient(820px 480px at 96% -6%, rgba(59, 130, 246, 0.17), transparent 64%),
-    radial-gradient(760px 540px at 52% 112%, rgba(20, 184, 166, 0.14), transparent 62%),
+    radial-gradient(1050px 600px at 6% -12%, rgba(168, 85, 247, 0.30), transparent 62%),
+    radial-gradient(980px 560px at 98% 2%, rgba(59, 130, 246, 0.26), transparent 64%),
+    radial-gradient(900px 620px at 44% 118%, rgba(20, 184, 166, 0.24), transparent 60%),
+    radial-gradient(720px 460px at 82% 66%, rgba(236, 72, 153, 0.16), transparent 66%),
     var(--bg0);
 }
+.x-aurora::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: linear-gradient(120deg,
+    rgba(168, 85, 247, 0.16), rgba(59, 130, 246, 0.12), rgba(20, 184, 166, 0.14),
+    rgba(236, 72, 153, 0.12), rgba(168, 85, 247, 0.16));
+  background-size: 320% 320%;
+  opacity: 0.55;
+  animation: xAuroraFlow 90s ease-in-out infinite;
+}
+@keyframes xAuroraFlow {
+  0%   { background-position: 0% 50%; }
+  25%  { background-position: 50% 0%; }
+  50%  { background-position: 100% 50%; }
+  75%  { background-position: 50% 100%; }
+  100% { background-position: 0% 50%; }
+}
+/* 极光层永远在内容后面 */
+.x-aurora > * { position: relative; z-index: 1; }
+
+/* ── 滚动条也用品牌渐变（全局细节，不影响布局） ── */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(139, 92, 246, 0.45);
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(168, 85, 247, 0.7); }

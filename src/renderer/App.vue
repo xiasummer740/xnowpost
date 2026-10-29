@@ -18,7 +18,7 @@
     </div>
   </div>
 
-  <div v-else class="app-container">
+  <div v-else class="app-container x-aurora">
     <aside class="sidebar">
       <div class="logo">
         <div class="logo-mark">
@@ -276,21 +276,20 @@ onMounted(async () => {
 .app-container {
   display: flex;
   height: 100vh;
-  /* 极光底纹：XX-UI 那套渐变，暗色主题下压成三块光斑，不抢内容 */
-  background:
-    radial-gradient(900px 520px at 8% -12%, rgba(168, 85, 247, 0.20), transparent 62%),
-    radial-gradient(820px 480px at 96% -6%, rgba(59, 130, 246, 0.17), transparent 64%),
-    radial-gradient(760px 540px at 52% 112%, rgba(20, 184, 166, 0.14), transparent 62%),
-    var(--bg0);
+  /* 底纹在 theme.css 的 .x-aurora（紫/蓝/青/品红四块光斑 + 慢速漂移） */
   color: var(--text);
+  overflow: hidden;
 }
 
 /* ── 侧栏 ── */
 .sidebar {
   width: 212px;
   min-width: 212px;
-  background: var(--bg1);
-  border-right: 1px solid var(--stroke);
+  /* 侧栏也吃一层渐变（上紫下青），和极光底纹连成一片 */
+  background:
+    linear-gradient(180deg, rgba(168, 85, 247, 0.16), rgba(59, 130, 246, 0.07) 45%, rgba(20, 184, 166, 0.12)),
+    var(--bg1);
+  border-right: 1px solid rgba(139, 92, 246, 0.28);
   display: flex;
   flex-direction: column;
   padding: 16px 12px;
