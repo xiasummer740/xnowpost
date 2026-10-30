@@ -2703,3 +2703,13 @@ Get-CimInstance Win32_Process -Filter "Name='camoufox.exe'" | ForEach-Object {
 - **[日报页优化]** 全量展示 + 🔄刷新/📤推送 + 窗口位置记忆
 - **[TikTok 采集增强]** 关键词补全 + 支持 `|` 布局 + 新增指标 + @用户名提取 + 🔗主页链接
 - **[比特窗口防堆积]** 采集前 `closeAllBitProfiles()` 清理残留窗口
+
+## 2026-10-30 v1.9.7 — 日志页滚动被轮询拽回顶部
+
+- 现象：日志页往下滑，5 秒内自己跳回顶部
+- 根因：`Logs.vue` 的 5 秒轮询 `loadLive()` 无条件重置 `scrollTop`
+- 修复：只在用户停在顶/底时才跟随最新；滑开后按高度增量补偿（分组视图新轮次插在顶部）；
+  容器 `overflow-anchor: none` 避免双重补偿
+- 验证：构建级假数据 47 轮 + 真机 614 行日志，滚动 13 秒 shift 0；旧代码对照会跳
+- 版本：1.9.6 → 1.9.7，已覆盖安装到 `E:\software\XNOWPost`（安装器在本机会卡，改用 win-unpacked 覆盖）
+- 坑：从 AI 终端启动 Electron 应用要先清 `ELECTRON_RUN_AS_NODE`，否则秒退 0、无日志

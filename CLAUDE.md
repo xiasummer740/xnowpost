@@ -1221,3 +1221,42 @@ node src/publisher/index.js --env TK01 --max 1
   换成一个 00:30 的批量闹钟（先停用旧的，确认没问题再删）。
   2026-10-29 已执行：凌晨 11 个 → 1 个（#27，账号 01–11），旧的已删除，
   备份在 `config/schedule.json.bak-1.9.1`。
+
+## 日志页滚动：轮询不许抢用户的滚动条（2026-10-30 v1.9.7）
+
+用户口径：「我查看日志往下滑，它老是要跳到顶部。」
+
+- **根因**：`Logs.vue` 每 5 秒 `loadLive()` 重读今天的日志（调度器是另一个进程在写，
+  不轮询界面就不动），而它**每次都无条件**把 `scrollTop` 设成"顶"（分组视图）或"底"（行视图）。
+  用户一滑开，5 秒内就被拽回去。分组视图 47 轮时实测：视野从 `01:36` 直接跳到最新一轮。
+- **改法**：加 `stickTop/stickBottom`（由 `@scroll.passive` 维护），只有用户**本来就在顶/底**
+  时才跟着最新走；已经滑开了就按"高度增量"补偿 —— 分组视图新轮次插在最上面，
+  `scrollTop += (新 scrollHeight - 旧 scrollHeight)`，眼里内容一行不跳。
+  同时给 `.log-container` 加 `overflow-anchor: none`，避免浏览器原生 anchoring 和手算补偿叠加打架。
+  `setViewMode` / `switchToLive` 是明确动作，仍然强制定位。
+- **验证**：`scripts/_verify-logs-scroll.cjs`（静态跑 dist + 假 preload + 每 5 秒插新轮次）
+  旧代码 47 轮时视野跳到最新一轮、全部行视图 11301→23105；新代码同一轮次同一偏移、shift 0。
+  真机 `scripts/_verify-logs-flat-live.cjs`（装好的 1.9.7，真实 614 行日志）滚到中间等 13 秒：shift 0。
+
+### 🔴 从 AI 终端启动 Electron 应用时必看：`ELECTRON_RUN_AS_NODE`
+
+DeepSeek Harness 这类 Electron 宿主会把 `ELECTRON_RUN_AS_NODE=1` 传给子进程。
+被继承后，**任何 Electron 应用都会当纯 Node 跑**：`app` 是 `undefined`，
+启动瞬间 `TypeError: Cannot read properties of undefined (reading 'requestSingleInstanceLock')`，
+进程**退出码 0、无窗口、无日志**，看起来像"程序坏了"。2026-10-30 排查这台机器上
+XNOWPost 起不来就是这个，浪费了一轮。
+
+- 启动前：`Remove-Item Env:ELECTRON_RUN_AS_NODE`（PowerShell）或 `unset ELECTRON_RUN_AS_NODE`
+- 用户双击图标不受影响（Explorer 里没有这个变量），**别因为这个去改应用代码**
+
+### 顺带：本机 NSIS 一键安装器会卡住
+
+`release/XNOWPost-Setup-x.y.z.exe` 在这台机器上双击/`/S` 都会**挂着不动**（进程在、10 分钟不写一个文件）。
+要更新已安装版本（`E:\software\XNOWPost`）时，直接用打包产物覆盖：
+
+```powershell
+robocopy release\win-unpacked E:\software\XNOWPost /E /NFL /NDL /NJH /NJS /R:2 /W:1
+```
+
+（先确认 `XNOWPost` 进程已退出；用户数据在 `%APPDATA%\xnowpost`，不受影响。
+换前备份旧 `resources\app.asar` 到 `backups/`，出问题能回滚。）

@@ -56,7 +56,7 @@
     </div>
 
     <!-- ===== 按任务分组：一轮一行，点开看细节 ===== -->
-    <div v-if="viewMode === 'runs'" class="log-container" ref="listEl">
+    <div v-if="viewMode === 'runs'" class="log-container" ref="listEl" @scroll.passive="onListScroll">
       <div v-for="run in visibleRuns" :key="run.id" class="run">
         <div class="run-hd" :class="run.result" @click="toggleRun(run.id)">
           <span class="run-caret">{{ expanded[run.id] ? '▾' : '▸' }}</span>
@@ -88,7 +88,7 @@
     </div>
 
     <!-- ===== 全部行（原始视图） ===== -->
-    <div v-else class="log-container" ref="listEl">
+    <div v-else class="log-container" ref="listEl" @scroll.passive="onListScroll">
       <div v-for="(log, i) in filteredLogs" :key="i" class="log-line" :class="log.type">
         <span class="log-time">{{ log.time }}</span>
         <span class="log-src" :class="log.source">{{ log.source === 'scheduler' ? '调度' : '应用' }}</span>
@@ -147,6 +147,8 @@ function toggleRun(id) {
 
 async function setViewMode(mode) {
   viewMode.value = mode
+  stickTop.value = true
+  stickBottom.value = true
   await nextTick()
   if (listEl.value) listEl.value.scrollTop = mode === 'runs' ? 0 : listEl.value.scrollHeight
 }
@@ -221,16 +223,52 @@ async function openFolder() {
   }
 }
 
-// 实时：读今天（应用 + 调度器合并）并定位到"最该看的地方" ——
-// 全部行视图看最新一行（滚到底）；按任务分组视图最新的一轮在最上面（滚到顶）。
-async function loadLive({ toBottom = true } = {}) {
+/*
+ * 刷新时要不要动滚动条（2026-10-30 修）：
+ * 以前 loadLive 每 5 秒都把 scrollTop 强行拉回顶/底，人一套滑到中间就被拽回去，
+ * 看起来像「鼠标一动就弹回顶部」。现在的规则：
+ *   - 只有你本来就停在顶（分组视图）/ 底（行视图）时，才继续跟着最新一条走；
+ *   - 你一旦自己滑开了，就记住位置不动 —— 分组视图新日志插在最上面，
+ *     按"高度增量"补偿 scrollTop，眼里的内容一行都不跳。
+ * 关掉浏览器原生 scroll-anchoring（CSS overflow-anchor: none），避免和我们手算的补偿叠加。
+ */
+const stickTop = ref(true)
+const stickBottom = ref(true)
+
+function onListScroll() {
+  const el = listEl.value
+  if (!el) return
+  stickTop.value = el.scrollTop <= 24
+  stickBottom.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 32
+}
+
+/**
+ * @param {'top'|'bottom'|'keep'} [anchor] 不传 = 按你当前是否停在最新处自动决定
+ */
+async function loadLive({ anchor } = {}) {
+  const before = listEl.value
+  const prevTop = before ? before.scrollTop : 0
+  const prevHeight = before ? before.scrollHeight : 0
   try {
     await store.loadLogs()
   } catch (_) { /* ignore */ }
-  if (toBottom) {
-    await nextTick()
-    if (listEl.value) listEl.value.scrollTop = viewMode.value === 'runs' ? 0 : listEl.value.scrollHeight
+  await nextTick()
+  const box = listEl.value
+  if (!box) return
+
+  const isRuns = viewMode.value === 'runs'
+  const mode = anchor || (isRuns
+    ? (stickTop.value ? 'top' : 'keep')
+    : (stickBottom.value ? 'bottom' : 'keep'))
+
+  if (mode === 'top') box.scrollTop = 0
+  else if (mode === 'bottom') box.scrollTop = box.scrollHeight
+  else if (mode === 'keep' && isRuns) {
+    // 新的轮次插在最上面 → 内容整体下移了 delta，scrollTop 同步加上去，视野不动
+    const delta = box.scrollHeight - prevHeight
+    if (delta > 0) box.scrollTop = prevTop + delta
   }
+  // keep + 行视图：新行加在底部，scrollTop 不用动
 }
 
 async function loadHistory() {
@@ -246,7 +284,7 @@ async function loadHistory() {
 function switchToLive() {
   isHistory.value = false
   historyDate.value = ''
-  loadLive()
+  loadLive({ anchor: viewMode.value === 'runs' ? 'top' : 'bottom' })
 }
 
 // 实时模式每 5 秒重读一次今天的日志文件：
@@ -337,6 +375,9 @@ h2 { font-size: 24px; }
 
 .log-container {
   border-radius: 8px; padding: 12px; max-height: calc(100vh - 230px); overflow-y: auto;
+  /* 关掉浏览器原生 scroll-anchoring：我们自己在 loadLive 里按高度增量补偿，
+     两套同时生效会互相打架（表现成「有时候跳一格」）。 */
+  overflow-anchor: none;
   /* 日志区保持深底（等宽字要看得清），但描边走品牌渐变，和别的卡片是一套 */
   background:
     linear-gradient(rgba(10, 16, 27, 0.86), rgba(10, 16, 27, 0.86)) padding-box,
