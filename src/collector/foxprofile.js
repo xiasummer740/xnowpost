@@ -238,6 +238,24 @@ async function killCamoufoxFor(name) {
 }
 
 /**
+ * 这次的失败是不是"启动超时"这一类（卡住的 profile）？
+ *
+ * 只认超时/还在启动 —— 别把 `Launch failed: cannot start browser`（配置/环境问题）
+ * 也算进来：那种清理一百遍也没用，应该立刻把错误抛给调用方。
+ */
+function isLaunchTimeout(d) {
+  if (!d || d.success !== false) return false;
+  const m = String(d.message || d.detail || '');
+  return /timeout|timed out|still starting|starting up/i.test(m);
+}
+
+/** 把"LAUNCH_FAILED: TimeoutError: … Timeout 180000ms exceeded"缩成一行好读的 */
+function brief(msg, max = 60) {
+  const s = String(msg || '').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/**
  * 启动环境，等它**真的能用**（不是"进程起来了"）。
  *
  * ⚠️ 2026-10-20 23:31 实测：`launch?wait=true` 仍可能立刻返回
@@ -252,14 +270,26 @@ async function killCamoufoxFor(name) {
  * @param {number} pollMs 轮询间隔（单测里调小，别真等 2 秒）
  */
 export async function launchAndWait(name, base, { focus = false, readySeconds = 150, pollMs = 2000, hardResetAfterMs = 60000 } = {}) {
-  const t0 = Date.now();
   let d = await foxLaunch(name, base, { focus }).catch((e) => ({ success: false, message: e.message }));
-  // 真失败（端口/配置/环境不存在）立刻报，别拿 150 秒去等一个起不来的东西
-  if (d && d.success === false && !/still starting|starting up/i.test(String(d.message || ''))) {
-    return d;
+
+  // 「启动超时」这一类失败 = 卡住的 profile（残留 camoufox / runner 占着，parent.lock 还在）。
+  // ⚠️ 2026-10-30 20:18 实测：TK09/TK10 各自耗满 FoxProfile 的 180 秒超时后才报
+  // `LAUNCH_FAILED: ... Timeout 180000ms exceeded` —— 这场等待把整个就绪窗口都吃掉了，
+  // 而旧代码把这类失败当"真失败"直接返回，于是整轮判「没养成」。
+  // 现在先清理（停环境 + 杀该环境残留 camoufox + 删 parent.lock）再重开**一次**。
+  if (isLaunchTimeout(d)) {
+    console.log(`  🔧 ${name} 启动超时（${brief(d && d.message)}）—— 清理残留进程和 profile 锁后重开一次`);
+    const r = await foxHardReset(name, base).catch(() => null);
+    console.log(`  🧹 已停环境${r && r.killed ? `、杀掉 ${r.killed} 个残留 camoufox` : ''}`
+      + `${r && r.lockRemoved ? '、删掉 parent.lock' : ''}，重新启动`);
+    d = await foxLaunch(name, base, { focus }).catch((e) => ({ success: false, message: e.message }));
   }
+  // 其它真失败（端口/配置/环境不存在）立刻报，别拿 150 秒去等一个起不来的东西
+  if (d && d.success === false && !isLaunchTimeout(d)) return d;
   if (await foxPageReady(name, base)) return { success: true };
 
+  // 就绪窗口从"启动动作返回之后"开始算：启动本身可能已经等了 180 秒
+  const t0 = Date.now();
   console.log(`  ⏳ ${name} 进程已起、页面通道还没就绪，等它（最多 ${readySeconds} 秒）...`);
   let relaunched = 0;
   let hardResetDone = false;
@@ -270,23 +300,17 @@ export async function launchAndWait(name, base, { focus = false, readySeconds = 
       return { success: true };
     }
     // 「进程在、控制通道一直不上来」= 卡住的启动（残留进程占着 profile），清理后重开一次。
-    // 只做一次，别把 150 秒全花在反复清理上。
+    // 只做一次，别把就绪窗口全花在反复清理上。
     if (!hardResetDone && Date.now() - t0 > hardResetAfterMs) {
-      let running = [];
+      hardResetDone = true;
+      console.log(`  🔧 ${name} 的页面通道 ${Math.round(hardResetAfterMs / 1000)} 秒没上来 —— 清理残留进程和 profile 锁后重开`);
+      const r = await foxHardReset(name, base).catch(() => null);
+      console.log(`  🧹 已停环境${r && r.killed ? `、杀掉 ${r.killed} 个残留 camoufox` : ''}`
+        + `${r && r.lockRemoved ? '、删掉 parent.lock' : ''}，重新启动`);
       try {
-        running = await foxRunning(base);
-      } catch (_) { /* 查不到就不动它 */ }
-      if (running.includes(name)) {
-        hardResetDone = true;
-        console.log(`  🔧 ${name} 的进程在、但控制通道 ${Math.round(hardResetAfterMs / 1000)} 秒没上来 —— 清理残留进程和 profile 锁后重开`);
-        const r = await foxHardReset(name, base).catch(() => null);
-        console.log(`  🧹 已停环境${r && r.killed ? `、杀掉 ${r.killed} 个残留 camoufox` : ''}`
-          + `${r && r.lockRemoved ? '、删掉 parent.lock' : ''}，重新启动`);
-        try {
-          await foxLaunch(name, base, { focus });
-        } catch (_) { /* 继续等到超时 */ }
-        continue;
-      }
+        await foxLaunch(name, base, { focus });
+      } catch (_) { /* 继续等到超时 */ }
+      continue;
     }
     // 进程根本没在跑（被上一轮的 stop 挤掉了）→ 补一次 launch，最多 3 次
     if (relaunched < 3 && Date.now() - t0 > 8000) {
@@ -296,6 +320,7 @@ export async function launchAndWait(name, base, { focus = false, readySeconds = 
       } catch (_) { /* 查不到就继续等 */ }
       if (!running.includes(name)) {
         relaunched++;
+        console.log(`  🔄 ${name} 不在运行列表里，补启动一次（第 ${relaunched} 次）`);
         try {
           await foxLaunch(name, base, { focus });
         } catch (_) { /* 继续等 */ }
@@ -305,7 +330,7 @@ export async function launchAndWait(name, base, { focus = false, readySeconds = 
   return {
     success: false,
     message: `环境 ${name} 的浏览器进程起来了，但页面 ${readySeconds} 秒都没就绪`
-      + `（上一个环境可能还在收尾）。这一轮跳过它，下一轮会重新开。`,
+      + `（已清理残留进程并重开过一次；这一轮跳过它，下一轮会重新开）。`,
   };
 }
 

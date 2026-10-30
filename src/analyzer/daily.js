@@ -140,8 +140,10 @@ export async function generateDailyReport(date, todayResults, db) {
   }
 
   // TG 没配 ≠ 推送失败：不能再把"没配 token"混进"未确认送达"里（会让人以为推送坏了）
+  // ⚠️ 措辞别带「失败」两个字：日志级别是按关键词判的（`失败：`/`Error:`/`...失败`），
+  //    2026-10-30 就因为这句里含「不算推送失败」被记成一条 [ERROR]，界面上多出一个假错误。
   if (!isTelegramConfigured()) {
-    console.log('  ℹ️ TG 未配置（缺 TG_BOT_TOKEN）：日报只留在本地日志，不算推送失败');
+    console.log('  ℹ️ TG 未配置（缺 TG_BOT_TOKEN）：日报只留在本地日志，不算推送异常');
     return { sent: false, skipped: true, text };
   }
 

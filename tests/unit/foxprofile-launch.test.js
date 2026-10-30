@@ -159,3 +159,40 @@ test('进程在、控制通道一直不上来 → 自动清理（停环境 + 删
     if (oldData === undefined) delete process.env.FOXPROFILE_DATA; else process.env.FOXPROFILE_DATA = oldData;
   }
 });
+
+test('启动本身超时（LAUNCH_FAILED + Timeout 180000ms）→ 清理后重开一次，别直接判死', async () => {
+  const os = await import('node:os');
+  const fsmod = await import('node:fs');
+  const pathmod = await import('node:path');
+  const dataDir = fsmod.mkdtempSync(pathmod.join(os.tmpdir(), 'foxdata-'));
+  fsmod.mkdirSync(pathmod.join(dataDir, 'TK09'), { recursive: true });
+  fsmod.writeFileSync(pathmod.join(dataDir, 'TK09', 'parent.lock'), '');
+  const oldData = process.env.FOXPROFILE_DATA;
+  process.env.FOXPROFILE_DATA = dataDir;
+
+  let launchCalls = 0;
+  const fox = await fakeFox((p) => {
+    if (p.includes('/launch')) {
+      launchCalls++;
+      // 第一次复现 2026-10-30 20:18 TK09 的真实形态：耗满 180 秒后报超时
+      return launchCalls === 1
+        ? { status: 500, body: { success: false, message: 'LAUNCH_FAILED: TimeoutError: BrowserType.launch_persistent_context: Timeout 180000ms exceeded' } }
+        : { body: { success: true, message: 'Browser started' } };
+    }
+    if (p.includes('/stop')) return { body: { success: true } };
+    if (p.includes('/page/tabs')) return launchCalls === 1 ? { status: 503, body: TABS_STARTING } : { body: TABS_OK };
+    if (p.endsWith('/browser')) return { body: { running: [] } };
+    return { body: {} };
+  });
+  try {
+    const d = await launchAndWait('TK09', fox.base, { readySeconds: 5, pollMs: 20, hardResetAfterMs: 100000 });
+    assert.equal(d.success, true, '清理后第二次启动成功就该算成功');
+    assert.equal(launchCalls, 2, '必须重开一次');
+    assert.equal(fox.count('/stop'), 1, '重开前必须先停干净');
+    assert.equal(fsmod.existsSync(pathmod.join(dataDir, 'TK09', 'parent.lock')), false, 'parent.lock 必须被删掉');
+  } finally {
+    await fox.close();
+    fsmod.rmSync(dataDir, { recursive: true, force: true });
+    if (oldData === undefined) delete process.env.FOXPROFILE_DATA; else process.env.FOXPROFILE_DATA = oldData;
+  }
+});
