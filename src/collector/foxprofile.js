@@ -13,9 +13,16 @@
  */
 import axios from 'axios';
 import fs from 'node:fs';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
 
 const DEFAULT_BASE = 'http://127.0.0.1:8000/api/v1';
 const NAME_SEG = (name) => encodeURIComponent(String(name || ''));
+
+/** FoxProfile 的 camoufox_data 目录（每个环境一个子目录） */
+function foxDataDir() {
+  return process.env.FOXPROFILE_DATA || 'E:/software/FoxProfile/camoufox_data';
+}
 
 /** 接口地址（配置里可覆盖，默认本机 8000 端口） */
 export function foxBase(base) {
@@ -166,6 +173,71 @@ export async function foxPageReady(name, base) {
 }
 
 /**
+ * 硬重置一个"卡住的启动"：停环境 → （还在 running 就）按 profile 路径杀残留 camoufox
+ * → 删掉 Firefox 的 `parent.lock` → 让调用方重新 launch。
+ *
+ * ⚠️ 2026-10-30 实测（这功能就是为它写的）：12:23 / 12:26 / 12:30 连续三次启动 TK02
+ * 都卡在 `BrowserType.launch_persistent_context: Timeout 180000ms exceeded` ——
+ * 窗口开出来了、`/browser` 说 running，但控制通道 150 秒都不登记，任何页面动作都是
+ * 503 `Browser is still starting`。原因是前一次失败留下的 camoufox / runner.py 进程
+ * 还在占着这个 profile（`parent.lock` 也在），新的 Firefox 起不来。
+ * 手工清掉残留进程 + 删 lock 之后，同样的 launch **10.1 秒**就绪。
+ *
+ * 只在"等了很久还不就绪"这条路上调用，正常启动完全不受影响。
+ */
+export async function foxHardReset(name, base, { waitMs = 6000 } = {}) {
+  const out = { stopped: false, killed: 0, lockRemoved: false };
+  if (!name) return out;
+  try {
+    await foxStop(name, base);
+    out.stopped = true;
+  } catch (_) { /* 停不掉也继续往下清 */ }
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500));
+    let running = [];
+    try {
+      running = await foxRunning(base);
+    } catch (_) {
+      break;
+    }
+    if (!running.includes(name)) break;
+  }
+  let stillRunning = false;
+  try {
+    stillRunning = (await foxRunning(base)).includes(name);
+  } catch (_) { /* 查不到就当没在跑 */ }
+  if (stillRunning) out.killed = await killCamoufoxFor(name);
+  // Firefox 的 profile 锁：进程被强杀后不会自己清，留着会让下一次启动永远等不到握手
+  try {
+    const lock = path.join(foxDataDir(), String(name), 'parent.lock');
+    if (fs.existsSync(lock)) {
+      fs.rmSync(lock, { force: true });
+      out.lockRemoved = true;
+    }
+  } catch (_) { /* 删不掉就交给下一次尝试 */ }
+  return out;
+}
+
+/** 按命令行里的 profile 路径杀掉某个环境残留的 camoufox（只杀这一个环境，别误伤） */
+async function killCamoufoxFor(name) {
+  if (process.platform !== 'win32') return 0;
+  const seg = String(name).replace(/['"]/g, '');
+  const ps = [
+    `$n='${seg}';`,
+    "$p = Get-CimInstance Win32_Process -Filter \"Name='camoufox.exe'\" |",
+    "  Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape(\"camoufox_data\\\" + $n) };",
+    'foreach ($x in $p) { try { Stop-Process -Id $x.ProcessId -Force -ErrorAction Stop; $c++ } catch {} }',
+    'if ($c) { Write-Output $c }',
+  ].join(' ');
+  return await new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, timeout: 20000 },
+      (err, stdout) => resolve(err ? 0 : (Number(String(stdout).trim()) || 0)));
+  });
+}
+
+/**
  * 启动环境，等它**真的能用**（不是"进程起来了"）。
  *
  * ⚠️ 2026-10-20 23:31 实测：`launch?wait=true` 仍可能立刻返回
@@ -179,7 +251,7 @@ export async function foxPageReady(name, base) {
  * @param {number} readySeconds 等页面通道就绪的上限（默认 150s：留够 11 个号串行的余量）
  * @param {number} pollMs 轮询间隔（单测里调小，别真等 2 秒）
  */
-export async function launchAndWait(name, base, { focus = false, readySeconds = 150, pollMs = 2000 } = {}) {
+export async function launchAndWait(name, base, { focus = false, readySeconds = 150, pollMs = 2000, hardResetAfterMs = 60000 } = {}) {
   const t0 = Date.now();
   let d = await foxLaunch(name, base, { focus }).catch((e) => ({ success: false, message: e.message }));
   // 真失败（端口/配置/环境不存在）立刻报，别拿 150 秒去等一个起不来的东西
@@ -190,11 +262,31 @@ export async function launchAndWait(name, base, { focus = false, readySeconds = 
 
   console.log(`  ⏳ ${name} 进程已起、页面通道还没就绪，等它（最多 ${readySeconds} 秒）...`);
   let relaunched = 0;
+  let hardResetDone = false;
   while (Date.now() - t0 < readySeconds * 1000) {
     await new Promise((r) => setTimeout(r, pollMs));
     if (await foxPageReady(name, base)) {
       console.log(`  ✅ ${name} 已就绪（等了 ${Math.round((Date.now() - t0) / 1000)} 秒）`);
       return { success: true };
+    }
+    // 「进程在、控制通道一直不上来」= 卡住的启动（残留进程占着 profile），清理后重开一次。
+    // 只做一次，别把 150 秒全花在反复清理上。
+    if (!hardResetDone && Date.now() - t0 > hardResetAfterMs) {
+      let running = [];
+      try {
+        running = await foxRunning(base);
+      } catch (_) { /* 查不到就不动它 */ }
+      if (running.includes(name)) {
+        hardResetDone = true;
+        console.log(`  🔧 ${name} 的进程在、但控制通道 ${Math.round(hardResetAfterMs / 1000)} 秒没上来 —— 清理残留进程和 profile 锁后重开`);
+        const r = await foxHardReset(name, base).catch(() => null);
+        console.log(`  🧹 已停环境${r && r.killed ? `、杀掉 ${r.killed} 个残留 camoufox` : ''}`
+          + `${r && r.lockRemoved ? '、删掉 parent.lock' : ''}，重新启动`);
+        try {
+          await foxLaunch(name, base, { focus });
+        } catch (_) { /* 继续等到超时 */ }
+        continue;
+      }
     }
     // 进程根本没在跑（被上一轮的 stop 挤掉了）→ 补一次 launch，最多 3 次
     if (relaunched < 3 && Date.now() - t0 > 8000) {

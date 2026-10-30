@@ -251,3 +251,26 @@ test('toastRegistered：关注/取关', () => {
   assert.match(toastRegistered('follow', 'Unfollowed').why, /Unfollowed/);
   assert.equal(toastRegistered('follow', 'Something went wrong'), null);
 });
+
+test('翻页卡住 → 按"卡了多少次"说清楚，而不是含糊的"翻页没生效"（2026-10-30 事故）', () => {
+  const recs = Array.from({ length: 11 }, (_, i) => ({ played: true, watchedSec: 14, actions: [], key: `video-${i}` }));
+  const r = judgeWarmupRun(recs, null, { stuck: 20 });
+  assert.equal(r.ok, false);
+  assert.equal(r.stuck, 20);
+  const msg = r.problems.join('; ');
+  assert.ok(msg.includes('翻页卡住 20 次'), msg);
+  assert.ok(msg.includes('只看到 11 种不同视频'), msg);
+  assert.ok(!msg.includes('翻页多半没生效'), '有卡住证据时不该再报含糊说法: ' + msg);
+});
+
+test('卡住 1~2 次算抖一下，不判失败（不能因为网络慢一次就报红）', () => {
+  const recs = Array.from({ length: 12 }, (_, i) => ({ played: true, watchedSec: 15, actions: [], key: `video-${i}` }));
+  const r = judgeWarmupRun(recs, null, { stuck: 2 });
+  assert.equal(r.ok, true, r.problems.join('; '));
+  assert.equal(r.stuck, 2);
+});
+
+test('总结行会带上"卡住N次"（日志/回报一眼能看出是翻页问题）', () => {
+  const line = summarizeWarmup({ videos: 11, playedCount: 11, watchedSec: 160, stuck: 20, counts: { like: 1, favorite: 0, follow: 0, comment: 0 } }, 'TK02');
+  assert.match(line, /卡住20次/);
+});

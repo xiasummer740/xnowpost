@@ -123,3 +123,39 @@ test('真失败（环境不存在/端口配错）立刻报，不许拿"等待"�
     await fox.close();
   }
 });
+
+test('进程在、控制通道一直不上来 → 自动清理（停环境 + 删 parent.lock）后重开，并最终就绪', async () => {
+  const os = await import('node:os');
+  const fsmod = await import('node:fs');
+  const pathmod = await import('node:path');
+  const dataDir = fsmod.mkdtempSync(pathmod.join(os.tmpdir(), 'foxdata-'));
+  const envDir = pathmod.join(dataDir, 'TK02');
+  fsmod.mkdirSync(envDir, { recursive: true });
+  fsmod.writeFileSync(pathmod.join(envDir, 'parent.lock'), '');
+  const oldData = process.env.FOXPROFILE_DATA;
+  process.env.FOXPROFILE_DATA = dataDir;
+
+  let stopped = false;
+  let tabsHits = 0;
+  const fox = await fakeFox((p, m) => {
+    if (p.includes('/stop')) { stopped = true; return { body: { success: true } }; }
+    if (p.includes('/launch')) return { status: 202, body: { success: true, message: 'still starting' } };
+    if (p.includes('/page/tabs')) {
+      // 清理之前永远 503；清理（stop）之后才真的就绪
+      tabsHits++;
+      return stopped ? { body: TABS_OK } : { status: 503, body: TABS_STARTING };
+    }
+    if (p.endsWith('/browser')) return { body: { running: stopped ? [] : ['TK02'] } };
+    return { body: {} };
+  });
+  try {
+    const d = await launchAndWait('TK02', fox.base, { readySeconds: 6, pollMs: 20, hardResetAfterMs: 150 });
+    assert.equal(d.success, true, '清理之后必须重开成功');
+    assert.equal(fox.count('/stop'), 1, '卡住的启动必须被 foxHardReset 停一次');
+    assert.equal(fsmod.existsSync(pathmod.join(envDir, 'parent.lock')), false, 'parent.lock 必须被删掉');
+  } finally {
+    await fox.close();
+    fsmod.rmSync(dataDir, { recursive: true, force: true });
+    if (oldData === undefined) delete process.env.FOXPROFILE_DATA; else process.env.FOXPROFILE_DATA = oldData;
+  }
+});

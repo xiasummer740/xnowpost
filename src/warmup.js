@@ -144,8 +144,11 @@ export function toastRegistered(kind, toastText) {
  *  - 一条视频都没真正播放（playedCount===0）→ 不算成功（页面可能没打开/播放被拦）；
  *  - 看了但总时长几乎为 0 → 也不算成功；
  *  - 动作数超过预算 → 报问题（说明代码没守住上限）。
+ *  - 翻页卡住（`extra.stuck`）→ 单独说清楚"卡了多少次、只看到几种内容"，
+ *    因为 2026-10-30 的事故里，TK02/TK05 各卡了 20+ 次，日志却只说"翻页多半没生效"，
+ *    看的人以为是"播放被限/登录掉了"，白查半小时。
  */
-export function judgeWarmupRun(records = [], budgets = null) {
+export function judgeWarmupRun(records = [], budgets = null, extra = {}) {
   const list = Array.isArray(records) ? records : [];
   const played = list.filter((r) => r && r.played);
   const watchedSec = list.reduce((s, r) => s + (Number(r && r.watchedSec) || 0), 0);
@@ -160,9 +163,14 @@ export function judgeWarmupRun(records = [], budgets = null) {
   // 「我没看到你滑动刷视频」——当时用的 window.scrollBy 在固定播放器页面上根本不换视频）
   const keys = new Set(list.map((r) => (r && r.key) || '').filter(Boolean));
   const distinct = keys.size;
+  const stuck = Math.max(0, Number(extra && extra.stuck) || 0);
   if (!list.length) problems.push('一条视频都没看（页面可能没打开）');
   else if (!played.length) problems.push('没有一条视频真的在播放（播放被拦或白屏）');
-  if (played.length >= 3 && distinct && distinct < Math.ceil(played.length / 2)) {
+  // 有"翻页卡住"的实测证据时，直接按它归因；重复的那些已经不再记账了，
+  // 所以这里不能再说"看了 N 条只出现 M 种"（N 已经等于不重复的条数）。
+  if (stuck >= 3) {
+    problems.push(`翻页卡住 ${stuck} 次（点箭头、按 ↓ 都推不动），只看到 ${distinct} 种不同视频`);
+  } else if (played.length >= 3 && distinct && distinct < Math.ceil(played.length / 2)) {
     problems.push(`看了 ${played.length} 条但只出现 ${distinct} 种不同视频，翻页多半没生效`);
   }
   if (list.length && watchedSec < 5) problems.push(`总观看只有 ${watchedSec} 秒，基本等于没看`);
@@ -177,6 +185,7 @@ export function judgeWarmupRun(records = [], budgets = null) {
     videos: list.length,
     playedCount: played.length,
     distinctVideos: distinct,
+    stuck,
     watchedSec,
     counts,
     problems,
@@ -194,7 +203,8 @@ export function summarizeWarmup(result, env) {
     if (r.counts.follow) act.push(`关注${r.counts.follow}`);
     if (r.counts.comment) act.push(`评论${r.counts.comment}`);
   }
-  return `${who}看了 ${r.videos || 0} 条（真播 ${r.playedCount || 0} 条，共 ${Math.round((r.watchedSec || 0) / 1) || 0} 秒）${act.length ? ' · ' + act.join(' ') : ' · 无动作'}`;
+  const stuck = r.stuck ? ` · 卡住${r.stuck}次` : '';
+  return `${who}看了 ${r.videos || 0} 条（真播 ${r.playedCount || 0} 条，共 ${Math.round((r.watchedSec || 0) / 1) || 0} 秒）${act.length ? ' · ' + act.join(' ') : ' · 无动作'}${stuck}`;
 }
 
 /**

@@ -252,37 +252,59 @@ async function watchFor(page, seconds) {
   return { watchedSec: Math.round(watching), last };
 }
 
-/** 下一条：滚动一屏（真人刷 TikTok 就是这样往下翻） */
-async function nextVideo(page) {
+/**
+ * 下一条：先点箭头；箭头点了没换内容，就换一种输入方式再推（↓ 键、连点）。
+ *
+ * 2026-10-30 事故：原来只点箭头、每次等 1.8~2.7 秒，3 次不换就当失败。
+ * 实测 `02:00` 那轮 62 次"点了没换内容"全集中在 TK01/02/03/05（TK02 22 次、TK05 20 次），
+ * 而 TikTok 的箭头在视频还没加载完时经常"点了不响应" —— 单纯多点几次没用，
+ * 换输入方式（键盘 ↓）往往一下就过去了。
+ */
+async function nextVideo(page, { waits = [1200, 2200, 3400] } = {}) {
   const before = await page.evaluate(READ_VIDEO).catch(() => null);
   const beforeKey = before && before.video ? before.video.key : '';
-  for (let i = 0; i < 3; i++) {
-    const btn = await page.evaluate(() => {
-      for (const el of document.querySelectorAll('[data-e2e="feed-navigation-next"]')) {
-        const r = el.getBoundingClientRect();
-        const cx = r.x + r.width / 2;
-        const cy = r.y + r.height / 2;
-        if (cx > 0 && cx < innerWidth && cy > 0 && cy < innerHeight) return { cx: Math.round(cx), cy: Math.round(cy) };
-      }
-      return null;
-    }).catch(() => null);
-    if (btn) {
-      await page.mouse.move(btn.cx, btn.cy).catch(() => {});
-      await sleep(120 + rng() * 200);
-      await page.mouse.click(btn.cx, btn.cy).catch(() => {});
-    } else {
-      // 箭头没渲染出来时兜底点一次 DOM（不理想，但比卡在同一个视频上强）
-      await page.evaluate(() => {
-        const el = document.querySelector('[data-e2e="feed-navigation-next"]');
-        if (el) el.click();
-      }).catch(() => {});
-    }
-    await page.waitForTimeout(1800 + rng() * 900);
+  for (let i = 0; i < waits.length; i++) {
+    await advanceFeed(page, i);
+    await page.waitForTimeout(waits[i] + Math.round(rng() * 400));
     const after = await page.evaluate(READ_VIDEO).catch(() => null);
     const afterKey = after && after.video ? after.video.key : '';
     if (afterKey && afterKey !== beforeKey) return true;
   }
   return false;
+}
+
+/** 推一次页面：第 0 次点箭头，第 1 次换键盘 ↓，第 2 次连点两下 */
+async function advanceFeed(page, round) {
+  const arrow = await page.evaluate(() => {
+    for (const el of document.querySelectorAll('[data-e2e="feed-navigation-next"]')) {
+      const r = el.getBoundingClientRect();
+      const cx = r.x + r.width / 2;
+      const cy = r.y + r.height / 2;
+      if (cx > 0 && cx < innerWidth && cy > 0 && cy < innerHeight) return { cx: Math.round(cx), cy: Math.round(cy) };
+    }
+    return null;
+  }).catch(() => null);
+
+  if (round === 1) {
+    // TikTok 桌面版支持 ↓ 切下一条；箭头卡住时它经常还能用
+    await page.keyboard.press('ArrowDown').catch(() => {});
+    return;
+  }
+  if (!arrow) {
+    // 箭头没渲染出来时兜底点一次 DOM（不理想，但比卡在同一个视频上强）
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-e2e="feed-navigation-next"]');
+      if (el) el.click();
+    }).catch(() => {});
+    return;
+  }
+  await page.mouse.move(arrow.cx, arrow.cy).catch(() => {});
+  await page.waitForTimeout(120 + Math.round(rng() * 200));
+  await page.mouse.click(arrow.cx, arrow.cy).catch(() => {});
+  if (round >= 2) {
+    await page.waitForTimeout(220);
+    await page.mouse.click(arrow.cx, arrow.cy).catch(() => {});
+  }
 }
 
 function log(msg) {
@@ -300,6 +322,9 @@ async function warmOne(env, minutes) {
   });
   const caps = { ...budgets };   // 开跑前的预算 = 本次硬上限（判定用，别拿跑完扣减过的值）
   const records = [];
+  // 翻页卡住的次数：判定在 try/finally 之后才做，所以必须声明在外面（2026-10-30 踩过：
+  // 声明在 try 里 → 判定那行直接 `stuckEvents is not defined`，整轮白跑）
+  let stuckEvents = 0;
   const startedAt = Date.now();
   log(`🏃 ${env} 开始养号（${minutes} 分钟，预算：赞≤${budgets.likes} 藏≤${budgets.favorites} 关注≤${budgets.follows}${DRY ? '｜演练：不看也不点' : ''}）`);
 
@@ -311,7 +336,32 @@ async function warmOne(env, minutes) {
     let videosLeft = MAX_VIDEOS;
     let minutesLeft = minutes;
     let noPlayStreak = 0;   // 连续几条放不起来
+    let stuckStreak = 0;    // 连续几次推不动页面（总次数 stuckEvents 在外面声明）
+    let lastKey = '';       // 刚看完那条的指纹：推不动时不能把同一条视频再记一遍
+    let loops = 0;          // 兜底：防止"推不动 → 又看同一条"吃掉整个时间预算
     while (videosLeft > 0 && Date.now() - startedAt < budgetMs) {
+      if (++loops > MAX_VIDEOS * 6) {
+        log('   ⚠️ 循环次数到上限（一直在同一条上推不动），本轮提前结束');
+        break;
+      }
+      // 上一条看完后没推动页面：这条视频已经看过了，不重复看、不重复记账，先把页面推过去
+      if (lastKey) {
+        const peek = await page.evaluate(READ_VIDEO).catch(() => null);
+        const peekKey = peek && peek.video ? peek.video.key : '';
+        if (peekKey && peekKey === lastKey) {
+          stuckStreak++;
+          stuckEvents++;
+          log(`   ↻ 还停在第 ${records.length} 条（推不动，连续 ${stuckStreak} 次）—— 不重复记账，再推一次`);
+          if (await nextVideo(page)) {
+            stuckStreak = 0;
+          } else if (stuckStreak >= 4) {
+            log('   ❌ 连续 4 次都推不动：这个号的推荐页现在不换内容，本轮提前结束');
+            break;
+          }
+          continue;
+        }
+      }
+
       const remainingSec = Math.max(0, Math.round((budgetMs - (Date.now() - startedAt)) / 1000));
       const watchSec = planWatchSeconds(rng, WARMUP_DEFAULTS.watchSec, remainingSec);
       if (!watchSec) break;
@@ -367,19 +417,21 @@ async function warmOne(env, minutes) {
 
       records.push({ played: true, watchedSec, actions, key: keyNow });
       videosLeft--;
+      if (keyNow) lastKey = keyNow;
       minutesLeft = Math.round((budgetMs - (Date.now() - startedAt)) / 60000);
       const tag = keyNow ? `「${keyNow.slice(0, 18)}」` : '';
       log(`   ▶️ 第 ${records.length} 条 ${tag}：看 ${watchedSec} 秒${actions.length ? ' · ' + actions.join('+') : ''}（还剩约 ${minutesLeft} 分钟）`);
 
       const moved = await nextVideo(page);
-      if (!moved) log('   ⚠️ 点「下一个」后内容没变（可能卡在同一条），继续重试下一轮');
+      if (moved) stuckStreak = 0;
+      else log('   ⚠️ 点「下一个」后内容没变（可能卡在同一条），下一轮换 ↓ 键再推');
     }
   } finally {
     await closeFoxPage(env, BASE);
   }
 
   // 判定用**开跑前的预算**当上限（budgets 跑到后面会被扣减，不能拿扣完的值当上限）
-  const verdict = judgeWarmupRun(records, caps);
+  const verdict = judgeWarmupRun(records, caps, { stuck: stuckEvents });
   log(`${verdict.ok ? '✅' : '⚠️'} ${summarizeWarmup(verdict, env)}`);
   if (verdict.problems.length) log(`   ↳ ${verdict.problems.join('；')}`);
   return { env, minutes, dryRun: DRY, startedAt: new Date(startedAt).toISOString(), ...verdict, records };
