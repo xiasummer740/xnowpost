@@ -102,16 +102,33 @@ const READ_VIDEO = () => {
     const el = [...document.querySelectorAll('video')][idx >= 0 ? idx : 0];
     const item = el && el.closest('[data-e2e="recommend-list-item-container"]');
     const src = String((el && (el.currentSrc || el.src)) || '');
-    const m = src.match(/\/video\/(\d+)/) || src.match(/\/([0-9a-f]{16,})\./i) || src.match(/\/([A-Za-z0-9_-]{16,})\?/);
-    if (m) key = `v${m[1]}`;
+    // ① 卡片里的 `/@user/video/<id>` 链接最可靠（TikTok 的播放器 src 常是 blob:，取不到 id）
+    const link = item && item.querySelector('a[href*="/video/"]');
+    const lm = link ? String(link.getAttribute('href') || '').match(/\/video\/(\d+)/) : null;
+    if (lm) key = `v${lm[1]}`;
+    // ② 视频地址里的 id
+    if (!key) {
+      const m = src.match(/\/video\/(\d+)/) || src.match(/\/([0-9a-f]{16,})\./i) || src.match(/\/([A-Za-z0-9_-]{16,})\?/);
+      if (m) key = `v${m[1]}`;
+    }
+    // ③ blob 地址：每条视频的 UUID 都不同，足够用来判断"页面有没有翻过去"
+    //    ⚠️ 2026-10-30 实测 TK05：src 全是 `blob:https://www.tiktok.com/<uuid>`，
+    //    ①② 都拿不到 → 指纹退化成常量 `|` → nextVideo 每次都说"没换内容"，
+    //    于是 10 分钟只看了 2 种视频、被误判成"翻页没生效"。
+    if (!key) {
+      const bm = src.match(/^blob:https?:\/\/[^/]+\/([0-9a-f-]{8,})/i);
+      if (bm) key = `b${bm[1].replace(/-/g, '').slice(0, 10)}`;
+    }
+    // ④ 最后才退回「作者 + 正文」。两边都空就**明确记成空**，别写成一个假的常量 `|`
     if (!key && item) {
       const a = item.querySelector('a[href^="/@"]');
       const author = a ? String(a.getAttribute('href') || '') : '';
-      key = `${author}|${(item.innerText || '').replace(/\s+/g, ' ').slice(0, 80)}`;
+      const txt = (item.innerText || '').replace(/\s+/g, ' ').slice(0, 80);
+      if (author || txt) key = `${author}|${txt}`;
     }
   }
   return {
-    video: v ? { ...v, key } : null,
+    video: v ? { ...v, key, sig: String(([...document.querySelectorAll('video')][idx >= 0 ? idx : 0] || {}).currentSrc || '') } : null,
     count: vis.length,
     atBottom: innerHeight + scrollY >= document.body.scrollHeight - 200,
   };
@@ -253,6 +270,16 @@ async function watchFor(page, seconds) {
 }
 
 /**
+ * 当前视频的指纹：优先用 key（视频 id / blob uuid / 作者+正文），
+ * key 取不到时退回原始 src —— 宁可用来比"有没有换"，也不要拿空串当"没换"。
+ */
+function fpOf(r) {
+  const v = r && r.video;
+  if (!v) return '';
+  return v.key || v.sig || '';
+}
+
+/**
  * 下一条：先点箭头；箭头点了没换内容，就换一种输入方式再推（↓ 键、连点）。
  *
  * 2026-10-30 事故：原来只点箭头、每次等 1.8~2.7 秒，3 次不换就当失败。
@@ -262,12 +289,12 @@ async function watchFor(page, seconds) {
  */
 async function nextVideo(page, { waits = [1200, 2200, 3400] } = {}) {
   const before = await page.evaluate(READ_VIDEO).catch(() => null);
-  const beforeKey = before && before.video ? before.video.key : '';
+  const beforeKey = fpOf(before);
   for (let i = 0; i < waits.length; i++) {
     await advanceFeed(page, i);
     await page.waitForTimeout(waits[i] + Math.round(rng() * 400));
     const after = await page.evaluate(READ_VIDEO).catch(() => null);
-    const afterKey = after && after.video ? after.video.key : '';
+    const afterKey = fpOf(after);
     if (afterKey && afterKey !== beforeKey) return true;
   }
   return false;
@@ -347,7 +374,7 @@ async function warmOne(env, minutes) {
       // 上一条看完后没推动页面：这条视频已经看过了，不重复看、不重复记账，先把页面推过去
       if (lastKey) {
         const peek = await page.evaluate(READ_VIDEO).catch(() => null);
-        const peekKey = peek && peek.video ? peek.video.key : '';
+        const peekKey = fpOf(peek);
         if (peekKey && peekKey === lastKey) {
           stuckStreak++;
           stuckEvents++;
