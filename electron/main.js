@@ -1901,6 +1901,56 @@ function setupIPC() {
     return out;
   });
 
+  /**
+   * 最近几天的已完成轮次（首页「已完成任务」表，2026-11-01 用户要求）。
+   *
+   * 数据源是 `data/runs/*.json` —— 调度器跑完就把**逐号结论**写进记录的 `accounts` 字段了
+   * （`src/run-accounts.js` 解析，不靠事后 grep 日志文本）。这里只做读取 + 排序 + 限流。
+   * 老记录没有 `accounts` 字段，返回空数组，界面显示「这轮没记逐号结论」即可。
+   */
+  ipcMain.handle('runs:recent', (_e, args = {}) => {
+    const days = Math.min(30, Math.max(1, Number(args?.days) || 7));
+    const limit = Math.min(200, Math.max(1, Number(args?.limit) || 60));
+    const dir = path.join(DATA_DIR, RUNS_REL);
+    const since = new Date(Date.now() - days * 86400000).toLocaleDateString('sv-SE');
+    const rows = [];
+    let names = [];
+    try {
+      names = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+    } catch (_) {
+      return [];
+    }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      if (name.slice(0, 10) < since) continue;   // 文件名以日期开头，直接比字符串
+      let rec = null;
+      try {
+        rec = fs.readJsonSync(path.join(dir, name));
+      } catch (_) {
+        continue;   // 坏记录跳过，不影响整张表
+      }
+      if (!rec || typeof rec !== 'object') continue;
+      const startedMs = Number(rec.startedAtMs) || 0;
+      const accounts = Array.isArray(rec.accounts) ? rec.accounts : [];
+      rows.push({
+        file: name,
+        jobId: Number(rec.jobId) || 0,
+        date: String(rec.date || name.slice(0, 10)),
+        time: startedMs ? new Date(startedMs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '',
+        startedAtMs: startedMs,
+        finishedAtMs: Number(rec.finishedAtMs) || 0,
+        label: String(rec.label || ''),
+        mode: String(rec.mode || ''),
+        result: String(rec.result || 'failed'),
+        reason: String(rec.reason || ''),
+        durationMs: Number(rec.durationMs) || 0,
+        accounts,
+      });
+    }
+    rows.sort((a, b) => (b.startedAtMs || 0) - (a.startedAtMs || 0));
+    return rows.slice(0, limit);
+  });
+
   ipcMain.handle('schedule:list', () => {
     const file = scheduleFile();
     if (!fs.existsSync(file)) return [];

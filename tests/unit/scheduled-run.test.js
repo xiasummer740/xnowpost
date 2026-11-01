@@ -127,6 +127,25 @@ test('buildRunRecord：字段齐全、耗时正确、非法结果码回落到 fa
   assert.equal(bad.result, 'failed');
 });
 
+test('buildRunRecord：逐号结论落进 accounts，脏数据被清洗（首页「已完成任务」表靠它）', () => {
+  const rec = buildRunRecord({
+    job: { id: 23, label: '养号', mode: 'warmup' },
+    accounts: [
+      { env: 'TK01', level: 'ok', text: '✅ TK01 看了 40 条' },
+      { env: 'TK05', level: 'warn', text: '⚠️ TK05 看了 4 条 · 卡住11次' },
+      { env: 'TK09', level: 'error', text: '❌ TK09 养号失败：页面没就绪' },
+      { env: '', level: 'ok', text: '没有环境名的丢掉' },        // 丢
+      { env: 'TK10', level: 'weird', text: '级别非法回落 ok' },   // 回落
+      null,                                                     // 丢
+    ],
+    date: '2026-11-01',
+  });
+  assert.equal(rec.accounts.length, 4);
+  assert.deepEqual(rec.accounts.map((a) => a.env), ['TK01', 'TK05', 'TK09', 'TK10']);
+  assert.equal(rec.accounts[3].level, 'ok');
+  assert.deepEqual(buildRunRecord({}).accounts, [], '没传就是空数组，不要 undefined');
+});
+
 test('runRecordFileName：按名字排序 = 按时间排序，且带任务 id', () => {
   const mk = (ms) => buildRunRecord({ job: { id: 7 }, startedAtMs: ms, date: '2026-10-19' });
   const a = runRecordFileName(mk(Date.parse('2026-10-19T00:30:00+08:00')));

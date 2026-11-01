@@ -111,6 +111,11 @@ export function fmtCost(n) {
 /**
  * 组装一条轮次记录（纯函数，不碰磁盘）。
  * 字段名就是主进程要读的名字，改字段先改 `tests/unit/scheduled-run.test.js`。
+ *
+ * `accounts`（2026-11-01 加）：这一轮**逐号**的结论，形如
+ *   `[{ env: 'TK05', level: 'warn', text: '⚠️ TK05 看了 4 条…' }]`
+ * 由 `src/run-accounts.js` 从子进程输出解析而来（不是靠搜日志文字判成败）。
+ * 首页「已完成任务」表就是读它，所以只存结论，不存整段日志。
  */
 export function buildRunRecord({
   job = {},
@@ -121,9 +126,19 @@ export function buildRunRecord({
   date = '',
   session = '',
   logFile = '',
+  accounts = [],
 } = {}) {
   const startedAt = Number(startedAtMs) || Date.now();
   const finishedAt = Number(finishedAtMs) || startedAt;
+  // 只留三样：环境名 / 级别 / 一句人话。行数（11 个号）和长度都收着点，别让记录文件变日志副本。
+  const accs = (Array.isArray(accounts) ? accounts : [])
+    .filter((a) => a && a.env)
+    .slice(0, 30)
+    .map((a) => ({
+      env: String(a.env).slice(0, 12),
+      level: ['ok', 'warn', 'error'].includes(a.level) ? a.level : 'ok',
+      text: String(a.text || '').slice(0, 120),
+    }));
   return {
     v: 1,
     jobId: Number.isFinite(Number(job.id)) ? Number(job.id) : null,
@@ -140,6 +155,7 @@ export function buildRunRecord({
     date: String(date || ''),
     session: String(session || ''),
     logFile: String(logFile || ''),
+    accounts: accs,
   };
 }
 

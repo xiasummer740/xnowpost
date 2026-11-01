@@ -60,14 +60,31 @@
     看起来像"生成流程的最后一步"，实际发的是待发布列表里按上次选择的内容；
     按钮上又看不出条数，是"账号对了、内容错了"最容易发生的一格。**已删。**
   - 顶栏的「立即生成」—— 和卡片里那个一模一样，只是没有主题/配音/画面上下文。**已删。**
-- 现在**唯一常驻入口**是「待发布内容」卡片底部那一条（含旧会话 / 发到 / 条数 / 勾选 / 发布），
-  而且这张卡片**放在「内容生成」上面**（第一屏就能看到，不用滚动找发布）。
-  刚生成完的「完成横幅」保留（那是上下文里的下一步），文案和主按钮同一份。
+- **2026-11-01 用户口径改了：首页不再有常驻发布入口。**
+  「待发布内容这一块可以换成已完成的任务表，以及完成情况，哪些成功哪些失败」——
+  那张卡片连同底部的「含旧会话 / 发到 / 条数 / 勾选 / 发布」整块删掉，位置换成
+  「已完成任务」表（`runs:recent` IPC + `data/runs/*.json` 的 `accounts` 字段）。
+  发布现在只有两个入口：**生成完成后的横幅**（固定发当天最新 1 条到上次选的号）和
+  闹钟/批量任务。别再把待发布列表加回首页 —— 那是被明确删掉的东西。
+  教训：首页那块位置是稀缺资源，用户要的是「跑完的轮次成没成」，不是「还有多少条没发」。
 - 按钮上必须写**本轮实际会发几条**：`publishPlan.send`（`describePublishPlan` 返回）。
   以前今天 0 条待发时按钮写「发布 1 条」，点下去什么都不发 —— 现在写「发布 0 条 → 02 号」，
-  点它直接提示「勾上「含旧会话」，或直接在列表里点要发的那一条」，不再开一个「待发 0 条」的空确认卡。
-  `send = pick ? 勾选数 : min(条数, eligible)`（`eligible` = 勾了含旧会话就是全部待发数）。
+  点它直接提示「今天没有可发的内容」，不再开一个「待发 0 条」的空确认卡。
 - 单测：`tests/unit/publish-request.test.js` 里 4 条守着 `send`（0 条 / 含旧会话 / 候选不够 / 点名不受限）。
+
+### 已完成任务表（2026-11-01）
+- 数据链：`src/run-accounts.js#parseAccountResults()` 解析一轮子进程输出里的逐号行
+  （`✅ TK01 看了…` / `⚠️ TK05 …` / `❌ TK09 养号失败：…` / `✅ 批量 · 账号 01 …` / `✅ 01: {…}`），
+  调度器写轮次记录时存进 `accounts: [{env, level, text}]`；主进程 `runs:recent` 只读不算；
+  界面 `Dashboard.vue` 按日期分组渲染，点一行展开逐号原文。
+- **只认行首图标，不认关键词**（和 `electron/lib/log-lines.js` 同一套规矩）；
+  必须排除 `✅ 指纹环境 TKxx 已启动/已关闭` 这类环境开关行，否则刚失败的号会被覆盖成成功。
+- 老记录没有 `accounts` 字段：`node scripts/backfill-run-accounts.mjs [--dry-run]` 按
+  `[startedAtMs, finishedAtMs]` 时间窗回填（2026-11-01 实跑补齐 22 轮），必须带 `XNOWPOST_DATA_DIR`。
+- ⚠️ 表格里「点开明细」的那行必须写在 `v-for` 的**作用域内**：第一版把 `<tr v-if="expandedRun === r.file">`
+  挂在循环外面，渲染时报 `Cannot read properties of undefined (reading 'file')` → **整个首页白屏**
+  （侧栏还在，内容区全空）。排查手段：`XNOWPost.exe --remote-debugging-port=9223` +
+  `node scripts/_probe-console.mjs 9223`（Node 24 自带 WebSocket，直连 CDP 抓渲染进程报错）。
 ## 账号页（批量登录的界面入口）
 - `src/renderer/views/Accounts.vue`（路由 `/accounts`）读三个来源：
   FoxProfile `GET /profiles`（环境/代理）、`GET /profiles/{env}/cookies?format=json`（登录态）、

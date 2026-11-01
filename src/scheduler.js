@@ -8,6 +8,7 @@ import { writeJsonAtomicSync } from './fs-atomic.js';
 import { todayStr } from './organizer.js';
 import { checkLogins, resolveEnvs, allConfigEnvs, describeLogin } from './login-state.js';
 import { buildRunRecord, resultFromRunWithRetry, pickSession, writeRunRecord, RUNS_REL } from './scheduled-run.js';
+import { parseAccountResults } from './run-accounts.js';
 // 任务串行排队（不丢轮）+ 超时连进程树一起结束 + 跨进程互斥
 import { createSerialQueue } from './serial-queue.js';
 import { killTree } from './process-tree.js';
@@ -643,6 +644,9 @@ async function executeJob(job) {
         date: sess ? sess.date : todayStr(),
         session: sess ? sess.session : '',
         logFile: getLogPath(),
+        // 逐号结论（谁成了、谁没成）：首页「已完成任务」表读的就是这个字段。
+        // 解析在本轮输出上做，不依赖事后去 grep 日志文件。
+        accounts: parseAccountResults(lines),
       });
       writeRunRecord(dataPath(RUNS_REL), record);
     } catch (e) {

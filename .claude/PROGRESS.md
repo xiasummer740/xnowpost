@@ -1,5 +1,67 @@
 # 接力开发 — 新对话从这里开始
 
+## 3N（2026-11-01 11:55，v1.9.11）首页「待发布内容」→「已完成任务」表
+
+用户口径：「待发布内容这一块可以换成已完成的任务表，以及完成情况，哪些成功哪些失败」。
+追问那句「首页唯一的发布入口要不要留」时，用户选的是**整块删掉，首页不再有发布入口**。
+
+### 数据从哪来（不 grep 日志文本）
+
+- `src/run-accounts.js`（新）：一轮子进程输出的逐号行 → `[{env, level:'ok|warn|error', text}]`。
+  认三种写法：`✅/⚠️/❌ TK01 …`、`✅ 批量 · 账号 01（1/11） 完成`、`✅ 01: {json} (@user)`；
+  先剥 `[时间]` 前缀，再排掉 `指纹环境 / 已启动 / 已关闭 / 窗口缩到任务栏` 这类噪音行
+  （不排的话，刚失败的号会被随手的 `✅ 指纹环境 TK09 已关闭` 覆盖成成功）。
+  **同一号出现多次取最后一次**（重试后的结论才是真的）。单测 8 条 `tests/unit/run-accounts.test.js`。
+- `src/scheduled-run.js#buildRunRecord()` 多收一个 `accounts`，清洗后落进
+  `data/runs/<日期>-<HHMM>-<jobId>.json`；调度器 `executeJob()` 的 finally 里传
+  `accounts: parseAccountResults(lines)`（`lines` = 已经为 `pickSession` 抓过的那份输出）。
+- `electron/main.js#runs:recent`：读 7 天记录 → `{file,date,time,durationMs,label,mode,result,reason,accounts}`，
+  新的在前。preload 里是 `getRecentRuns`。
+
+### 界面
+
+- `Dashboard.vue`：卡片换掉，`table.runs` 五列（时间 / 任务 / 账号 / 结果 / 逐号），
+  按「今天 / 昨天 / 日期」分组，点一行展开每个号的原文 + 本轮结论。
+  结果标签由逐号汇总推：有 error → 失败/`N 个没成`，有 warn → 部分完成，否则全部成功；
+  没有 `accounts` 的老记录显示「这轮没记逐号结论」（不是坏数据）。
+- 顶部一句总账：`最近 7 天 40 轮 · 21 轮全成功 · 19 轮有问题` + 「只看有问题的 N 轮」开关；
+  30 秒自刷（切走页面不刷）。
+- 发布链路收口：`publishCount/pickedKeys/pickedItems/勾选/toggleSelectAll/含旧会话/打开文件夹`
+  全部删除，`publishPlan` 固定 `pick: [], count: 1`；发布只剩「生成完成横幅」那一个入口。
+  `.pc-*` / `.card-foot` / `.pub-list` 等样式一并删掉。
+
+### 老记录回填
+
+`scripts/backfill-run-accounts.mjs`：按记录的时间窗 `[startedAtMs-90s, finishedAtMs+90s]`
+去 `logs/scheduler-<日期>.log` 挑行，用**同一个** `parseAccountResults` 解析，写回 `accounts`。
+2026-11-01 实跑：**22 轮补上，41 轮补不了**（采集/生成类轮次本来就没有逐号行，跳过是对的）。
+备份在 `data/runs-backup-20261101`。
+
+### 踩的坑（值得记住）
+
+1. **第一版首页直接白屏**：`<tr v-if="expandedRun === r.file">` 写在 `v-for="r in g.rows"` 的**兄弟位置**
+   → 渲染时 `r` 是 undefined → `Cannot read properties of undefined (reading 'file')` → 整个 Dashboard 树挂掉
+   （侧栏还在，内容区全空，vite build 一点不报错）。明细行必须放进 `r` 的作用域里。
+   抓到它的办法：`XNOWPost.exe --remote-debugging-port=9223` +
+   `node scripts/_probe-console.mjs 9223`（Node 24 自带 WebSocket，直连 CDP 读 console/exception）。
+2. **PowerShell 数组 + `Set-Content -NoNewline` 会把整个文件粘成一行**（每行之间的换行被吃掉）。
+   我为删一段 CSS 用了 `Set-Content $p -Value $new -NoNewline`，结果 `Dashboard.vue` 变成 54565 字节的**单行**。
+   救法：`git show HEAD:src/renderer/views/Dashboard.vue | Set-Content` 还原 HEAD 版本，
+   再把本轮 5 处改动按原文重贴一遍，最后用「去掉所有空白后与残缺版逐字比对」证明还原完整。
+   **教训：改文件用 `edit` 工具，别用 PowerShell 数组切片写盘。**
+3. 老记录没 `accounts` 时不要显示成「失败」—— 那是"当时没这个字段"，不是跑挂了。
+
+### 顺带发现（还没修，等用户决定）
+
+- **2026-10-31 14:00 那轮养号 11/11 全废**：每个号 5~7 分钟，全是
+  `❌ TKxx 养号失败：环境 TKxx 的浏览器进程起来了，但页面 150 秒都没就绪（已清理残留进程并重开过一次…）`
+  ——1.9.10 的自愈跑了（文案里那句"重开过一次"就是它），但整机所有环境都起不来。
+  已排除：不是账号问题（11 个号全一样）、不是我们的代码（02:00 / 今天 02:00 都 11/11 正常）。
+  疑点：`E:\software\FoxProfile\logs\` 里**没有 10-31 的日志**（10-29/10-30 都有），
+  说明那天 FoxProfile 可能被重启过、或者 8000 端口上的是另一个实例。
+  下次再出现：先看 `GET /api/v1/info`、`GET /browser`、以及 FoxProfile 自己的控制台。
+- `2026-10-31-1100-11.json` 采集轮 `result=timeout`（900s 硬超时，重试也没起来）——真事，不是误报。
+
 ## 3M（2026-10-30 22:20，v1.9.10）日志体检：启动超时的那两个号其实能救回来
 
 `02:00` 那轮 4 条 `[ERROR]` 逐条查完，真问题只有一类，另有一条假错误：

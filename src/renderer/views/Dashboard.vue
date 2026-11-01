@@ -126,118 +126,95 @@
       </div>
     </div>
 
-    <!-- 待发布卡片 -->
-    <div v-if="pendingItems.length > 0" class="x-card">
+    <!-- 已完成任务（2026-11-01 用户要求：这块原来是「待发布内容」，换成跑完的轮次 + 逐号成败） -->
+    <div class="x-card runs-card">
       <div class="x-card-head">
         <span class="x-ic">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
-            <path d="m9.5 13.5 4.2-4.2" />
+            <path d="M9 4.5h6M9.5 3h5a1 1 0 0 1 1 1v1h-7V4a1 1 0 0 1 1-1z" />
+            <path d="M7 5.5H5.5A1.5 1.5 0 0 0 4 7v12.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V7a1.5 1.5 0 0 0-1.5-1.5H17" />
+            <path d="m8.5 13 2.2 2.2 4.3-4.4" />
           </svg>
         </span>
-        <h2>待发布内容</h2>
-        <span class="x-hint">{{ pendingItems.length }} 项</span>
-        <span v-if="todayPendingCount !== pendingItems.length" class="x-tag mute">当天 {{ todayPendingCount }}</span>
+        <h2>已完成任务</h2>
+        <span class="x-hint">{{ runsSummary }}</span>
         <div class="x-spacer"></div>
-        <button v-if="pendingItems.length > PENDING_LIMIT" class="x-mini" @click="pendingExpanded = !pendingExpanded">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="pendingExpanded" d="m6 15 6-6 6 6" />
-            <path v-else d="m6 9 6 6 6-6" />
-          </svg>
-          <span>{{ pendingExpanded ? '只看最近' : `展开全部` }}</span>
+        <button v-if="runsFailedOnly" class="x-mini" @click="runsFailedOnly = false">看全部</button>
+        <button v-else-if="runsHasProblem" class="x-mini" @click="runsFailedOnly = true">
+          只看有问题的 {{ runsProblemCount }} 轮
         </button>
-        <button class="x-mini" @click="openDir">
+        <button class="x-mini" @click="loadRuns" title="重新读取轮次记录">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h9A1.5 1.5 0 0 1 21.5 10v8A1.5 1.5 0 0 1 20 19.5H4.5A1.5 1.5 0 0 1 3 18z" />
+            <path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1" />
+            <path d="M20.5 4.5V10h-5.4" />
           </svg>
-          <span>打开文件夹</span>
+          <span>刷新</span>
         </button>
+        <router-link to="/logs" class="x-mini">完整日志</router-link>
       </div>
-      <table>
+
+      <table v-if="runsShown.length" class="runs">
         <thead>
           <tr>
-            <th style="width: 34px">
-              <input
-                type="checkbox"
-                class="pc-check"
-                :checked="allShownSelected"
-                :indeterminate.prop="someShownSelected && !allShownSelected"
-                title="全选当前显示的条目"
-                @change="toggleSelectAll($event.target.checked)"
-              />
-            </th>
-            <th style="width: 152px">类型</th>
-            <th>标题</th>
-            <th style="width: 168px; text-align: right">生成时间</th>
+            <th class="c-time">时间</th>
+            <th class="c-task">任务</th>
+            <th class="c-acc">账号</th>
+            <th class="c-state">结果</th>
+            <th class="c-accs">逐号</th>
           </tr>
         </thead>
         <tbody>
-          <tr
-            v-for="(item, i) in shownPending"
-            :key="`${item.date}/${item.session}`"
-            :class="{ 'pc-picked': isPicked(item) }"
-            @click="togglePick(item)"
-          >
-            <td class="pc-pickcell" @click.stop>
-              <input type="checkbox" class="pc-check" :checked="isPicked(item)" @change="togglePick(item)" />
-            </td>
-            <td class="pc-type">
-              <span v-if="item.type === 'video'" class="x-tag brand">视频</span>
-              <span v-else class="x-tag mute">图文</span>
-              <!-- 旧日期/失败过的会话必须标出来：默认不会被发布，别让人以为点了「发布全部」就会发 -->
-              <span v-if="item.old" class="x-tag mute" title="非当天的旧会话，默认不发布">旧</span>
-              <span v-if="item.failed" class="x-tag" :class="item.retryable ? 'warn' : 'danger'"
-                    :title="item.retryable ? '上次卡在发布阶段，会重试' : `上次失败于「${item.failedStage || '未知'}」，需要先重新生成`">
-                {{ item.retryable ? '待重试' : '失败' }}
-              </span>
-            </td>
-            <td><span class="pc-title">{{ item.title }}</span></td>
-            <td class="num">{{ item.date }} {{ item.time }}</td>
-          </tr>
+          <template v-for="g in runGroups" :key="g.date">
+            <tr class="sep">
+              <td colspan="5">{{ g.title }} · {{ g.rows.length }} 轮</td>
+            </tr>
+            <!-- ⚠️ 明细行必须写在 r 的作用域里：以前它挂在 v-for 外面，
+                 渲染时报 `Cannot read properties of undefined (reading 'file')`，整个首页白屏 -->
+            <template v-for="r in g.rows" :key="r.file">
+              <tr
+                class="run-row"
+                :class="['st-' + runLevel(r), { open: expandedRun === r.file }]"
+                @click="expandedRun = expandedRun === r.file ? '' : r.file"
+              >
+                <td class="c-time">
+                  <b>{{ r.time }}</b>
+                  <span v-if="r.durationMs" class="dim"> · {{ fmtTook(r.durationMs / 1000) }}</span>
+                </td>
+                <td class="c-task">{{ r.label || modeTextOf(r.mode) }}</td>
+                <td class="c-acc">{{ runAccountsText(r) }}</td>
+                <td class="c-state">
+                  <span class="x-tag" :class="runTagClass(r)">{{ runTagText(r) }}</span>
+                </td>
+                <td class="c-accs">
+                  <span
+                    v-for="a in r.accounts || []"
+                    :key="a.env"
+                    class="acc-chip"
+                    :class="'lv-' + a.level"
+                    :title="a.text"
+                  >{{ a.env.replace('TK', '') }}</span>
+                  <span v-if="!(r.accounts || []).length" class="dim">这轮没记逐号结论</span>
+                </td>
+              </tr>
+              <tr v-if="expandedRun === r.file" class="run-detail">
+                <td colspan="5">
+                  <div v-if="(r.accounts || []).length" class="rd-list">
+                    <div v-for="a in r.accounts" :key="a.env" class="rd-row">
+                      <span class="acc-chip" :class="'lv-' + a.level">{{ a.env }}</span>
+                      <span class="rd-text">{{ a.text }}</span>
+                    </div>
+                  </div>
+                  <div v-else class="rd-empty">这一轮没有逐号结论（升级前的旧记录）。</div>
+                  <div v-if="r.reason" class="rd-reason">本轮结论：{{ r.reason }}</div>
+                </td>
+              </tr>
+            </template>
+          </template>
         </tbody>
       </table>
-      <div v-if="!pendingExpanded && pendingItems.length > PENDING_LIMIT" class="pc-hint">
-        还有 {{ pendingItems.length - PENDING_LIMIT }} 项未显示
-      </div>
-      <div class="card-foot">
-        <label class="pc-old" title="勾上才会把非当天的旧会话也发出去">
-          <input v-model="includeOld" type="checkbox" />
-          <span>含旧会话</span>
-        </label>
-        <!-- 目标账号：2026-10-19 加的。以前这里只能发 accounts[0]，用户想发 02 号没入口，
-             助手也跟着发错号。现在选哪个就发哪个，选「默认」才按配置第一个。 -->
-        <label class="pub-target" title="这条发到哪个指纹环境">
-          <span>发到</span>
-          <select v-model="publishTarget" class="x-select">
-            <option value="">{{ defaultAccountLabel }}</option>
-            <option v-for="a in accountOptions" :key="a.name" :value="a.name">
-              {{ a.name }} · {{ a.env }}
-            </option>
-          </select>
-        </label>
-        <!-- 条数：以前写死「最多 3 条」，用户问「不能选择性发布吗」。现在既能选条数，
-             也能勾具体的某几条（勾了就按勾选的发，条数下拉自动失效）。 -->
-        <label class="pub-target" title="不勾选时按顺序发前 N 条（新→旧，不随机）">
-          <span>条数</span>
-          <select v-model="publishCount" class="x-select pc-count" :disabled="pickedCount > 0">
-            <option :value="1">1 条</option>
-            <option :value="2">2 条</option>
-            <option :value="3">3 条</option>
-            <option value="all">全部</option>
-          </select>
-        </label>
-        <div class="x-spacer"></div>
-        <button v-if="pickedCount" class="x-mini pc-clear" @click="clearPicks" title="取消全部勾选">清空勾选</button>
-        <span class="x-hint pub-hint" :title="publishPlan.detail">
-          {{ pickedCount ? `已勾选 ${pickedCount} 条` : '按生成时间新→旧，不随机' }}
-        </span>
-        <button class="x-btn primary" @click="handlePublish" :disabled="publishing">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 4 11.6 20.4l-2.1-6.9L2.6 11.4z" />
-            <path d="m9.5 13.5 4.2-4.2" />
-          </svg>
-          <span>{{ publishing ? '发布中…' : publishBtnLabel }}</span>
-        </button>
+      <div v-else class="plan-more">最近 7 天还没有跑完的轮次。</div>
+      <div v-if="runsShown.length" class="runs-foot">
+        点任意一行看这一轮每个号的结论；只保留最近 7 天（7 天前的记录会自动清掉）。
       </div>
     </div>
 
@@ -263,22 +240,14 @@
           </div>
           <div class="pub-row">
             <span class="pub-k">条数</span>
-            <span class="pub-v">{{ publishPlan.detail }}{{ includeOld ? '，含历史日期会话' : '' }}</span>
-          </div>
-          <div v-if="pickedCount" class="pub-row">
-            <span class="pub-k">内容</span>
-            <span class="pub-v pub-list">
-              <span v-for="p in pickedItems" :key="`${p.date}/${p.session}`" class="pub-item">
-                {{ p.date }} {{ p.time }} · {{ p.title || p.session }}
-              </span>
-            </span>
+            <span class="pub-v">{{ publishPlan.detail }}</span>
           </div>
           <div class="pub-row">
             <span class="pub-k">待发</span>
             <span class="pub-v">{{ pendingItems.length }} 条可发</span>
           </div>
           <div class="x-tip pub-tip">
-            发出去就撤不回来了。要发到别的号 / 换几条，关掉这张卡再改。
+            发出去就撤不回来了。要发到别的号，关掉这张卡到「配置 → 账号」里换默认账号。
           </div>
         </div>
         <div class="pub-dialog-foot">
@@ -518,7 +487,7 @@
 import { useAppStore } from '../stores/app.js';
 import { useRouter } from 'vue-router';
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
-import { buildPublishOpts, buildPickKeys, describePublishPlan, publishTargetLabel as targetLabelOf, publishTargetOptions } from '../lib/publish-request.js';
+import { buildPublishOpts, describePublishPlan, publishTargetLabel as targetLabelOf, publishTargetOptions } from '../lib/publish-request.js';
 
 const store = useAppStore();
 const router = useRouter();
@@ -601,24 +570,11 @@ const showCompletionBanner = ref(false);
 const previewData = ref(null);
 const pendingItems = ref([]);
 
-// 列表默认只显示最近几条 —— 一屏塞 55 条谁都不想翻。
-// 想看全部就展开，或者直接点「打开文件夹」。
-const PENDING_LIMIT = 5;
-const pendingExpanded = ref(false);
-
-// ── 待发布列表 ──
-// 待发布按「日期 + 场次」倒序（主进程返回的是目录顺序，不保证时间先后）
-const sortedPending = computed(() => [...pendingItems.value].sort(
-  (a, b) => `${b.date}-${b.session}`.localeCompare(`${a.date}-${a.session}`),
-));
-const shownPending = computed(() => pendingExpanded.value
-  ? sortedPending.value
-  : sortedPending.value.slice(0, PENDING_LIMIT));
-
-// 「默认只发当天」：卡片上要说清楚到底几条是今天的
-const todayPendingCount = computed(() => pendingItems.value.filter((p) => !p.old).length);
-// 勾上才把非当天的旧会话也发出去（护栏默认 OFF）
-const includeOld = ref(false);
+// ── 待发布：首页不再列出来 ──
+// 2026-11-01 用户口径：「待发布内容这一块可以换成已完成的任务表」——
+// 列表和它底部的「含旧会话 / 条数 / 勾选」全都删了，首页不再有常驻发布入口。
+// 保留 pendingItems 只是因为「生成完成」横幅还要知道**有没有东西可发、几条**，
+// 发布动作只从那条横幅发起（发当天最新 1 条到上次选的号）。
 
 let refreshTimer = null;
 let cleanupStatusPush = null;
@@ -711,12 +667,7 @@ async function runBatch() {
 const publishTarget = ref(localStorage.getItem('xnowpost.publishTarget') || '')
 watch(publishTarget, (v) => localStorage.setItem('xnowpost.publishTarget', v || ''));
 const publishConfirm = ref(false)
-// 条数：1 / 2 / 3 / 'all'（不勾选时按顺序发前 N 条）
-const publishCount = ref(1)
-// 勾选的条目（key = date/session）。勾了就按勾选发，条数下拉失效。
-const pickedKeys = ref([])
 const pendingLoaded = ref(false)
-const publishMaxCount = 3;   // 和主进程 DEFAULT_MAX_PER_RUN 一致，超过也只发 3 条
 const accountOptions = ref([])
 const defaultAccountLabel = ref('')
 
@@ -735,50 +686,25 @@ async function loadPublishAccounts() {
   } catch (_) {}
 }
 
-// ── 勾选与条数（2026-10-19 用户问「不能选择性发布吗，非要发 3 条或者随机？」）──
-const pickedItems = computed(() => pendingItems.value.filter((it) => isPicked(it)))
-const pickedCount = computed(() => pickedItems.value.length)
-const shownPendingKeys = computed(() => shownPending.value.map((it) => `${it.date}/${it.session}`))
-const allShownSelected = computed(() => shownPendingKeys.value.length > 0
-  && shownPendingKeys.value.every((k) => pickedKeys.value.includes(k)))
-const someShownSelected = computed(() => shownPendingKeys.value.some((k) => pickedKeys.value.includes(k)))
-
-// 这一轮到底发几条、发哪些 —— 确认卡和真正执行都读它。
-// eligible = 实际候选数（勾了「含旧会话」时比当天多），按钮上显示的条数就是 plan.send。
-const publishEligible = computed(() => (includeOld.value
-  ? pendingItems.value.length
-  : pendingItems.value.filter((it) => !it.old).length))
+// 这一轮到底发几条 —— 确认卡和真正执行都读它（条数固定 1 条：当天最新那条）。
+// 首页的勾选/条数下拉已随「待发布内容」卡片一起删掉，用户 2026-11-01 要的是完成情况表。
 const publishPlan = computed(() => describePublishPlan({
-  pick: pickedItems.value,
-  count: publishCount.value,
+  pick: [],
+  count: 1,
   total: pendingItems.value.filter((it) => !it.old).length,
-  eligible: publishEligible.value,
+  eligible: pendingItems.value.filter((it) => !it.old).length,
 }))
 
-function pickKeyOf(item) { return `${item.date}/${item.session}`; }
-function isPicked(item) { return pickedKeys.value.includes(pickKeyOf(item)); }
-function togglePick(item) {
-  const k = pickKeyOf(item);
-  pickedKeys.value = pickedKeys.value.includes(k)
-    ? pickedKeys.value.filter((x) => x !== k)
-    : [...pickedKeys.value, k];
-}
-function toggleSelectAll(on) {
-  pickedKeys.value = on ? [...new Set([...pickedKeys.value, ...shownPendingKeys.value])] : [];
-}
-function clearPicks() { pickedKeys.value = []; }
 // 文案和真正发出去的目标同源（都是 src/renderer/lib/publish-request.js，有单测守着）
 const publishTargetLabel = computed(() => targetLabelOf(accountOptions.value, publishTarget.value))
 
 /*
- * 主按钮和「生成完成」横幅共用同一份文案：发几条 + 发到哪个号。
- * 为什么必须带条数：以前生成行里那个按钮只写「发布 → 02 号」，看不出这次发几条、发哪条，
- * 而它发的其实是待发布列表里按上次选择的内容 —— 这是最容易"账号对了内容错了"的一格。
+ * 「生成完成」横幅上的按钮文案：发几条 + 发到哪个号。
+ * 必须带条数：只写「发布 → 02 号」看不出这次发几条，是"账号对了内容错了"最容易发生的一格。
  */
 const publishBtnLabel = computed(() => {
   const short = publishTarget.value ? `${publishTarget.value} 号` : '默认账号'
-  const n = pickedCount.value || publishPlan.value.send
-  return `${pickedCount.value ? '发布勾选的' : '发布'} ${n} 条 → ${short}`
+  return `发布 ${publishPlan.value.send} 条 → ${short}`
 })
 
 // 点「发布」只是开确认卡：账号发错撤不回来，值得多看一眼
@@ -790,11 +716,8 @@ function handlePublish() {
     store.addLog('info', '没有待发布的内容')
     return
   }
-  // 有内容但一条都发不出去（今天 0 条 + 没勾「含旧会话」+ 没点名）时别开确认卡，
-  // 直接说清怎么才能发 —— 否则确认卡里写「待发 0 条」，用户只会觉得按钮坏了。
-  // 只在"列表已读到且有内容"时才拦（列表没读到时交给主进程给准话）。
   if (pendingLoaded.value && pendingItems.value.length && publishPlan.value.send === 0) {
-    store.addLog('info', '今天还没有可发的内容：勾上「含旧会话」，或直接在列表里点要发的那一条')
+    store.addLog('info', '今天还没有可发的内容，等这一轮生成完成后横幅上的按钮才有东西可发')
     return
   }
   publishConfirm.value = true
@@ -803,30 +726,24 @@ function handlePublish() {
 async function confirmPublish() {
   publishing.value = true
   try {
-    // includeOld / account 都由纯函数决定（单元测试守着），别在视图里再写一份
-    const opts = buildPublishOpts({ target: publishTarget.value, includeOld: includeOld.value })
-    // 勾了就只发勾选的；没勾就按「条数」发前 N 条（'all' = 当天全部）
-    const pick = buildPickKeys(pickedItems.value)
-    if (pick.length) opts.pick = pick
-    else if (publishCount.value === 'all') opts.all = true
-    else opts.maxCount = Number(publishCount.value) || 1
+    // 账号由纯函数决定（单元测试守着），别在视图里再写一份；固定发当天最新 1 条
+    const opts = buildPublishOpts({ target: publishTarget.value, includeOld: false })
+    opts.maxCount = 1
     const result = await window.xnowpost.runPublish(opts)
     if (!result.ok) {
       store.addLog('error', '发布失败: ' + (result.message || ''))
     } else if (result.published > 0) {
-      store.addLog('success', `已发布 ${result.published} 条 → ${publishTargetLabel.value}${pickedCount.value ? `（勾选的 ${pickedCount.value} 条）` : ''}`)
+      store.addLog('success', `已发布 ${result.published} 条 → ${publishTargetLabel.value}`)
     } else {
       store.addLog('info', `没有可发的内容（${publishTargetLabel.value}）`)
     }
     publishConfirm.value = false
-    pickedKeys.value = []   // 发过的条目已不在待发里，勾选一并清掉
     await loadPendingItems()
   } catch (e) {
     store.addLog('error', '发布调用失败: ' + (e.message || e))
   }
   publishing.value = false
 }
-async function openDir() { await window.xnowpost.openOutputDir(); }
 
 async function loadPendingItems() {
   try {
@@ -928,9 +845,93 @@ async function refreshPlan() {
   }
 }
 
+/* ───────── 已完成任务（IPC runs:recent：最近 7 天的轮次记录 + 逐号结论） ───────── */
+const runs = ref([]);
+const expandedRun = ref('');
+const runsFailedOnly = ref(false);
+let runsTimer = null;
+
+async function loadRuns() {
+  const api = window.xnowpost;
+  if (!api || typeof api.getRecentRuns !== 'function') return;
+  try {
+    const list = await api.getRecentRuns({ days: 7, limit: 40 });
+    if (Array.isArray(list)) runs.value = list;
+  } catch (_) {
+    /* 记录读不到就保持上一张表：轮次跑完会自己刷新 */
+  }
+}
+
+/** 这一轮整体算成功/部分成功/失败 —— 先看记录结论，再看逐号（逐号里有错就一定不是全成功） */
+function runLevel(r) {
+  const accs = r.accounts || [];
+  const bad = accs.filter((a) => a.level === 'error').length;
+  const warn = accs.filter((a) => a.level === 'warn').length;
+  if (r.result === 'failed' || r.result === 'timeout' || r.result === 'unconfirmed') return 'bad';
+  if (bad) return accs.length > bad ? 'partial' : 'bad';
+  if (warn || r.result === 'partial' || r.result === 'insufficient') return 'partial';
+  return 'ok';
+}
+function runTagText(r) {
+  const lv = runLevel(r);
+  const accs = r.accounts || [];
+  const bad = accs.filter((a) => a.level === 'error').length;
+  if (lv === 'ok') return '全部成功';
+  if (lv === 'partial') return bad ? `${bad} 个没成` : '部分完成';
+  if (r.result === 'timeout') return '超时';
+  if (r.result === 'unconfirmed') return '未确认';
+  if (r.result === 'insufficient') return '数据不足';
+  return '失败';
+}
+function runTagClass(r) {
+  const lv = runLevel(r);
+  return lv === 'ok' ? 'ok' : lv === 'partial' ? 'warn' : 'danger';
+}
+function runAccountsText(r) {
+  const n = (r.accounts || []).length;
+  if (n) return n + ' 个号';
+  return r.label && /养号|批量/.test(r.label) ? '—' : '仅生成';
+}
+function modeTextOf(mode) {
+  return ({ warmup: '养号', batch: '批量生成+发布', collect: '数据采集', auto: '视频+图文', video: '仅视频', text: '仅图文', post: '发布' })[mode] || mode || '任务';
+}
+
+const runsProblemCount = computed(() => runs.value.filter((r) => runLevel(r) !== 'ok').length);
+const runsHasProblem = computed(() => runsProblemCount.value > 0);
+const runsShown = computed(() => (runsFailedOnly.value ? runs.value.filter((r) => runLevel(r) !== 'ok') : runs.value));
+const runsSummary = computed(() => {
+  const all = runs.value;
+  if (!all.length) return '最近 7 天还没有跑完的轮次';
+  const bad = runsProblemCount.value;
+  const ok = all.length - bad;
+  return bad
+    ? `最近 7 天 ${all.length} 轮 · ${ok} 轮全成功 · ${bad} 轮有问题`
+    : `最近 7 天 ${all.length} 轮 · 全部成功`;
+});
+// 按日期分组（今天 / 昨天 / 具体日期），组内新→旧
+const runGroups = computed(() => {
+  const today = new Date().toLocaleDateString('sv-SE');
+  const yest = new Date(Date.now() - 86400000).toLocaleDateString('sv-SE');
+  const map = new Map();
+  for (const r of runsShown.value) {
+    if (!map.has(r.date)) map.set(r.date, []);
+    map.get(r.date).push(r);
+  }
+  return [...map.entries()].map(([date, rows]) => ({
+    date,
+    title: date === today ? '今天' : date === yest ? '昨天' : date,
+    rows,
+  }));
+});
+
 onMounted(async () => {
   refreshPlan();
   planTimer = setInterval(refreshPlan, 30000);
+  // 轮次记录 30 秒刷一次：调度器跑完到写入记录最多差几十秒，用户切回首页就能看到
+  loadRuns();
+  runsTimer = setInterval(() => {
+    if (!document.hidden) loadRuns();
+  }, 30000);
   // ⚠️ 初始化必须整体隔离异常：一旦这里抛出，后面的定时器与订阅就全都不会注册，
   // Dashboard 的实时更新会被永久禁用（P2-3）
   try {
@@ -995,6 +996,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (planTimer) { clearInterval(planTimer); planTimer = null; }
+  if (runsTimer) { clearInterval(runsTimer); runsTimer = null; }
   if (cleanupProgress) { cleanupProgress(); cleanupProgress = null; }
   if (cleanupStatusPush) { cleanupStatusPush(); cleanupStatusPush = null; }
   window.removeEventListener('paste', onPaste);
@@ -1225,41 +1227,7 @@ thead th {
 }
 tbody td { padding: 9px 16px; border-bottom: 1px solid var(--stroke); vertical-align: middle; }
 tbody tr:last-child td { border-bottom: 0; }
-tbody tr:hover { background: var(--bg3); }
-.pc-title {
-  display: block; max-width: 100%;
-  font-size: 12.5px; color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 td.num { text-align: right; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); }
-.pc-hint { padding: 8px 16px 0; font-size: 11px; color: var(--text-3); }
-
-/* 类型列：视频/图文 + 旧 + 待重试 一行排开（挤成三行会把每行撑得很高） */
-.pc-type { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; }
-
-/* 「含旧会话」勾选框（默认关：护栏要求旧会话必须显式放行） */
-.pc-old {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  cursor: pointer;
-  user-select: none;
-}
-.pc-old input { accent-color: var(--brand); cursor: pointer; }
-/* 这一行现在有 4 个元素（含旧会话 / 发到 / 提示 / 按钮），窄了要能换行，控件不许被压扁 */
-.card-foot { flex-wrap: wrap; row-gap: 8px; }
-.pub-hint { flex: none; white-space: nowrap; }
-.pc-check { accent-color: var(--brand); cursor: pointer; margin: 0; }
-.pc-pickcell { width: 34px; }
-tbody tr { cursor: pointer; }
-tbody tr.pc-picked { background: color-mix(in srgb, var(--brand) 9%, transparent); }
-.pc-count { min-width: 76px; }
-.pc-clear { flex: none; }
-/* 勾选多条时「内容」要一条一行，挤成一段读不出来 */
-.pub-list { display: flex; flex-direction: column; gap: 2px; }
-.pub-item { display: block; line-height: 1.45; }
 
 /* 目标账号下拉：和「含旧会话」同一行，字号压低一点免得抢走按钮的视觉重心 */
 .pub-target {
@@ -1477,4 +1445,43 @@ table.plan tr.sep td {
 .c-state .fin { margin-left: 6px; font-size: 10.5px; color: var(--text-3); }
 table.plan .dim { color: var(--text-3); }
 .plan-more { padding: 8px 10px 0; font-size: 11.5px; color: var(--text-3); }
+
+/* ── 已完成任务（2026-11-01 替代「待发布内容」） ── */
+table.runs { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.runs th {
+  text-align: left; font-weight: 600; font-size: 11px; color: var(--text-3);
+  padding: 0 8px 6px; border-bottom: 1px solid var(--stroke);
+}
+table.runs td {
+  padding: 7px 8px; border-bottom: 1px solid var(--stroke);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+table.runs tr:last-child td { border-bottom: none; }
+table.runs tr.sep td {
+  padding: 12px 8px 4px; font-size: 11px; color: var(--text-3);
+  border-bottom: 1px solid var(--stroke); background: none;
+}
+table.runs tr.run-row { cursor: pointer; }
+table.runs tr.run-row:hover td { background: color-mix(in srgb, var(--brand) 5%, transparent); }
+table.runs tr.run-row.open td { background: color-mix(in srgb, var(--brand) 8%, transparent); }
+table.runs .dim { color: var(--text-3); }
+.c-accs { width: 168px; }
+.runs-foot { padding: 8px 10px 0; font-size: 11.5px; color: var(--text-3); }
+/* 逐号小圆牌：只用状态色，别拿品牌色做装饰 */
+.acc-chip {
+  display: inline-block; min-width: 22px; text-align: center;
+  padding: 1px 5px; margin-right: 4px; border-radius: 999px;
+  font-size: 10.5px; font-variant-numeric: tabular-nums;
+  border: 1px solid currentColor; opacity: .95;
+}
+.acc-chip.lv-ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.acc-chip.lv-warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.acc-chip.lv-error { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+tr.run-detail td { padding: 6px 8px 10px 8px; background: color-mix(in srgb, var(--brand) 4%, transparent); }
+.rd-list { display: flex; flex-direction: column; gap: 3px; }
+.rd-row { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; }
+.rd-row .acc-chip { flex: none; }
+.rd-text { color: var(--text-2); white-space: normal; word-break: break-all; }
+.rd-empty, .rd-reason { font-size: 11.5px; color: var(--text-3); }
+.rd-reason { margin-top: 4px; }
 </style>

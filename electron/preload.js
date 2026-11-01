@@ -128,6 +128,7 @@ contextBridge.exposeInMainWorld('xnowpost', {
   getScheduleProgress: () => ipcRenderer.invoke('schedule:progress'),
   // 首页「今天要跑的任务」表（主进程算好状态，界面只显示）
   getSchedulePlan: () => ipcRenderer.invoke('schedule:plan'),
+  getRecentRuns: (args) => ipcRenderer.invoke('runs:recent', args),
 
   // 网络节点（内置 xray 内核）：小白只做一件事 = 把 vless:// 链接粘进来
   proxyStatus: () => ipcRenderer.invoke('proxy:status'),
