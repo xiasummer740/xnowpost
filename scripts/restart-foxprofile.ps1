@@ -50,7 +50,9 @@ if ($left.Count -gt 0) {
 }
 
 # 4) 重新启动
-Start-Process -FilePath (Join-Path $root '启动 FoxProfile.bat') -WorkingDirectory $root
+# ⚠️ 必须 -WindowStyle Hidden：这是个 .bat，Start-Process 默认会给它一个**可见的 cmd 控制台**，
+#    用户就看到一个黑窗口闪一下（2026-11-02 实测：不加这个参数 100% 冒出来，加了 0 个）。
+Start-Process -FilePath (Join-Path $root '启动 FoxProfile.bat') -WorkingDirectory $root -WindowStyle Hidden
 "  已启动，等 API..."
 
 $ok = $false

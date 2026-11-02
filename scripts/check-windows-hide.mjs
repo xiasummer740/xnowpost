@@ -181,16 +181,78 @@ for (const file of files) {
 console.log(`[check:windows-hide] 扫描 ${files.length} 个文件，其中 ${scannedFiles} 个引用了 child_process`);
 console.log(`  ✅ 带 windowsHide: true : ${ok.length}`);
 
-if (bad.length === 0) {
+/* ── PowerShell 脚本也要查（2026-11-02 补）──
+ * 上面那套只认 JS 的 child_process，而 `.ps1` 里 `Start-Process` 一样会开窗口：
+ *   Start-Process -FilePath 某个.bat   → 系统给它一个**可见的 cmd 控制台** → 用户看到黑窗闪一下
+ *   （实测：不加 -WindowStyle Hidden 100% 冒出来，加了 0 个；探测脚本 scripts/_probe-console-flash.ps1）
+ * 规则：每一处 Start-Process 都必须带 `-WindowStyle Hidden`（或 `-NoNewWindow`）。
+ */
+const psFiles = [];
+for (const t of TARGETS) {
+  const root = path.join(ROOT, t);
+  const stack = [root];
+  while (stack.length) {
+    const p = stack.pop();
+    let st;
+    try { st = fs.statSync(p); } catch (_) { continue; }
+    if (st.isFile()) { if (/\.ps1$/i.test(p)) psFiles.push(p); continue; }
+    if (!st.isDirectory()) continue;
+    for (const n of fs.readdirSync(p)) {
+      if (SKIP_DIRS.has(n)) continue;
+      stack.push(path.join(p, n));
+    }
+  }
+}
+
+const psOk = [];
+const psBad = [];
+/** 从 Start-Process 起取到这条语句结束（括号配平 + 行尾），跨行写法也能完整判断 */
+function psCallText(raw, start) {
+  let depth = 0;
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i];
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === '\n' && depth <= 0) return raw.slice(start, i);
+  }
+  return raw.slice(start);
+}
+for (const file of psFiles) {
+  const raw = fs.readFileSync(file, 'utf-8');
+  raw.split('\n').forEach((lineTxt, i) => {
+    if (!/Start-Process\b/.test(lineTxt)) return;
+    if (/^\s*#/.test(lineTxt)) return;                       // 注释里的示例不算
+    if (/-NoNewWindow/i.test(lineTxt)) { psOk.push({ file, line: i + 1 }); return; }
+    // 多行写法：`Start-Process -FilePath 'x' -ArgumentList @(\n ... \n) -WindowStyle Hidden`
+    const startIdx = raw.split('\n').slice(0, i).join('\n').length + (i ? 1 : 0);
+    const callText = psCallText(raw, startIdx);
+    if (/-WindowStyle\s+Hidden/i.test(callText)) { psOk.push({ file, line: i + 1 }); return; }
+    psBad.push({ file: path.relative(ROOT, file).replace(/\\/g, '/'), line: i + 1, text: lineTxt.trim() });
+  });
+}
+console.log(`  ✅ PowerShell Start-Process 带隐藏参数 : ${psOk.length}（共扫 ${psFiles.length} 个 .ps1）`);
+
+if (psBad.length) {
+  console.error(`\n❌ [check:windows-hide] ${psBad.length} 处 Start-Process **没隐藏窗口**（会闪黑窗）：\n`);
+  for (const b of psBad) {
+    console.error(`   ${b.file}:${b.line}`);
+    console.error(`      ${b.text.slice(0, 110)}`);
+  }
+  console.error('\n请加 `-WindowStyle Hidden`（CLAUDE.md 最高优先级规则）。\n');
+}
+
+if (bad.length === 0 && psBad.length === 0) {
   console.log('  ✅ 无违规调用');
   process.exit(0);
 }
 
-console.error(`\n❌ [check:windows-hide] ${bad.length} 处子进程调用**缺少** windowsHide: true：\n`);
-for (const b of bad) {
-  const head = b.callText.split('\n')[0].replace(/\s+/g, ' ');
-  console.error(`   ${b.file}:${b.line}  ${b.fnName}()`);
-  console.error(`      ${head.slice(0, 100)}`);
+if (bad.length) {
+  console.error(`\n❌ [check:windows-hide] ${bad.length} 处子进程调用**缺少** windowsHide: true：\n`);
+  for (const b of bad) {
+    const head = b.callText.split('\n')[0].replace(/\s+/g, ' ');
+    console.error(`   ${b.file}:${b.line}  ${b.fnName}()`);
+    console.error(`      ${head.slice(0, 100)}`);
+  }
+  console.error('\n请补上 `windowsHide: true`（CLAUDE.md 最高优先级规则）。\n');
 }
-console.error('\n请补上 `windowsHide: true`（CLAUDE.md 最高优先级规则）。\n');
 process.exit(1);

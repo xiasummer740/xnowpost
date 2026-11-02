@@ -268,6 +268,25 @@
 - 所有 `spawn()` / `execSync()` 必须带 `windowsHide: true`
 - 启动子进程一律用 `windowsHide: true`，不允许出现任何 CMD 窗口
 - 新增任何 spawn/execSync 调用时必须加上此参数
+- **`.ps1` 里也算**（2026-11-02 补）：`Start-Process` 必须带 `-WindowStyle Hidden`
+  （或对控制台程序用 `-NoNewWindow`）。`Start-Process -FilePath 某个.bat` 默认会给它一个
+  **可见的 cmd 控制台** → 用户看到黑窗闪一下。实测：不加参数 100% 冒出来，加了 0 个
+  （探测器 `scripts/_probe-console-flash.ps1`，用 `EnumWindows + IsWindowVisible` 找
+  `ConsoleWindowClass`，只认真实可见的那种 —— 隐藏控制台也有 conhost，光看进程名会误判）。
+  `npm run verify` 里的 `check-windows-hide.mjs` 现在**连 .ps1 一起扫**（含跨行写法），
+  并且做了负向验证（临时塞一个不带参数的 Start-Process，守卫必须退出码 1）。
+- **用户报「CMD 窗口偶尔闪一下」时，先分清楚是谁在闪**（2026-11-02 实测流程）：
+  1. 挂探测器：`pwsh -NoProfile -File scripts\_probe-console-flash.ps1 -Seconds 380`；
+  2. 期间触发一次「开环境 → 关环境」：实测 **0 个可见控制台**，说明这条主路径是干净的；
+  3. 若探测器抓到窗口，看它**属主的命令行和父进程**：父进程是 `svchost.exe -k netsvcs -s Schedule`
+     = Task Scheduler 拉的，跟我们无关。这次抓到的是本机的 `\XXUI-Panel-DDNS`
+     （`powershell.exe -WindowStyle Hidden -File xxui-ddns\report.ps1`，周期 **PT5M**、LogonType
+     **Interactive**）——**`-WindowStyle Hidden` 并不能真正避免闪一下**：
+     PowerShell 先把 conhost 建出来再 `ShowWindow(SW_HIDE)`，中间那几十毫秒用户是看得见的。
+     真隐藏只有两条路：任务改成「只在用户登录时/不管是否登录都运行」的 **S4U 或存密码**
+     （跑在 session 0，没有窗口），或者用 `wscript.exe` + `WScript.Shell.Run(cmd, 0, False)` 包一层。
+     排查计划任务用 `Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational`
+     （事件 129 = action 被拉起，带任务名），比猜时间准。
 
 ## 采集：不许把"没采到"说成"采到了"（2026-10-19 事故）
 - **`normalizeResult()` 的坑（已修，`src/collector/result.js`）**：采集器没数据时返回

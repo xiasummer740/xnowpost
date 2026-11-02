@@ -45,7 +45,8 @@ if (-not (Test-Api)) {
     $bat = Join-Path $root '启动 FoxProfile.bat'
     if (-not (Test-Path $bat)) { Write-Output "not running, no launcher"; exit 1 }
     Write-Output "starting-ui"
-    Start-Process -FilePath $bat -WorkingDirectory $root
+    # ⚠️ .bat 必须 -WindowStyle Hidden：否则 Start-Process 会开一个可见的 cmd 控制台（黑窗口闪一下）
+    Start-Process -FilePath $bat -WorkingDirectory $root -WindowStyle Hidden
   } else {
     $py = Join-Path $root '.venv\Scripts\pythonw.exe'
     if (-not (Test-Path $py)) { Write-Output "not running, no pythonw"; exit 1 }

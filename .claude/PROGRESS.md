@@ -1,5 +1,42 @@
 # 接力开发 — 新对话从这里开始
 
+## 3O（2026-11-02 20:45，v1.9.12）「CMD 窗口偶尔闪一下」查清了：不是我们，但我们的 .ps1 也有一个洞
+
+用户问「这个项目是不是还有 CMD 窗口偶尔闪一下」，做法是**实测**而不是猜：
+
+### 我们这边
+
+- 写了个探测器 `scripts/_probe-console-flash.ps1`：`EnumWindows` + `IsWindowVisible` 找
+  `ConsoleWindowClass`，只认真实**可见**的控制台（隐藏控制台也有 conhost，光看进程名会误判），
+  并打出窗口属主的命令行 + 父进程。
+- 挂 380 秒 + 期间完整跑一次「开环境 TK01 → 页面就绪 → 关环境」：**我们这条路径 0 个可见控制台**。
+- JS 侧本来就干净：52 处 `spawn/execFileSync…` 全部 `windowsHide: true`（守卫 + 人工核对）。
+- 但守卫**只扫 .js/.mjs/.cjs/.ts，从来没扫过 .ps1**，而 `.ps1` 里
+  `Start-Process -FilePath 某个.bat` 会**系统级地开一个可见 cmd 控制台**。真找到两处：
+  `scripts/foxprofile-guard.ps1`（`-WithUI` 分支）和 `scripts/restart-foxprofile.ps1`（第 53 行）。
+  实测：不加参数 100% 闪，加 `-WindowStyle Hidden` 后 0 个。
+- 已修 + 守卫扩展到 .ps1（含跨行写法；临时塞一个不带参数的 Start-Process 验证过会退出码 1）。
+  注意 `restart-foxprofile.ps1` **没打进安装包**（electron-builder 的 files 白名单里没有），
+  改它只影响仓库侧手动执行；`foxprofile-guard.ps1` 是打进 `app.asar.unpacked` 的，已随 1.9.12 部署。
+
+### 真正在闪的那个窗口
+
+380 秒里只抓到 **1 个**可见控制台，命令行是
+`powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Users\Administrator\xxui-ddns\report.ps1"`，
+父进程 `svchost.exe -k netsvcs -s Schedule`。对上号了：本机计划任务 **`\XXUI-Panel-DDNS`**，
+周期 **PT5M**（每 5 分钟一次），LogonType **Interactive**。
+**`-WindowStyle Hidden` 挡不住这一下**：PowerShell 先建 conhost 再 `ShowWindow(SW_HIDE)`，
+中间几十毫秒用户就看见黑窗。要真不闪只有两条路：任务改成 S4U/存密码（跑 session 0，无窗口），
+或用 `wscript.exe` + `WScript.Shell.Run(cmd, 0, False)` 包一层。等用户点头再动（那是他自己的任务）。
+另外 `\Immich-Backup`（每天 04:00）也没带 `-WindowStyle Hidden`，同样会闪一次。
+
+### 顺带
+
+- 排查计划任务最准的是 `Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational`
+  （事件 129 = 某个任务的 action 被拉起，带任务名 + 时间），比按时间猜强得多。
+- 我自己的工具链（DeepSeek Harness 下发的 pwsh）跑在**无可见控制台**的进程链里
+  （父进程链一路到 explorer，`ConsoleWindowClass` 里没有它），所以不是我这边闪。
+
 ## 3N（2026-11-01 11:55，v1.9.11）首页「待发布内容」→「已完成任务」表
 
 用户口径：「待发布内容这一块可以换成已完成的任务表，以及完成情况，哪些成功哪些失败」。
