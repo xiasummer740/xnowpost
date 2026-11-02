@@ -37,6 +37,31 @@
 - 我自己的工具链（DeepSeek Harness 下发的 pwsh）跑在**无可见控制台**的进程链里
   （父进程链一路到 explorer，`ConsoleWindowClass` 里没有它），所以不是我这边闪。
 
+### 两个计划任务已「一起治」（2026-11-02 20:55，用户：「一起治」）
+
+- 手法：**不换「启什么」，只换「怎么启」**。每个任务前面加一层 `wscript.exe` + `.vbs`，
+  里面 `WScript.Shell.Run(cmd, 0, True)` —— `0` = SW_HIDE，进程**从创建那一刻**就不可见
+  （`True` = 等子进程跑完并把退出码 `WScript.Quit rc` 带回去，所以「上次运行结果」仍然有意义）。
+  特意**没有**改成 S4U / 「不管用户是否登录都运行」：Immich 备份要用 `wsl.exe` + `X:` 盘映射，
+  那是登录会话里的东西，session 0 会直接坏掉。
+- 落地文件（都在 C:，不在仓库里，升级/重装不受影响）：
+  - `C:\Users\Administrator\xxui-ddns\run-hidden.vbs` → `report.ps1`
+  - `C:\Users\Administrator\immich-run-hidden.vbs` → `F:\summer\vs-code\gongzuo\家里电脑配置\scripts\immich-backup.ps1`
+  - ⚠️ `.vbs` **必须存成 UTF-16LE + BOM**（`Out-File -Encoding Unicode`）：wscript 默认按 ANSI 读，
+    UTF-8 无 BOM 时中文路径会变乱码。
+- 任务动作改成：`C:\Windows\System32\wscript.exe //nologo "<那个 vbs>"`，
+  触发器/运行身份（Administrator + Interactive）全部原样保留。
+- 改前 XML 备份在 `C:\Users\Administrator\task-xml-backup-20261102\`，回滚用
+  `Register-ScheduledTask -TaskName X -Xml (Get-Content <xml> -Raw) -Force`。
+- 验收（都是真跑，不是看着像好了）：
+  - DDNS 手动触发：`report.log` 新增 `rc=0 已放行面板端口 2053 …`，任务结果 0，
+    **同 40 秒探测器 0 个可见控制台**；20:53:18 那次自动 tick 也正常（结果 0）。
+  - Immich 手动触发（增量）：日志走到 `==== 备份结束 ====`、`robocopy 退出码 3（<8 均正常）`，
+    任务结果 0，**同 45 秒探测器 0 个可见控制台**；次日 04:00 触发器还在。
+- 还剩一个不属于我们也不该动的：`\Microsoft\Windows\Hotpatch\Monitoring`（`cmd.exe /d /c hpatchmonTask.cmd`），
+  Windows 自己的任务，跑得很稀，先不管。
+
+
 ## 3N（2026-11-01 11:55，v1.9.11）首页「待发布内容」→「已完成任务」表
 
 用户口径：「待发布内容这一块可以换成已完成的任务表，以及完成情况，哪些成功哪些失败」。
