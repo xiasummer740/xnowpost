@@ -1,5 +1,94 @@
 # 接力开发 — 新对话从这里开始
 
+## 3P（2026-11-03 20:50，仍是 v1.9.12）接力清单：现场状态 / 这两天的轮次 / 下一个该修什么
+
+> 上一轮（3O）只动了「CMD 黑窗」和守卫，**没碰业务代码**，所以版本还停在 1.9.12。
+> 新对话接手：先按下面「现场状态」核对一遍，再看「待办」第 1 条（已定位到具体函数，改起来很小）。
+
+### 现场状态（不一致就先修现场，再写代码）
+
+- 部署版 = 仓库版 = **1.9.12**；`XNOWPost.exe` 4 个进程 + 匹配 `scheduler\.js` 的 `node.exe` 1 个常驻。
+- FoxProfile API `http://127.0.0.1:8000/api/v1` 在跑（浏览器**有窗口**模式）。
+- `git log` 头三条：`553bd47`（两个计划任务改 wscript 入口）、`046892a`（v1.9.12 守卫补 `.ps1`）、
+  `4b62d7c`（v1.9.11 首页「已完成任务」表）。工作区干净，已推 `origin/master`。
+- 昨天改的两个会闪黑窗的计划任务**满一天仍在正常工作**：`\XXUI-Panel-DDNS` 每 5 分钟一次、
+  结果 0、日志一直写到 20:43:18；`\Immich-Backup` 11-03 04:00:01 结果 0
+  （备份 3 秒跑完 = 增量，正常）。改前 XML 备份还在 `C:\Users\Administrator\task-xml-backup-20261102\`。
+- 磁盘：`release/` **26.7 GB**（可整目录删，重新打包会再生成）、仓库 `output/` 899 MB、
+  `%APPDATA%\xnowpost\output` **2.98 GB**（15 天保留只清调试件，成片不动）。C 盘剩 60 GB。
+
+### 这两天的轮次（真数据，`%APPDATA%\xnowpost\data\runs\*.json`）
+
+| 时间 | 模式 | 结果 | 备注 |
+|---|---|---|---|
+| 11-02 02:00 | 养号 | ok（145 min） | 8 个号全成 |
+| 11-02 07:00 | 批量 | ok（34 min） | 11 个号，发布 11 条 |
+| 11-02 11:00 | 采集 | ok（4.7 min） | 11/11 有数据 |
+| 11-02 14:00 | 养号 | **partial（128 min）** | **TK01/TK02**「页面 150 秒没就绪」（和 10-31 那次同类，这次只废 2 个） |
+| 11-03 02:00 | 养号 | ok（148 min） | 8 个号全成 |
+| 11-03 07:00 | 批量 | ok（32 min） | 11 个号，发布 11 条 |
+| 11-03 11:00 | 采集 | ok，但 **TK02 报错** | `❌ 02: Cannot read properties of undefined (reading 'url')`，10/11 有数据 |
+| 11-03 14:00 | 养号 | ok（148 min） | 8 个号全成 |
+
+一天 5 轮都在跑，**没有整轮失败**；11-03 的 `app-*.log` 里 `[ERROR]` 只有 1 条（就是 TK02 那条采集）。
+→ 也就是说：账面上现在是「能跑」，值得花时间的是下面第 1、2 条的**偶发**问题。
+
+### 待办（按优先级）
+
+**1（已定位到函数，最值得先做）：采集偶发 `Cannot read properties of undefined (reading 'url')`**
+
+- 现场：`logs/scheduler-2026-11-03.log` 第 1749 行附近。TK02 起来 9 秒、刚打完
+  `📡 tiktok: 开始采集...` 就抛错，**连 `📋 页面 N 行` 那行都没打** → 死在 `readDashboard()` 里。
+- 根因（已核对代码）：`src/collector/scrapers/login.js` L69-79
+
+  ```js
+  export async function readDashboard(page, platform) {
+    const raw = await page.evaluate(readPageText);
+    const state = detectLoginState({ url: raw.url, title: raw.title, ... });   // ← raw 可能是 undefined
+  ```
+
+  而 `src/collector/foxpw.js` L274 的 `evaluate()` 是 `return d?.result;` —— FoxProfile 的
+  `/page/evaluate` 响应里只要没有 `result`（页面正在跳转、控制通道刚就绪、脚本内部抛错被吞），
+  这里就返回 `undefined`，`raw.url` 立刻炸成上面那句话。
+- 修法（照这个改，**别在调用处套 try/catch 糊过去**）：`raw` 判空 → **立刻重试一次 evaluate**
+  （页面多半在跳转）→ 还空就抛一句人话（`页面读取为空（evaluate 没返回结果，可能页面正在跳转）`），
+  让日志一眼能区分「读页面失败」和「页面结构变了」。这个函数被 TikTok / Instagram 两个 scraper 共用，
+  改一处两边都受益。
+- 单测（`tests/unit/`，用假 page 对象，别真开浏览器）：① evaluate 第一次 `undefined`、第二次正常 →
+  重试后成功；② 两次都 `undefined` → 抛出带「页面读取为空」字样的错误。
+- 顺带观察：同一时刻 TK01 正常、TK02 失败；两个号都先 `🗕 缩到任务栏` 了，暂时看不出相关性。
+
+**2：养号偶发「页面 150 秒没就绪」还没根治**
+
+- 11-02 14:00 废了 TK01/TK02（`launchAndWait` 等 `foxPageReady` 超时 + 自动重开一次仍不行），
+  10-31 14:00 是 11 个号全废。两次都是**下午那一轮**，凌晨那轮从没中过 —— 别急着归因平台限流。
+- 下一步该做的不是猜，而是**把失败现场落盘**：超时那一刻抓 `GET /browser`、
+  `GET /browser/{name}/page/tabs` 的原始响应 + FoxProfile 侧日志尾部，写进 `output/<日期>/`
+  的失败证据里。现在只有一句超时文案，事后完全无法复盘（10-31 那次连 FoxProfile 日志文件都缺）。
+
+**3：TK11 还缺 region / 邮箱 / 2FA** —— 账号文件第 6 列 + 凭据弹窗补（见 CLAUDE.md「账号凭据」）。
+
+**4：清盘** —— `release/` 26.7 GB 可整删；`%APPDATA%\xnowpost\output` 2.98 GB 里成片别动，
+按 15 天口径只清 `expanded_debug.html` / `_video/`。
+
+**5：`data/publish-ledger.jsonl` 只增不清**（10-18 起累积），要不要按 180 天滚动，等用户定。
+
+**6：`_` 开头的探针脚本去留** —— `_probe-engine.mjs` / `_convert-night-batch.mjs` /
+`_migrate-gradient-colors.mjs` 可删；`_probe-console-flash.ps1`（黑窗探测器）、
+`_probe-console.mjs`（CDP 抓渲染报错）建议**留**，排查两次都用上了。
+
+### 接着开发的固定动作（一条都别省）
+
+1. 改完 → `npm run verify`（当前 **722 测试 / 0 失败**；含 `check-windows-hide`（.js **和** .ps1）、
+   `check-log-levels`、`check-leaks`、`vite build`）；
+2. 升 `package.json` 版本 → `npm run package`；
+3. 杀干净：`Get-Process XNOWPost` + `Get-CimInstance Win32_Process -Filter "Name='node.exe'"`
+   里匹配 `scheduler\.js` 的那些；
+4. `robocopy release\win-unpacked E:\software\XNOWPost /MIR /XD "E:\software\XNOWPost\import"`
+   （**必须带 `/XD` 那一段**，否则会把用户账号文件删掉；exit 1/2/3 都算正常）；
+5. `Remove-Item Env:ELECTRON_RUN_AS_NODE` 再 `Start-Process E:\software\XNOWPost\XNOWPost.exe`；
+6. 截图验收：`scripts\win-shot.ps1 -ProcName XNOWPost -Out output\x.png`。
+
 ## 3O（2026-11-02 20:45，v1.9.12）「CMD 窗口偶尔闪一下」查清了：不是我们，但我们的 .ps1 也有一个洞
 
 用户问「这个项目是不是还有 CMD 窗口偶尔闪一下」，做法是**实测**而不是猜：
